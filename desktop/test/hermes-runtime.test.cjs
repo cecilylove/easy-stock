@@ -20,7 +20,7 @@ test('bundleWindowsRuntime copies base Python and merges installed packages', as
   fs.mkdirSync(path.join(sourceRoot, 'Lib'), { recursive: true });
   fs.writeFileSync(path.join(sourceRoot, 'python.exe'), 'python');
   fs.writeFileSync(path.join(sourceRoot, 'Lib', 'os.py'), 'stdlib');
-  fs.symlinkSync(sourceRoot, sourceLink, 'dir');
+  fs.symlinkSync(sourceRoot, sourceLink, process.platform === 'win32' ? 'junction' : 'dir');
   fs.mkdirSync(path.join(runtimeRoot, 'venv', 'Lib', 'site-packages', 'hermes_cli'), { recursive: true });
   fs.writeFileSync(path.join(runtimeRoot, 'venv', 'Lib', 'site-packages', 'hermes_cli', '__init__.py'), 'hermes');
   fs.writeFileSync(path.join(runtimeRoot, 'venv', 'pyvenv.cfg'), `home = ${sourceRoot}\n`);

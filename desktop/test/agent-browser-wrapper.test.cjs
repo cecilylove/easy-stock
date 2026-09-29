@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
-test('agent-browser wrapper loads storage state before the first navigation', () => {
+test('agent-browser wrapper loads storage state before the first navigation', { skip: process.platform === 'win32' && 'POSIX executable wrapper; Windows packages the Python script separately' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a-stock-browser-wrapper-'));
   const logPath = path.join(root, 'calls.log');
   const statePath = path.join(root, 'state.json');

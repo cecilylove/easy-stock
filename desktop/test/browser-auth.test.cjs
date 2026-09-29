@@ -21,12 +21,12 @@ test('xueqiu profiles use stable isolated partitions and state paths', () => {
   assert.equal(partitionForXueqiuProfile('xueqiu-default'), partitionForXueqiuProfile('xueqiu-default'));
   assert.notEqual(partitionForXueqiuProfile('xueqiu-default'), partitionForXueqiuProfile('xueqiu-second'));
   assert.match(partitionForXueqiuProfile('xueqiu-default'), /^persist:a-stock-ai-xueqiu-/);
-  assert.match(statePathForProfile('/tmp/auth', 'xueqiu-default'), /^\/tmp\/auth\/xueqiu\/[a-f0-9]{32}\.json$/);
+  assert.match(path.relative('/tmp/auth', statePathForProfile('/tmp/auth', 'xueqiu-default')).split(path.sep).join('/'), /^xueqiu\/[a-f0-9]{32}\.json$/);
 });
 
 test('taoguba profiles use a separate persistent partition and source state directory', () => {
   assert.notEqual(partitionForTaogubaProfile('shared-profile'), partitionForXueqiuProfile('shared-profile'));
-  assert.match(statePathForProfile('/tmp/auth', 'taoguba-default', 'taoguba'), /^\/tmp\/auth\/taoguba\/[a-f0-9]{32}\.json$/);
+  assert.match(path.relative('/tmp/auth', statePathForProfile('/tmp/auth', 'taoguba-default', 'taoguba')).split(path.sep).join('/'), /^taoguba\/[a-f0-9]{32}\.json$/);
 });
 
 test('electron cookies are exported as Playwright storage state without exposing them in status', () => {
@@ -47,7 +47,9 @@ test('electron cookies are exported as Playwright storage state without exposing
   writeStorageState(filePath, storageState);
 
   assert.equal(hasLoggedInXueqiuSession(storageState), true);
-  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+  }
   const status = readBrowserAuthStatus(filePath);
   assert.equal(status.configured, true);
   assert.doesNotMatch(JSON.stringify(status), /xq_is_login|cookie/i);
