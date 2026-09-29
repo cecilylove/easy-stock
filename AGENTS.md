@@ -1,36 +1,46 @@
-# 开发版本与推送规则
+# easy-stock 仓库开发指南
 
-## 默认目标
+## 项目概览
 
-- 用户未特别指定版本时，需求默认在开源版开发。
-- 开源版远程为 `upstream`：`git@github.com:jundizhou/easy-stock.git`。
-- “提交代码”“推送代码”等未注明版本的请求，也按开源版处理。
+本仓库是个人非商业使用的 A 股 AI 投研工作台二开仓库。后端使用 Go 1.26，前端使用 React、TypeScript 和 Vite，桌面端使用 Electron；Node.js 开发建议使用 22.x。前端、桌面端由根目录 npm workspaces 管理，Go 模块位于 `backend/`。
 
-## 商业版切换条件
+## 从任务找代码
 
-只有用户明确提到“商业版”“商业仓库”“commercial”或明确指定 `origin` 时，才允许在商业版开发或推送。
+入口总览：`frontend/src/App.tsx` 切换工作台；`frontend/src/lib/backend.ts` 封装 API 请求；`backend/internal/httpapi/server.go` 注册路由并组装 Provider；`backend/cmd/server/main.go` 启动本机服务。以下是首批调查位置，不是完整影响清单。
 
-- 商业版远程为 `origin`：`git@github.com:jundizhou/easy-stock-commercial.git`。
-- 商业版工作树：`/Users/jundi/GolandProjects/a-stock-ai-worktrees/commercial-auth`。
-- 不得因为当前目录、上一次任务或 git tracking 配置而自动选择商业版。
+- 行情、题材或数据源：从 `frontend/src/components/MarketOverviewWorkspace.tsx` 或 `frontend/src/App.tsx` 的请求出发 → `backend/internal/httpapi/server.go` 的路由与 `market_overview.go` 等缓存/处理器 → `backend/internal/providers/`、`backend/internal/sector/` 及 `backend/internal/foundation/types.go` 的来源元数据。先找相应 Provider 测试、`backend/internal/httpapi/market_overview_test.go` 和 `frontend/src/lib/market-overview.test.ts`；来源、回退规则见 `backend/docs/data-sources.md`。
+- 个股研究：从 `frontend/src/components/StockAIAnalysisWorkspace.tsx`、`frontend/src/lib/use-stock-research.ts` → `backend/internal/httpapi/stock_research.go` → `backend/internal/stockanalysis/research_service.go`、`research_store.go`。先查 `backend/internal/httpapi/stock_research_test.go`、`backend/internal/stockanalysis/research_test.go` 和 `frontend/src/components/StockResearchReport.test.tsx`；证据与任务约束见 `docs/stock-research.md`。
+- 桌面启动或本地数据：从 `desktop/main.cjs` 的启动/运行环境 → `desktop/backend-process.cjs` 的进程、`desktop/preload.cjs` 的桥接与 `backend/cmd/server/main.go` 的监听/数据路径。先查 `desktop/test/backend-process.test.cjs`，运行 `npm --workspace desktop test` 和受影响的后端测试；打包和运行时依赖见 `docs/development.md`。
 
-## 开始任务前检查
+其他页面可由 `frontend/src/App.tsx` 的组件入口和 `backend/internal/httpapi/server.go` 的路由注册定位；复杂实现按需查源码和专项文档，不复制完整调用图。
 
-1. 查看当前工作树、当前分支和两个远程地址。
-2. 根据用户是否明确指定版本，确认目标远程。
-3. 默认切换到已有的本地开源主分支直接开发，不为每次任务新建分支。本仓库使用 `oss-main` 跟踪 `upstream/main`；本地 `main` 当前属于商业版工作树，不得混用。只有用户要求或确需隔离工作时才创建功能分支。
-4. 商业版专属改动不得回流开源版；公共能力应优先在开源版完成，再由商业版合并。
+## 开发与验证命令
 
-## 提交与推送
+以下命令已在 `package.json`、工作区包清单、`backend/go.mod`、`docs/development.md` 和发布 CI 中核对来源；列出命令不代表本次执行过。
 
-- 默认提交到本地开源主分支 `oss-main`；提交或本地合并不意味着允许推送，只有用户要求推送时才推送到 `upstream`。
-- 需要功能分支时使用 `codex/<topic>`，无需每次开发都新建分支。
-- 推送前确认远程、目标分支、提交内容和工作树均与目标版本一致。
-- 未得到用户明确的商业版指示，不得执行 `git push origin ...`。
-- 未经用户要求，不直接推送远程 `main`；用户要求 Pull Request 时，再使用功能分支并提供链接。本地合并到开源主分支不受此限制。
+- 根目录安装依赖：`npm ci`。
+- Web 分别开发：`npm run dev:backend` 与 `npm run dev:frontend`；默认只监听本机 `127.0.0.1` 的 `20081` 与 `20073` 端口。`dev:backend` 使用 POSIX 环境变量写法，在 Windows 原生终端应按 `backend/cmd/server/main.go` 设置环境变量后从 `backend/` 运行 `go run ./cmd/server`；不要假设脚本可直接跨平台执行。
+- 后端测试：在 `backend/` 执行 `go test ./...`。
+- 前端测试与构建：`npm --workspace frontend test -- --run`、`npm run build:frontend`。
+- 桌面主进程测试：`npm --workspace desktop test`；根目录 `npm test` 包含后端和前端测试，不包含桌面测试。
+- `npm run restart` 会运行 `scripts/rebuild-restart.sh`，依赖 Bash、`lsof` 等工具，并会停止默认端口上的现有进程；使用前确认平台和端口归属，不要将它当成无副作用的验证命令。
+- 桌面开发与发布依赖额外的 Hermes/Python 运行时；具体准备、平台和打包命令见 `docs/development.md` 与 `desktop/package.json`。
 
-## 版本边界
+## 自测原则
 
-- 开源版可以包含通用行情、分析、Skill、Hermes 和桌面能力。
-- 商业账号、商业凭据、商业服务地址、商业授权校验和商业发行配置属于商业版，不能写入开源版。
-- 不确定是否属于商业专属时，按公共能力设计，但不得把商业密钥、服务地址或账号逻辑带入开源版。
+- 按修改范围执行对应测试；跨前后端改动同时检查后端、前端与构建，涉及桌面启动或桥接时再运行桌面测试。
+- 公网数据源实时测试是显式启用的额外检查，不属于默认单元测试；失败时区分上游可用性与代码回归。
+- 只报告实际运行的命令与结果；未运行的构建、测试和平台验证不得写成通过。
+
+## 项目特殊说明
+
+- 本仓库当前开发目标是用户自己的 fork，远程 `origin` 指向 `cecilylove/easy-stock`，当前本地 `main` 跟踪 `origin/main`。开始改动和提交前核对当前工作树、分支、远程及未提交改动；不得依据旧文档中的 `upstream`、`oss-main` 或其他机器的工作树布局切换目标。仅在用户明确要求时推送；本地提交不等于允许推送远程 `main`。
+- 项目采用 `LICENSE` 中的 PolyForm Noncommercial License 1.0.0；自用二开限非商业用途。分发修改版时保留许可证和要求的版权声明，商业使用需另外取得授权。
+- 桌面端由 Electron 启动仅监听本机的 Go 后端，并用随机 Token 保护；Web 开发模式未配置 `A_STOCK_TOKEN` 时本机 API 不要求鉴权。开发调试不得把无鉴权服务暴露到公网。
+- 本机设置、SQLite、日志、Hermes Home、模型密钥和浏览器登录态不入库；使用独立数据路径验证二开，避免覆盖已安装版用户数据。参见 `.gitignore` 与 `docs/development.md`。
+
+## 文档自维护
+
+每次交付前，检查本次改动是否改变运行入口、模块职责、关键跨模块边界、上述任务路由、验证命令或长期约束；若改变，在同次改动中核对源码并更新受影响条目。普通业务逻辑变化不更新本文件，也不把一次性排障记录写入。
+
+维护时优先替换、合并或删除失效内容，不默认追加；根文件保持简短，复杂细节指向现有专项文档，不复制完整调用图。无法确认的路径与命令先查证，且在本文件与其他仓库文档产生相反指令时标出待同步文件并尽快同步，不能长期依赖警告。
