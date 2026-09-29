@@ -72,6 +72,12 @@ If EastMoney `push2` closes the constituent connection, the node falls back to `
 | Juyangongshe | `app.jiuyangongshe.com` | Investment calendar. |
 | CNInfo IRM | `irm.cninfo.com.cn` | Investor interaction answers. |
 
+## 数据源最近观测状态
+
+`GET /api/v1/sources` 只读取本机运行期间的请求记录，**不主动访问第三方**。`status` 为 `available`（最近一次实际请求成功）、`degraded`（最近一次失败或回退到缓存/备用来源）、`unknown`（尚未观测，或最近观测已超过 10 分钟）、`unconfigured`（当前版本没有接入该来源）。`ok` 仅在 `available` 时为 `true`。`checked_at`、`last_success`、`last_failure` 只在发生实际观测后出现；再次读取目录不会刷新这些时间。失败消息经过概括，不回显第三方请求 URL 或密钥。
+
+该状态不是对整个供应商所有接口的全面探针：目前从 HTTP/WebSocket 行情、K 线、财联社快讯、渐进题材和行情总览的实际刷新记录观测；渐进题材仅在来源可归因且有实际结果的刷新时记录，不因轮询或读取本地快照续期；组合刷新整体超时但无法确认哪家上游失败时，只在题材步骤显示超时，不猜测具体供应商。缓存读取不制造新观测；可确认的单一来源实时刷新失败与备用来源成功分别记录，无法归因的组合失败不据旧快照推断故障来源。开盘啦同一批题材与涨停池若部分成功、部分失败，最近状态为降级；来源列表不能替代具体能力的状态。TradingView 与 Tushare 当前未接入，标记未接入而非等待检测。某个接口成功或回退成功，不等于该供应商的全部服务正常。请同时以具体功能页面的 `meta.source`、`meta.fetched_at`、`meta.stale` 和 `meta.fallback_reason` 判断数据能否使用。
+
 ## Source Reliability Rules
 
 - A provider must expose normal unit tests with mocked upstream responses.

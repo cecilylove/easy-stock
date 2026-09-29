@@ -80,6 +80,13 @@ func parseStreamInterval(raw string) time.Duration {
 
 func (s *Server) writeQuoteSnapshot(ctx context.Context, conn *websocket.Conn, symbols []string) bool {
 	quotes, err := s.realtimeProvider.Realtime(ctx, symbols)
+	if err == nil {
+		for _, quote := range quotes {
+			s.sourceHealth.success(quote.Meta)
+		}
+	} else if ctx.Err() == nil {
+		s.sourceHealth.failure(s.realtimeSourceID, err)
+	}
 	message := streamMessage{
 		Type:      "quotes",
 		Quotes:    quotes,

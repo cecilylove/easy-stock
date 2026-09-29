@@ -1,0 +1,396 @@
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"easy-stock/backend/internal/foundation"
+	"github.com/gorilla/websocket"
+)
+
+func sourceByID(t *testing.T, items []foundation.SourceHealth, id string) foundation.SourceHealth {
+	t.Helper()
+	for _, item := range items {
+		if item.ID == id {
+			return item
+		}
+	}
+	t.Fatalf("source %s not found", id)
+	return foundation.SourceHealth{}
+}
+
+func TestSourceHealthUnknownUntilRealObservation(t *testing.T) {
+	server := NewServer(nil)
+	defer server.Close()
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/sources", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	items := server.sourceHealth.snapshot(time.Now())
+	for _, id := range []string{"duanxianxia", "eastmoney", "sina", "tencent", "cls"} {
+		source := sourceByID(t, items, id)
+		if source.OK || source.Status != "unknown" || source.CheckedAt != nil {
+			t.Fatalf("%s was declared healthy without a request: %+v", id, source)
+		}
+	}
+	for _, id := range []string{"tradingview", "tushare"} {
+		if source := sourceByID(t, items, id); source.Status != "unconfigured" || source.OK {
+			t.Fatalf("unintegrated source should not be reported healthy: %+v", source)
+		}
+	}
+}
+
+func TestSourceHealthTracksFreshFallbackFailureAndExpiry(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	now := time.Now()
+	meta := foundation.SourceMeta{Source: "eastmoney:kline", FetchedAt: now}
+	tracker.success(meta)
+	entry := sourceByID(t, tracker.snapshot(now), "eastmoney")
+	if !entry.OK || entry.Status != "available" || entry.LastSuccess == nil {
+		t.Fatalf("fresh result not observed: %+v", entry)
+	}
+	tracker.success(foundation.SourceMeta{Source: "eastmoney:kline", FetchedAt: now.Add(-time.Minute)})
+	if checked := sourceByID(t, tracker.snapshot(now), "eastmoney").CheckedAt; !checked.Equal(now) {
+		t.Fatalf("cached response changed observation time: %v", checked)
+	}
+	tracker.failure("eastmoney", errors.New("upstream URL with secret token"))
+	entry = sourceByID(t, tracker.snapshot(time.Now()), "eastmoney")
+	if entry.OK || entry.Status != "degraded" || entry.LastFailure == nil || entry.LastSuccess == nil {
+		t.Fatalf("failed result not recorded: %+v", entry)
+	}
+	if entry.Message == "" || entry.Message == "upstream URL with secret token" {
+		t.Fatalf("upstream error leaked into source catalog: %+v", entry)
+	}
+	tracker.success(foundation.SourceMeta{Source: "sina", FetchedAt: time.Now()})
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "sina"); source.Status != "available" {
+		t.Fatalf("fallback provider should be independently available: %+v", source)
+	}
+	entry = sourceByID(t, tracker.snapshot(time.Now().Add(sourceObservationTTL+time.Second)), "eastmoney")
+	if entry.OK || entry.Status != "unknown" || entry.LastFailure == nil {
+		t.Fatalf("expired observation should not remain current: %+v", entry)
+	}
+}
+
+type observedRealtimeProvider struct {
+	mu  sync.RWMutex
+	err error
+}
+
+func (p *observedRealtimeProvider) setError(err error) {
+	p.mu.Lock()
+	p.err = err
+	p.mu.Unlock()
+}
+
+func (p *observedRealtimeProvider) Realtime(_ context.Context, _ []string) ([]foundation.Quote, error) {
+	p.mu.RLock()
+	err := p.err
+	p.mu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	return []foundation.Quote{{Symbol: "000001.SZ", Meta: foundation.SourceMeta{Source: "sina", FetchedAt: time.Now()}}}, nil
+}
+
+func TestWebSocketQuoteSnapshotObservesSuccessAndFailure(t *testing.T) {
+	provider := &observedRealtimeProvider{}
+	s := NewServer(Config{Realtime: provider})
+	s.realtimeSourceID = "sina" // Explicitly identify the mock provider.
+	defer s.Close()
+	remote := httptest.NewServer(s)
+	defer remote.Close()
+	for _, failed := range []bool{false, true} {
+		if failed {
+			provider.setError(errors.New("realtime unavailable"))
+		}
+		conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(remote.URL, "http")+"/api/v1/ws/stream?symbols=000001.SZ", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var message streamMessage
+		if err := conn.ReadJSON(&message); err != nil {
+			conn.Close()
+			t.Fatal(err)
+		}
+		conn.Close()
+		entry := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "sina")
+		if !failed && (message.Type != "quotes" || entry.Status != "available") {
+			t.Fatalf("websocket success not observed: message=%+v source=%+v", message, entry)
+		}
+		if failed && (message.Type != "error" || entry.Status != "degraded") {
+			t.Fatalf("websocket failure not observed: message=%+v source=%+v", message, entry)
+		}
+	}
+}
+
+type observedKLineProvider struct {
+	source string
+	err    error
+}
+
+func (p observedKLineProvider) KLine(_ context.Context, symbol, _ string, _ int) ([]foundation.KLine, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return []foundation.KLine{{Symbol: symbol, Meta: foundation.SourceMeta{Source: p.source, FetchedAt: time.Now()}}}, nil
+}
+
+func TestInjectedProviderFailureDoesNotBlameDefaultSource(t *testing.T) {
+	s := NewServer(Config{
+		Realtime:      &observedRealtimeProvider{err: errors.New("custom quote failed")},
+		KLinePrimary:  observedKLineProvider{err: errors.New("custom kline failed")},
+		KLineFallback: observedKLineProvider{err: errors.New("custom fallback failed")},
+	})
+	defer s.Close()
+	for _, path := range []string{"/api/v1/quotes/realtime?symbols=000001.SZ", "/api/v1/quotes/kline?symbol=000001.SZ"} {
+		response := httptest.NewRecorder()
+		s.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusBadGateway {
+			t.Fatalf("%s status=%d", path, response.Code)
+		}
+	}
+	for _, id := range []string{"sina", "eastmoney"} {
+		if entry := sourceByID(t, s.sourceHealth.snapshot(time.Now()), id); entry.Status != "unknown" {
+			t.Fatalf("custom provider failure attributed to %s: %+v", id, entry)
+		}
+	}
+}
+
+func TestKLineFallbackObservesBothProviderOutcomes(t *testing.T) {
+	server := NewServer(Config{
+		KLinePrimary:  observedKLineProvider{err: errors.New("primary unavailable")},
+		KLineFallback: observedKLineProvider{source: "sina"},
+	})
+	server.kLinePrimarySourceID = "eastmoney" // Explicitly identify the mock primary.
+	defer server.Close()
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/quotes/kline?symbol=000001.SZ", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("fallback response status = %d", response.Code)
+	}
+	items := server.sourceHealth.snapshot(time.Now())
+	if primary := sourceByID(t, items, "eastmoney"); primary.Status != "degraded" || primary.OK {
+		t.Fatalf("failed primary was marked available: %+v", primary)
+	}
+	if fallback := sourceByID(t, items, "sina"); fallback.Status != "available" || !fallback.OK {
+		t.Fatalf("successful fallback was not observed: %+v", fallback)
+	}
+}
+
+type observedMarketOverview struct {
+	fakeMarketOverviewProvider
+}
+
+func (p *observedMarketOverview) MarketIndexSeries(_ context.Context, _, _ string, _ int) (foundation.MarketIndexSeries, error) {
+	meta := foundation.SourceMeta{Source: "tencent:index-kline", FetchedAt: time.Now()}
+	return foundation.MarketIndexSeries{Meta: meta}, nil
+}
+
+func (p *observedMarketOverview) MarketBillboardDetail(_ context.Context, _, _, _ string) (foundation.MarketBillboardDetail, foundation.SourceMeta, error) {
+	meta := foundation.SourceMeta{Source: "eastmoney:billboard-seats", FetchedAt: time.Now()}
+	return foundation.MarketBillboardDetail{Meta: meta}, meta, nil
+}
+
+func TestIndependentMarketHandlersRecordActualSources(t *testing.T) {
+	s := NewServer(Config{MarketOverview: &observedMarketOverview{}})
+	defer s.Close()
+	for _, path := range []string{
+		"/api/v1/market/index-series?id=sse&period=day&limit=30",
+		"/api/v1/market/billboard/detail?symbol=000001.SZ&trade_date=2026-09-29&reason=test",
+	} {
+		recorder := httptest.NewRecorder()
+		s.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+	for _, id := range []string{"tencent", "eastmoney"} {
+		if item := sourceByID(t, s.sourceHealth.snapshot(time.Now()), id); item.Status != "available" {
+			t.Fatalf("independent market handler did not observe %s: %+v", id, item)
+		}
+	}
+}
+
+func TestServiceDeadlineIsObservedButClientCancellationIsNot(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	cache := newMarketOverviewCache(time.Minute)
+	loader := func(ctx context.Context) (int, foundation.SourceMeta, error) {
+		<-ctx.Done()
+		return 0, foundation.SourceMeta{}, ctx.Err()
+	}
+	deadline, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	_, _, _ = loadMarketOverview(deadline, cache, tracker, "margin", loader, "eastmoney")
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney"); source.Status != "degraded" {
+		t.Fatalf("service deadline was not observed: %+v", source)
+	}
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	_, _, _ = loadMarketOverview(cancelled, cache, tracker, "other", loader, "sina")
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "sina"); source.Status != "unknown" {
+		t.Fatalf("client cancellation was attributed to provider: %+v", source)
+	}
+}
+
+func TestCustomMarketProviderFailureDoesNotBlameEastMoney(t *testing.T) {
+	provider := &fakeMarketOverviewProvider{fail: true}
+	s := NewServer(Config{MarketOverview: provider})
+	defer s.Close()
+	for _, path := range []string{
+		"/api/v1/market/margin-balance?limit=5",
+		"/api/v1/market/billboard/detail?symbol=000001.SZ&trade_date=2026-09-29&reason=test",
+	} {
+		recorder := httptest.NewRecorder()
+		s.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusBadGateway {
+			t.Fatalf("%s status=%d", path, recorder.Code)
+		}
+	}
+	if entry := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "eastmoney"); entry.Status != "unknown" {
+		t.Fatalf("custom market provider failure blamed EastMoney: %+v", entry)
+	}
+}
+
+func TestSingleSourceMarketFailureWithoutCacheIsObserved(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	cache := newMarketOverviewCache(time.Minute)
+	loader := func(context.Context) (int, foundation.SourceMeta, error) {
+		return 0, foundation.SourceMeta{}, errors.New("offline")
+	}
+	if _, _, err := loadMarketOverview(context.Background(), cache, tracker, "margin", loader, "eastmoney"); err == nil {
+		t.Fatal("expected upstream error")
+	}
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney"); source.Status != "degraded" || source.LastFailure == nil {
+		t.Fatalf("first failed request remained unknown: %+v", source)
+	}
+}
+
+func TestMarketOverviewCacheHitDoesNotRenewFallbackFailure(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	cache := newMarketOverviewCache(time.Minute)
+	calls := 0
+	loader := func(context.Context) ([]foundation.MarketIndexSnapshot, foundation.SourceMeta, error) {
+		calls++
+		meta := foundation.SourceMeta{Source: "tencent:index", FetchedAt: time.Now(), FallbackReason: "东方财富指数快照不可用，已切换腾讯行情"}
+		return []foundation.MarketIndexSnapshot{{ID: "sse", Meta: meta}}, meta, nil
+	}
+	if _, _, err := loadMarketOverview(context.Background(), cache, tracker, "indexes", loader); err != nil {
+		t.Fatal(err)
+	}
+	first := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney")
+	if first.Status != "degraded" || first.LastFailure == nil {
+		t.Fatalf("failed primary not observed: %+v", first)
+	}
+	if _, _, err := loadMarketOverview(context.Background(), cache, tracker, "indexes", loader); err != nil {
+		t.Fatal(err)
+	}
+	cached := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney")
+	if calls != 1 || !cached.LastFailure.Equal(*first.LastFailure) {
+		t.Fatalf("cache hit renewed fallback observation: calls=%d before=%+v after=%+v", calls, first, cached)
+	}
+}
+
+func TestMarketOverviewStaleFallbackRecordsOnlyRefreshAttempt(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	cache := newMarketOverviewCache(-time.Second)
+	meta := foundation.SourceMeta{Source: "eastmoney:index", FetchedAt: time.Now()}
+	if _, _, err := loadMarketOverview(context.Background(), cache, tracker, "indexes", func(context.Context) (int, foundation.SourceMeta, error) { return 1, meta, nil }); err != nil {
+		t.Fatal(err)
+	}
+	loader := func(context.Context) (int, foundation.SourceMeta, error) {
+		return 0, foundation.SourceMeta{}, errors.New("offline")
+	}
+	if _, stale, err := loadMarketOverview(context.Background(), cache, tracker, "indexes", loader, "eastmoney"); err != nil || !stale.Stale {
+		t.Fatalf("stale fallback failed: meta=%+v error=%v", stale, err)
+	}
+	first := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney")
+	if first.Status != "degraded" || first.LastFailure == nil {
+		t.Fatalf("stale refresh not observed: %+v", first)
+	}
+	// The original successful fetch time must never override the failure.
+	tracker.success(meta)
+	after := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney")
+	if after.OK || !after.LastFailure.Equal(*first.LastFailure) {
+		t.Fatalf("cached source metadata masked a refresh failure: before=%+v after=%+v", first, after)
+	}
+}
+
+func TestCompositeMarketCacheDoesNotBlamePreviousSource(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	cache := newMarketOverviewCache(-time.Second)
+	meta := foundation.SourceMeta{Source: "tencent:index", FetchedAt: time.Now()}
+	if _, _, err := loadMarketOverview(context.Background(), cache, tracker, "indexes", func(context.Context) (int, foundation.SourceMeta, error) { return 1, meta, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, stale, err := loadMarketOverview(context.Background(), cache, tracker, "indexes", func(context.Context) (int, foundation.SourceMeta, error) {
+		return 0, foundation.SourceMeta{}, errors.New("both upstreams failed")
+	}); err != nil || !stale.Stale {
+		t.Fatalf("expected stale fallback: meta=%+v err=%v", stale, err)
+	}
+	if item := sourceByID(t, tracker.snapshot(time.Now()), "tencent"); item.Status != "available" || item.LastFailure != nil {
+		t.Fatalf("composed refresh blamed previous source: %+v", item)
+	}
+}
+
+func TestIndustryFallbackFromProgressObservesBothProviders(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	meta := foundation.SourceMeta{Source: "eastmoney:industry-momentum", FetchedAt: time.Now(), FallbackReason: "腾讯行业强度不可用，已回退东方财富可用字段"}
+	tracker.observe(foundation.SourceObservation{Meta: meta})
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "tencent"); source.Status != "degraded" {
+		t.Fatalf("failed primary not recorded: %+v", source)
+	}
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney"); source.Status != "available" {
+		t.Fatalf("successful fallback not recorded: %+v", source)
+	}
+}
+
+func TestFuturesFallbackRecordsPrimaryFailureWithoutClaimingCFFEXInCatalog(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	meta := foundation.SourceMeta{Source: "cffex:futures-position", FetchedAt: time.Now(), FallbackReason: "东方财富期指数据不可用，降级为中金所最近交易日快照"}
+	tracker.fallback(meta)
+	tracker.success(meta)
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney"); source.Status != "degraded" || source.LastFailure == nil {
+		t.Fatalf("futures primary failure was lost: %+v", source)
+	}
+}
+
+func TestSourceHealthDistinguishesPrimaryFailureFromSuccessfulFallback(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	meta := foundation.SourceMeta{
+		Source: "tencent:index", FetchedAt: time.Now(),
+		FallbackReason: "东方财富指数快照不可用，已切换腾讯行情",
+	}
+	tracker.fallback(meta)
+	tracker.success(meta)
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "eastmoney"); source.Status != "degraded" || source.OK {
+		t.Fatalf("failed primary was reported healthy: %+v", source)
+	}
+	if source := sourceByID(t, tracker.snapshot(time.Now()), "tencent"); source.Status != "available" || !source.OK {
+		t.Fatalf("successful fallback was not observed: %+v", source)
+	}
+}
+
+func TestSourceHealthMarksStaleFallbackWithoutFalseRecovery(t *testing.T) {
+	tracker := newSourceHealthTracker()
+	meta := foundation.SourceMeta{Source: "tencent:index", FetchedAt: time.Now()}
+	tracker.success(meta)
+	meta.Stale = true
+	meta.FallbackReason = "refresh failed"
+	tracker.cacheFailure(meta, "tencent")
+	tracker.success(meta)
+	entry := sourceByID(t, tracker.snapshot(time.Now()), "tencent")
+	if entry.OK || entry.Status != "degraded" || entry.LastSuccess == nil || entry.LastFailure == nil {
+		t.Fatalf("cached fallback reported healthy: %+v", entry)
+	}
+	tracker.success(foundation.SourceMeta{Source: "tencent:index", FetchedAt: time.Now().Add(time.Millisecond)})
+	if entry := sourceByID(t, tracker.snapshot(time.Now()), "tencent"); !entry.OK || entry.Status != "available" {
+		t.Fatalf("fresh fetch did not recover source: %+v", entry)
+	}
+}

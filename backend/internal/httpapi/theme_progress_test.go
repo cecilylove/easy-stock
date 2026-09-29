@@ -92,6 +92,79 @@ func TestProgressiveHTTPReturnsBeforeWorkAndPollingDoesNotRestart(t *testing.T) 
 	}
 }
 
+type observedThemeProgressProvider struct {
+	calls atomic.Int32
+}
+
+func (p *observedThemeProgressProvider) Overviews(context.Context) ([]foundation.ThemeOverview, foundation.SourceMeta, error) {
+	panic("progressive provider should be used")
+}
+
+func (p *observedThemeProgressProvider) ProgressiveOverviews(_ context.Context, publish func(foundation.ThemeProgress)) {
+	p.calls.Add(1)
+	at := time.Now()
+	publish(foundation.ThemeProgress{
+		Data:   []foundation.ThemeOverview{{Theme: "industry:bank", Name: "银行"}},
+		Steps:  map[string]string{"industry": "ready", "kaipanla": "error", "strength": "error"},
+		Errors: map[string]string{"kaipanla": "upstream unavailable"},
+		Observations: []foundation.SourceObservation{
+			{Meta: foundation.SourceMeta{Source: "tencent:industry-rank", FetchedAt: at}},
+			{SourceID: "duanxianxia", AttemptAt: at, Failed: true},
+		},
+	})
+}
+
+func TestProgressiveObservationsAreRecordedOncePerRefresh(t *testing.T) {
+	provider := &observedThemeProgressProvider{}
+	s := NewServer(Config{ThemeOverview: provider})
+	defer s.Close()
+	base := "/api/v1/themes/overview?delivery=progressive"
+	first := readProgress(t, s, base)
+	poll := base + "&refresh_id=" + first.RefreshID
+	deadline := time.Now().Add(2 * time.Second)
+	for readProgress(t, s, poll).Refreshing {
+		if time.Now().After(deadline) {
+			t.Fatal("progressive refresh did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	available := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "tencent")
+	failed := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "duanxianxia")
+	if available.Status != "available" || failed.Status != "degraded" || failed.LastFailure == nil {
+		t.Fatalf("progressive observations were lost: available=%+v failed=%+v", available, failed)
+	}
+	for i := 0; i < 3; i++ {
+		readProgress(t, s, poll)
+	}
+	current := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "duanxianxia")
+	if provider.calls.Load() != 1 || !current.LastFailure.Equal(*failed.LastFailure) {
+		t.Fatalf("polling renewed a provider failure: calls=%d before=%+v after=%+v", provider.calls.Load(), failed, current)
+	}
+}
+
+type observedPlainThemeProvider struct{}
+
+func (observedPlainThemeProvider) Overviews(context.Context) ([]foundation.ThemeOverview, foundation.SourceMeta, error) {
+	meta := foundation.SourceMeta{Source: "tencent:industry-rank", FetchedAt: time.Now()}
+	return []foundation.ThemeOverview{{Theme: "bank", Name: "银行"}}, meta, nil
+}
+
+func TestNonProgressiveThemeOverviewObservesReturnedSource(t *testing.T) {
+	s := NewServer(Config{ThemeOverview: observedPlainThemeProvider{}})
+	defer s.Close()
+	first := readProgress(t, s, "/api/v1/themes/overview?delivery=progressive")
+	deadline := time.Now().Add(2 * time.Second)
+	for readProgress(t, s, "/api/v1/themes/overview?delivery=progressive&refresh_id="+first.RefreshID).Refreshing {
+		if time.Now().After(deadline) {
+			t.Fatal("non-progressive overview did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if source := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "tencent"); source.Status != "available" {
+		t.Fatalf("plain theme provider did not publish its source: %+v", source)
+	}
+}
+
 func TestProgressiveCacheSurvivesRestart(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "radar.db")
 	provider := &gatedThemeProgress{release: make(chan struct{})}

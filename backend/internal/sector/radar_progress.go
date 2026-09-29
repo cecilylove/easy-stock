@@ -33,6 +33,7 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 	var industryMeta foundation.SourceMeta
 	var quotes map[string]foundation.Quote
 	var strengths map[string]themeStrengthScore
+	var observations []foundation.SourceObservation
 	emit := func(refreshing bool) {
 		industryItems := buildIndustryRadarOverviews(industries, industryMeta, p.now())
 		var kaipanlaItems []foundation.ThemeOverview
@@ -57,7 +58,8 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 		for key, value := range errors {
 			errorCopy[key] = value
 		}
-		publish(foundation.ThemeProgress{Data: items, Meta: meta, Stage: stage, Refreshing: refreshing, Steps: stepCopy, Errors: errorCopy})
+		publish(foundation.ThemeProgress{Data: items, Meta: meta, Stage: stage, Refreshing: refreshing, Steps: stepCopy, Errors: errorCopy, Observations: observations})
+		observations = nil
 	}
 	if cached, ok := p.source.(interface {
 		CachedSnapshot(context.Context) (duanxianxia.Snapshot, bool, error)
@@ -122,6 +124,24 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 			return
 		case e := <-events:
 			steps[e.step] = "ready"
+			if ctx.Err() == nil {
+				switch e.step {
+				case "industry":
+					if e.err == nil {
+						observations = append(observations, foundation.SourceObservation{Meta: e.meta})
+					} // No provider identity is available for a failed fusion.
+				case "kaipanla":
+					if e.fetchMeta.Refreshed && !e.snapshot.FetchedAt.IsZero() {
+						observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.snapshot.FetchedAt}})
+					}
+					if e.fetchMeta.PoolRefreshed && !e.fetchMeta.PoolFetchedAt.IsZero() {
+						observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.fetchMeta.PoolFetchedAt}})
+					}
+					if e.fetchMeta.Attempted && !e.fetchMeta.LastAttemptAt.IsZero() && e.fetchMeta.RefreshError != "" {
+						observations = append(observations, foundation.SourceObservation{SourceID: "duanxianxia", AttemptAt: time.Now(), Failed: true})
+					}
+				}
+			}
 			if e.err != nil {
 				steps[e.step] = "error"
 				errors[e.step] = e.err.Error()

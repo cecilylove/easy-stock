@@ -39,9 +39,13 @@ type Server struct {
 	mux                   *http.ServeMux
 	token                 string
 	realtimeProvider      RealtimeProvider
+	realtimeSourceID      string
 	kLinePrimary          KLineProvider
+	kLinePrimarySourceID  string
 	kLineFallback         KLineProvider
+	kLineFallbackSourceID string
 	newsProvider          NewsProvider
+	newsSourceID          string
 	sectorMap             SectorMapProvider
 	themeOverview         ThemeOverviewProvider
 	limitUpProvider       LimitUpProvider
@@ -52,6 +56,7 @@ type Server struct {
 	hotStockProvider      HotStockProvider
 	futuresPosition       FuturesPositionProvider
 	marketOverview        MarketOverviewProvider
+	marketFailureSourceID string
 	inflection            InflectionEvaluator
 	themeSnapshots        *themeSnapshotCache
 	limitUpSnapshots      *limitUpLadderCache
@@ -60,6 +65,7 @@ type Server struct {
 	stockDirectories      *stockDirectoryCache
 	hotStockRanks         *hotStockRankCache
 	marketSnapshots       *marketOverviewCache
+	sourceHealth          *sourceHealthTracker
 	marketEmotion         *marketEmotionEngine
 	marketEmotionIntraday *marketEmotionIntradayCache
 	reviewStore           *review.Store
@@ -95,17 +101,22 @@ func NewServer(config any) *Server {
 	eastMoneyClient := eastmoney.NewClient()
 	tencentClient := tencent.NewClient()
 	clsClient := cls.NewClient()
+	realtimeSourceID, primarySourceID, fallbackSourceID, newsSourceID := "", "", "", ""
 	if cfg.Realtime == nil {
 		cfg.Realtime = sinaClient
+		realtimeSourceID = "sina"
 	}
 	if cfg.KLinePrimary == nil {
 		cfg.KLinePrimary = eastMoneyClient
+		primarySourceID = "eastmoney"
 	}
 	if cfg.KLineFallback == nil {
 		cfg.KLineFallback = sinaClient
+		fallbackSourceID = "sina"
 	}
 	if cfg.News == nil {
 		cfg.News = clsClient
+		newsSourceID = "cls"
 	}
 	var kaipanlaService *duanxianxia.Service
 	if strings.TrimSpace(cfg.ThemeRadarDBPath) != "" {
@@ -139,8 +150,10 @@ func NewServer(config any) *Server {
 	if cfg.StockDirectory == nil {
 		cfg.StockDirectory = eastMoneyClient
 	}
+	marketFailureSourceID := ""
 	if cfg.MarketOverview == nil {
 		cfg.MarketOverview = marketoverviewprovider.New(eastMoneyClient, tencentClient, tencentClient, sinaClient)
+		marketFailureSourceID = "eastmoney"
 	}
 	if cfg.SectorMap == nil {
 		mapper := sector.NewMapper(
@@ -281,9 +294,13 @@ func NewServer(config any) *Server {
 		mux:                   http.NewServeMux(),
 		token:                 cfg.Token,
 		realtimeProvider:      cfg.Realtime,
+		realtimeSourceID:      realtimeSourceID,
 		kLinePrimary:          cfg.KLinePrimary,
+		kLinePrimarySourceID:  primarySourceID,
 		kLineFallback:         cfg.KLineFallback,
+		kLineFallbackSourceID: fallbackSourceID,
 		newsProvider:          cfg.News,
+		newsSourceID:          newsSourceID,
 		sectorMap:             cfg.SectorMap,
 		themeOverview:         cfg.ThemeOverview,
 		limitUpProvider:       cfg.LimitUp,
@@ -294,6 +311,7 @@ func NewServer(config any) *Server {
 		hotStockProvider:      cfg.HotStocks,
 		futuresPosition:       cfg.FuturesPosition,
 		marketOverview:        cfg.MarketOverview,
+		marketFailureSourceID: marketFailureSourceID,
 		inflection:            cfg.Inflection,
 		themeSnapshots:        newThemeSnapshotCache(30 * time.Second),
 		themeProgress:         newThemeProgressCache(),
@@ -303,6 +321,7 @@ func NewServer(config any) *Server {
 		stockDirectories:      newStockDirectoryCache(6 * time.Hour),
 		hotStockRanks:         newHotStockRankCache(2 * time.Minute),
 		marketSnapshots:       newMarketOverviewCache(45 * time.Second),
+		sourceHealth:          newSourceHealthTracker(),
 		marketEmotionIntraday: newMarketEmotionIntradayCache(marketEmotionIntradayTTL),
 		reviewStore:           cfg.ReviewStore,
 		portfolioStore:        cfg.PortfolioStore,
@@ -583,17 +602,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"sources": []foundation.SourceHealth{
-			{ID: "duanxianxia", Name: "短线侠 / 开盘啦", Category: "theme,leaders,limit-up,concept", OK: true, CheckedAt: time.Now()},
-			{ID: "eastmoney", Name: "东方财富", Category: "quote,kline,f10,report", OK: true, CheckedAt: time.Now()},
-			{ID: "sina", Name: "新浪财经", Category: "quote,kline,money-flow", OK: true, CheckedAt: time.Now()},
-			{ID: "tencent", Name: "腾讯财经", Category: "quote,index,hk", OK: true, CheckedAt: time.Now()},
-			{ID: "cls", Name: "财联社", Category: "news,calendar", OK: true, CheckedAt: time.Now()},
-			{ID: "tradingview", Name: "TradingView", Category: "news", OK: true, CheckedAt: time.Now()},
-			{ID: "tushare", Name: "Tushare", Category: "basic,daily,index", OK: false, Message: "requires token", CheckedAt: time.Now()},
-		},
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"sources": s.sourceHealth.snapshot(time.Now())})
 }
 
 func (s *Server) realtime(w http.ResponseWriter, r *http.Request) {
@@ -609,8 +618,14 @@ func (s *Server) realtime(w http.ResponseWriter, r *http.Request) {
 	}
 	quotes, err := s.realtimeProvider.Realtime(r.Context(), symbols)
 	if err != nil {
+		if shouldObserveFailure(r.Context()) {
+			s.sourceHealth.failure(s.realtimeSourceID, err)
+		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
+	}
+	for _, quote := range quotes {
+		s.sourceHealth.success(quote.Meta)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": quotes})
 }
@@ -709,11 +724,23 @@ func (s *Server) klineBatch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loadKLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error) {
 	lines, err := s.kLinePrimary.KLine(ctx, symbol, period, limit)
 	if err == nil {
+		for _, line := range lines {
+			s.sourceHealth.success(line.Meta)
+		}
 		return normalizeKLinePeriod(lines, period), nil
+	}
+	if shouldObserveFailure(ctx) {
+		s.sourceHealth.failure(s.kLinePrimarySourceID, err)
 	}
 	lines, err = s.kLineFallback.KLine(ctx, symbol, period, limit)
 	if err != nil {
+		if shouldObserveFailure(ctx) {
+			s.sourceHealth.failure(s.kLineFallbackSourceID, err)
+		}
 		return nil, err
+	}
+	for _, line := range lines {
+		s.sourceHealth.success(line.Meta)
 	}
 	return normalizeKLinePeriod(lines, period), nil
 }
@@ -783,8 +810,14 @@ func (s *Server) news(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.newsProvider.LatestNews(r.Context(), limit)
 	if err != nil {
+		if shouldObserveFailure(r.Context()) {
+			s.sourceHealth.failure(s.newsSourceID, err)
+		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
+	}
+	for _, item := range items {
+		s.sourceHealth.success(item.Meta)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items})
 }

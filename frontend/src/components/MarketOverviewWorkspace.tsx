@@ -42,6 +42,7 @@ import type {
 } from '../lib/backend';
 import { requestJSON } from '../lib/backend';
 import { formatFuturesOpeningHands } from '../lib/futures-position';
+import { sourceHealthCounts } from '../lib/source-health';
 import {
 	type MarketOverviewView,
 	buildMarketBillboardPrompt,
@@ -127,11 +128,12 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI }: Props) 
 		}
 		setPulseState('loading');
 		setPulseError('');
-		const [newsResult, themeResult, sourceResult] = await Promise.allSettled([
+		const [newsResult, themeResult] = await Promise.allSettled([
 			requestJSON<{ data: NewsItem[] }>(config, '/api/v1/market/news?source=cls&limit=30'),
 			requestJSON<{ data: ThemeOverview[]; meta: SourceMeta }>(config, '/api/v1/themes/overview'),
-			requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources'),
 		]);
+		// Read passive observations after the market requests, not before them.
+		const [sourceResult] = await Promise.allSettled([requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources')]);
 
 		let successes = 0;
 		const errors: string[] = [];
@@ -247,6 +249,24 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI }: Props) 
 		if (activeView === 'pulse') void loadPulse();
 		else void loadModule();
 	}, [activeView, loadModule, loadPulse, refreshKey]);
+
+	useEffect(() => {
+		if (!config || activeView !== 'pulse') return;
+		const abort = new AbortController();
+		let pending = false;
+		const refreshSources = () => {
+			if (pending) return;
+			pending = true;
+			void requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources', { signal: abort.signal })
+				.then(payload => { if (!abort.signal.aborted) setSources(payload.sources); })
+				.catch(() => {})
+				.finally(() => { pending = false; });
+		};
+		const timer = window.setInterval(() => {
+			if (document.visibilityState === 'visible') refreshSources();
+		}, 30_000);
+		return () => { window.clearInterval(timer); abort.abort(); };
+	}, [activeView, config]);
 
 	useEffect(() => {
 		if (!config || activeView !== 'core-indexes' || !selectedIndexID) return;
@@ -387,12 +407,12 @@ function uniqueBillboardItems(items: MarketBillboardItem[], limit: number) {
 }
 
 function PulseView({ news, themes, themeMeta, sources, state, error, lastUpdated }: { news: NewsItem[]; themes: ThemeOverview[]; themeMeta: SourceMeta | null; sources: SourceHealth[]; state: LoadState; error: string; lastUpdated: string }) {
-	const healthySources = sources.filter((source) => source.ok).length;
+	const sourceCounts = sourceHealthCounts(sources);
 	return <div className="market-pulse-view">
 		<section className="market-pulse-metrics">
 			<Metric icon={<Newspaper size={17} />} label="快讯样本" value={state === 'loading' ? '--' : String(news.length)} detail="财联社最新快讯" />
 			<Metric icon={<TrendingUp size={17} />} label="题材快照" value={state === 'loading' ? '--' : String(themes.length)} detail={themeMeta?.trade_date || '等待交易日'} />
-			<Metric icon={<Database size={17} />} label="数据源" value={sources.length ? `${healthySources}/${sources.length}` : '--'} detail="当前健康状态" />
+			<Metric icon={<Database size={17} />} label="数据源" value={sources.length ? `${sourceCounts.available}/${sources.length}` : '--'} detail={`${sourceCounts.degraded} 失败 · ${sourceCounts.unknown} 未检测 · ${sourceCounts.unconfigured} 未接入（最近观测）`} />
 			<Metric icon={<Clock3 size={17} />} label="最近刷新" value={lastUpdated ? formatTime(lastUpdated) : '--'} detail={themeMeta?.stale ? '题材数据已标记陈旧' : '本机聚合时间'} />
 		</section>
 		{error && <div className="market-partial-warning"><AlertTriangle size={15} /><span>{error}。已展示其余可用数据。</span></div>}

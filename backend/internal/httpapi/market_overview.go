@@ -48,7 +48,7 @@ func (c *marketOverviewCache) store(key string, value any, meta foundation.Sourc
 	c.mu.Unlock()
 }
 
-func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, key string, loader func(context.Context) (T, foundation.SourceMeta, error)) (T, foundation.SourceMeta, error) {
+func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, health *sourceHealthTracker, key string, loader func(context.Context) (T, foundation.SourceMeta, error), failureSource ...string) (T, foundation.SourceMeta, error) {
 	var zero T
 	if cached, ok := cache.fresh(key); ok {
 		if value, typeOK := cached.value.(T); typeOK {
@@ -57,6 +57,12 @@ func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, 
 	}
 	value, meta, err := loader(ctx)
 	if err == nil {
+		// Only the loader ran an actual request. A cache hit must not renew a
+		// previous fallback failure or make a stale snapshot look fresh.
+		if shouldObserveFailure(ctx) {
+			health.fallback(meta)
+			health.success(meta)
+		}
 		cache.store(key, value, meta)
 		return value, meta, nil
 	}
@@ -64,8 +70,14 @@ func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, 
 		if stale, typeOK := cached.value.(T); typeOK {
 			cached.meta.Stale = true
 			cached.meta.FallbackReason = "实时数据刷新失败，已返回最近一次成功快照：" + err.Error()
+			if shouldObserveFailure(ctx) && len(failureSource) > 0 {
+				health.cacheFailure(cached.meta, failureSource[0])
+			}
 			return stale, cached.meta, nil
 		}
+	}
+	if shouldObserveFailure(ctx) && len(failureSource) > 0 {
+		health.failure(failureSource[0], err)
 	}
 	return zero, foundation.SourceMeta{}, err
 }
@@ -96,7 +108,7 @@ func (s *Server) marketIndexSeriesHandler(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	key := fmt.Sprintf("index-series:%s:%s:%d", id, period, limit)
-	series, meta, err := loadMarketOverview(ctx, s.marketSnapshots, key, func(loadCtx context.Context) (foundation.MarketIndexSeries, foundation.SourceMeta, error) {
+	series, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketIndexSeries, foundation.SourceMeta, error) {
 		value, loadErr := s.marketOverview.MarketIndexSeries(loadCtx, id, period, limit)
 		return value, value.Meta, loadErr
 	})
@@ -149,7 +161,7 @@ func (s *Server) marketMarginBalanceHandler(w http.ResponseWriter, r *http.Reque
 	}
 	marketOverviewList(s, w, r, fmt.Sprintf("margin-balance:%d", limit), func(ctx context.Context) ([]foundation.MarketMarginPoint, foundation.SourceMeta, error) {
 		return s.marketOverview.MarketMarginSeries(ctx, limit)
-	})
+	}, s.marketFailureSourceID)
 }
 
 func (s *Server) marketBillboardHandler(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +179,7 @@ func (s *Server) marketBillboardHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	marketOverviewList(s, w, r, fmt.Sprintf("billboard:%s:%d", tradeDate, limit), func(ctx context.Context) ([]foundation.MarketBillboardItem, foundation.SourceMeta, error) {
 		return s.marketOverview.MarketBillboard(ctx, tradeDate, limit)
-	})
+	}, s.marketFailureSourceID)
 }
 
 func (s *Server) marketBillboardDetailHandler(w http.ResponseWriter, r *http.Request) {
@@ -189,9 +201,9 @@ func (s *Server) marketBillboardDetailHandler(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	key := fmt.Sprintf("billboard-detail:%s:%s:%s", symbol, tradeDate, reason)
-	detail, meta, err := loadMarketOverview(ctx, s.marketSnapshots, key, func(loadCtx context.Context) (foundation.MarketBillboardDetail, foundation.SourceMeta, error) {
+	detail, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketBillboardDetail, foundation.SourceMeta, error) {
 		return s.marketOverview.MarketBillboardDetail(loadCtx, symbol, tradeDate, reason)
-	})
+	}, s.marketFailureSourceID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -214,7 +226,7 @@ func (s *Server) marketFuturesPositionHandler(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	key := fmt.Sprintf("futures-position:%s:%d", variety, limit)
-	series, meta, err := loadMarketOverview(ctx, s.marketSnapshots, key, func(loadCtx context.Context) (foundation.MarketFuturesPositionSeries, foundation.SourceMeta, error) {
+	series, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesPositionSeries, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Trend(loadCtx, variety, limit)
 		return value, value.Meta, loadErr
 	})
@@ -244,7 +256,7 @@ func (s *Server) marketFuturesMembersHandler(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	key := fmt.Sprintf("futures-members:%s:%s", contract, tradeDate)
-	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, key, func(loadCtx context.Context) (foundation.MarketFuturesMembers, foundation.SourceMeta, error) {
+	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesMembers, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Members(loadCtx, contract, tradeDate)
 		return value, value.Meta, loadErr
 	})
@@ -271,7 +283,7 @@ func (s *Server) marketFuturesConsensusHandler(w http.ResponseWriter, r *http.Re
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	key := "futures-consensus:" + tradeDate
-	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, key, func(loadCtx context.Context) (foundation.MarketFuturesConsensus, foundation.SourceMeta, error) {
+	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesConsensus, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Consensus(loadCtx, tradeDate)
 		return value, value.Meta, loadErr
 	})
@@ -294,7 +306,7 @@ func (s *Server) marketAnnouncementsHandler(w http.ResponseWriter, r *http.Reque
 	}
 	marketOverviewList(s, w, r, fmt.Sprintf("announcements:%s:%s:%s:%d", query, symbol, category, limit), func(ctx context.Context) ([]foundation.MarketResearchItem, foundation.SourceMeta, error) {
 		return s.marketOverview.MarketAnnouncements(ctx, query, symbol, category, limit)
-	})
+	}, s.marketFailureSourceID)
 }
 
 func (s *Server) marketInstitutionReportsHandler(w http.ResponseWriter, r *http.Request) {
@@ -316,17 +328,17 @@ func (s *Server) marketReportsHandler(w http.ResponseWriter, r *http.Request, ki
 	}
 	marketOverviewList(s, w, r, fmt.Sprintf("reports:%s:%s:%s:%s:%d", kind, query, symbol, industry, limit), func(ctx context.Context) ([]foundation.MarketResearchItem, foundation.SourceMeta, error) {
 		return s.marketOverview.MarketReports(ctx, kind, query, symbol, industry, limit)
-	})
+	}, s.marketFailureSourceID)
 }
 
-func marketOverviewList[T any](s *Server, w http.ResponseWriter, r *http.Request, key string, loader func(context.Context) (T, foundation.SourceMeta, error)) {
+func marketOverviewList[T any](s *Server, w http.ResponseWriter, r *http.Request, key string, loader func(context.Context) (T, foundation.SourceMeta, error), failureSource ...string) {
 	if s.marketOverview == nil {
 		writeError(w, http.StatusServiceUnavailable, "market overview provider is unavailable")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, key, loader)
+	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, loader, failureSource...)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

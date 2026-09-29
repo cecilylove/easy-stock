@@ -247,8 +247,11 @@ export type SourceHealth = {
   name: string;
   category: string;
   ok: boolean;
+  status: 'available' | 'degraded' | 'unknown' | 'unconfigured';
   message?: string;
-  checked_at: string;
+  checked_at?: string;
+  last_success?: string;
+  last_failure?: string;
 };
 
 export type SourceMeta = {

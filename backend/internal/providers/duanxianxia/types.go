@@ -74,5 +74,8 @@ type FetchMeta struct {
 	LastSuccessAt time.Time
 	RefreshError  string
 	Refreshed     bool
+	PoolRefreshed bool
+	PoolFetchedAt time.Time
 	FromCache     bool
+	Attempted     bool // This call reserved a new upstream refresh, not a gated cache read.
 }

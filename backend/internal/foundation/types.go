@@ -56,12 +56,15 @@ type NewsItem struct {
 }
 
 type SourceHealth struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Category  string    `json:"category"`
-	OK        bool      `json:"ok"`
-	Message   string    `json:"message,omitempty"`
-	CheckedAt time.Time `json:"checked_at"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Category    string     `json:"category"`
+	OK          bool       `json:"ok"`
+	Status      string     `json:"status"`
+	Message     string     `json:"message,omitempty"`
+	CheckedAt   *time.Time `json:"checked_at,omitempty"`
+	LastSuccess *time.Time `json:"last_success,omitempty"`
+	LastFailure *time.Time `json:"last_failure,omitempty"`
 }
 
 type Board struct {

@@ -70,6 +70,9 @@ func (s *Server) refreshThemeProgress(ctx context.Context, id string, done chan 
 		}
 		items, meta, err := s.themeOverview.Overviews(ctx)
 		value := foundation.ThemeProgress{Data: items, Meta: meta, Stage: "enriched", Steps: map[string]string{"overview": "ready"}, Errors: map[string]string{}}
+		if err == nil && ctx.Err() == nil {
+			value.Observations = []foundation.SourceObservation{{Meta: meta}}
+		}
 		if err != nil {
 			value.Steps["overview"] = "error"
 			value.Errors["overview"] = err.Error()
@@ -82,6 +85,10 @@ func (s *Server) refreshThemeProgress(ctx context.Context, id string, done chan 
 		if c.closed || c.value.RefreshID != id {
 			return
 		}
+		for _, observation := range value.Observations {
+			s.sourceHealth.observe(observation)
+		}
+		value.Observations = nil
 		if len(value.Data) == 0 && len(c.value.Data) > 0 {
 			value.Data = c.value.Data
 			value.Meta = c.value.Meta

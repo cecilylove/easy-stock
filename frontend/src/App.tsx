@@ -68,6 +68,7 @@ import { StockAIAnalysisWorkspace, StockAIWorkspaceMode } from './components/Sto
 import { PortfolioInspectionWorkspace } from './components/PortfolioInspectionWorkspace';
 import { TokenUsageWorkspace } from './components/TokenUsageWorkspace';
 import { logRuntimeEvent } from './lib/runtime-log';
+import { sourceHealthCounts, sourceHealthDetail, sourceHealthLabel } from './lib/source-health';
 import { useTheme } from './lib/theme';
 import { useLimitUpWorkspace } from './lib/use-limit-up-workspace';
 import { useThemeOverview } from './lib/use-theme-overview';
@@ -106,6 +107,7 @@ export function App() {
 	const [selectedSymbol, setSelectedSymbol] = useState('');
 	const [liveQuotes, setLiveQuotes] = useState<QuoteLookup>({});
 	const [sources, setSources] = useState<SourceHealth[]>([]);
+	const sourceCounts = sourceHealthCounts(sources);
 	const [news, setNews] = useState<NewsItem[]>([]);
 	const [streamStatus, setStreamStatus] = useState('实时流待命');
 	const [configError, setConfigError] = useState('');
@@ -217,12 +219,23 @@ export function App() {
 	useEffect(() => {
 		if (!config || workspaceMode !== 'themes') return;
 		const abort = new AbortController();
-		setSourcesError('');
-		void requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources', { signal: abort.signal })
-			.then(payload => { if (!abort.signal.aborted) setSources(payload.sources); })
-			.catch(() => { if (!abort.signal.aborted) setSourcesError('数据源状态暂不可用'); });
-		return () => abort.abort();
-	}, [config, workspaceMode, themeRefreshKey, sourcesRetryKey]);
+		let pending = false;
+		const refreshSources = () => {
+			if (pending) return;
+			pending = true;
+			void requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources', { signal: abort.signal })
+				.then(payload => { if (!abort.signal.aborted) { setSources(payload.sources); setSourcesError(''); } })
+				.catch(() => { if (!abort.signal.aborted) setSourcesError('数据源状态暂不可用'); })
+				.finally(() => { pending = false; });
+		};
+		refreshSources();
+		// The catalog is read-only. Recheck it while this page is visible so
+		// WebSocket observations and ten-minute expiry reach the UI.
+		const timer = window.setInterval(() => {
+			if (document.visibilityState === 'visible') refreshSources();
+		}, 30_000);
+		return () => { window.clearInterval(timer); abort.abort(); };
+	}, [config, workspaceMode, themeRefreshKey, sourcesRetryKey, overview.fetching]);
 
 	useEffect(() => {
 		if (!config || workspaceMode !== 'themes') return;
@@ -448,22 +461,22 @@ export function App() {
 				<div
 					className="source-health-summary"
 					tabIndex={0}
-					aria-label={`数据源状态，${sources.filter((source) => source.ok).length} 个正常，${sources.filter((source) => !source.ok).length} 个异常`}
+					aria-label={`数据源最近观测，${sourceCounts.available} 个可用，${sourceCounts.degraded} 个失败，${sourceCounts.unknown} 个未检测，${sourceCounts.unconfigured} 个未接入`}
 				>
 					<Database size={16} aria-hidden="true" />
 					<span>数据源</span>
-					<strong>{sources.filter((source) => source.ok).length}/{sources.length || '--'}</strong>
+					<strong>{sourceCounts.available}/{sources.length || '--'}</strong>
 					<div className="source-health-popover" role="tooltip">
 						<header>
-							<div><strong>数据源状态</strong><span>查看当前可用情况</span></div>
-							<em>{sources.filter((source) => source.ok).length} 正常 · {sources.filter((source) => !source.ok).length} 异常</em>
+							<div><strong>数据源最近观测</strong><span>来自实际请求，不主动探测上游</span></div>
+							<em>{sourceCounts.available} 可用 · {sourceCounts.degraded} 失败 · {sourceCounts.unknown} 未检测 · {sourceCounts.unconfigured} 未接入</em>
 						</header>
 						<div className="source-health-list">
 							{sources.map((source) => (
-								<div className={source.ok ? 'healthy' : 'unhealthy'} key={source.id}>
+								<div className={source.status} key={source.id} title={sourceHealthDetail(source)}>
 									<i aria-hidden="true" />
 									<span><strong>{source.name}</strong><small>{sourceCategoryLabel(source.category)}</small></span>
-									<em>{source.ok ? '正常' : sourceHealthMessage(source.message)}</em>
+									<em>{sourceHealthLabel(source)}</em>
 								</div>
 							))}
 							{!sources.length && !sourcesError && <p>数据源状态加载中…</p>}
@@ -935,12 +948,6 @@ function sourceCategoryLabel(category: string) {
 		daily: '日线',
 	};
 	return category.split(',').map((item) => labels[item.trim()] || item.trim()).filter(Boolean).join(' · ');
-}
-
-function sourceHealthMessage(message?: string) {
-	if (!message) return '异常';
-	if (message === 'requires token') return '需要 Token';
-	return message;
 }
 
 function formatSourceStrength(value?: number) {

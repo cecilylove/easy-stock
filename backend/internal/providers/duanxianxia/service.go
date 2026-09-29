@@ -87,7 +87,7 @@ func (s *Service) Snapshots(ctx context.Context, limit int) ([]Snapshot, FetchMe
 	if err != nil {
 		return nil, FetchMeta{}, err
 	}
-	meta := fetchMeta(result.state, result.themeRefreshed, len(snapshots) > 0 && !result.themeRefreshed, result.refreshError)
+	meta := fetchMeta(result.state, result.themeRefreshed, len(snapshots) > 0 && !result.themeRefreshed, result.refreshError, result.attempted, result.poolRefreshed, result.poolFetchedAt)
 	if len(snapshots) > 0 {
 		return snapshots, meta, nil
 	}
@@ -123,7 +123,7 @@ func (s *Service) LimitUpPools(ctx context.Context, limit int) ([]LimitUpPoolSna
 	if err != nil {
 		return nil, FetchMeta{}, err
 	}
-	meta := fetchMeta(result.state, result.poolRefreshed, len(pools) > 0 && !result.poolRefreshed, result.refreshError)
+	meta := fetchMeta(result.state, result.poolRefreshed, len(pools) > 0 && !result.poolRefreshed, result.refreshError, result.attempted, result.poolRefreshed, result.poolFetchedAt)
 	if len(pools) > 0 {
 		return pools, meta, nil
 	}
@@ -135,8 +135,10 @@ func (s *Service) LimitUpPools(ctx context.Context, limit int) ([]LimitUpPoolSna
 
 type serviceRefreshResult struct {
 	state          SyncState
+	attempted      bool
 	themeRefreshed bool
 	poolRefreshed  bool
+	poolFetchedAt  time.Time
 	themeError     error
 	poolError      error
 	refreshError   string
@@ -186,7 +188,7 @@ func (s *Service) refreshLocked(ctx context.Context) (serviceRefreshResult, erro
 	}
 	wg.Wait()
 
-	result := serviceRefreshResult{themeError: themeErr, poolError: poolErr}
+	result := serviceRefreshResult{attempted: true, themeError: themeErr, poolError: poolErr}
 	if themeErr == nil {
 		if theme.FetchedAt.IsZero() {
 			theme.FetchedAt = now
@@ -200,6 +202,9 @@ func (s *Service) refreshLocked(ctx context.Context) (serviceRefreshResult, erro
 		result.themeRefreshed = true
 	}
 	result.poolRefreshed = s.poolClient != nil && poolErr == nil
+	if result.poolRefreshed {
+		result.poolFetchedAt = pool.FetchedAt
+	}
 
 	errors := []string{}
 	if themeErr != nil {
@@ -224,14 +229,17 @@ func (s *Service) SnapshotByID(ctx context.Context, id string) (Snapshot, bool, 
 	return s.store.Get(ctx, id)
 }
 
-func fetchMeta(state SyncState, refreshed bool, fromCache bool, refreshError string) FetchMeta {
+func fetchMeta(state SyncState, refreshed bool, fromCache bool, refreshError string, attempted bool, poolRefreshed bool, poolFetchedAt time.Time) FetchMeta {
 	return FetchMeta{
 		LastAttemptAt: state.LastAttemptAt,
 		NextAllowedAt: state.NextAllowedAt,
 		LastSuccessAt: state.LastSuccessAt,
 		RefreshError:  refreshError,
 		Refreshed:     refreshed,
+		PoolRefreshed: poolRefreshed,
+		PoolFetchedAt: poolFetchedAt,
 		FromCache:     fromCache,
+		Attempted:     attempted,
 	}
 }
 
