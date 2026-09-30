@@ -97,7 +97,7 @@ export function AIChatWorkspace({ config, refreshKey, initialPrompt, initialAnal
 	const [clarifyDraft, setClarifyDraft] = useState('');
 	const abortRef = useRef<AbortController | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-	const messageEndRef = useRef<HTMLDivElement | null>(null);
+	const messageStageRef = useRef<HTMLDivElement | null>(null);
 	const modelMessageTimerRef = useRef<number | null>(null);
 
 	const activeConversation = useMemo(
@@ -119,8 +119,10 @@ export function AIChatWorkspace({ config, refreshKey, initialPrompt, initialAnal
 	}, [conversations]);
 
 	useEffect(() => {
-		messageEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-	}, [activeConversation?.messages.length, sending]);
+		if (!activeConversation?.messages.length) return;
+		const stage = messageStageRef.current;
+		stage?.scrollTo({ top: stage.scrollHeight, behavior: 'smooth' });
+	}, [activeID, activeConversation?.messages.length, sending]);
 
 	useEffect(() => {
 		const prompt = initialPrompt?.trim();
@@ -455,7 +457,7 @@ export function AIChatWorkspace({ config, refreshKey, initialPrompt, initialAnal
 		<section className="ai-chat-workspace">
 			<aside className="ai-thread-rail">
 				<header><div><span>AI WORKSPACE</span><strong>对话记录</strong></div><button type="button" onClick={newConversation} title="新建对话"><MessageSquarePlus size={17} /></button></header>
-				<div className="ai-thread-list">
+				<div className="ai-thread-list" role="region" aria-label="对话列表" tabIndex={0}>
 					{conversations.map((conversation) => (
 						<button type="button" className={conversation.id === activeID ? 'active' : ''} onClick={() => setActiveID(conversation.id)} key={conversation.id}>
 							<PanelLeft size={14} />
@@ -474,7 +476,7 @@ export function AIChatWorkspace({ config, refreshKey, initialPrompt, initialAnal
 					<div><strong>{activeConversation?.title || 'AI 研究助手'}</strong><span className={modelSwitchState === 'error' ? 'error' : modelState}>{modelSwitchMessage || modelLabel}</span></div>
 				</header>
 
-				<div className={`ai-message-stage ${activeConversation?.messages.length ? 'has-messages' : ''}`}>
+				<div ref={messageStageRef} className={`ai-message-stage ${activeConversation?.messages.length ? 'has-messages' : ''}`} role="region" aria-label="对话内容" tabIndex={0}>
 					{!activeConversation?.messages.length ? (
 						<div className="ai-welcome">
 							<div className="ai-welcome-mark"><Bot size={28} /></div>
@@ -500,7 +502,6 @@ export function AIChatWorkspace({ config, refreshKey, initialPrompt, initialAnal
 								</article>
 								);
 							})}
-							<div ref={messageEndRef} />
 						</div>
 					)}
 				</div>

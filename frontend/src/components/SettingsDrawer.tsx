@@ -424,9 +424,10 @@ export function SettingsDrawer({ config, open, onClose, onSaved }: Props) {
 			setState('saved');
 			setMessage('设置已同步到本机 Hermes');
 			onSaved?.();
+			onClose();
 		} catch (error) {
 			setState('error');
-			setMessage(error instanceof Error ? error.message : '保存设置失败');
+			setMessage(error instanceof Error ? `保存失败：${error.message}` : '保存失败');
 		}
 	};
 
@@ -552,7 +553,7 @@ export function SettingsDrawer({ config, open, onClose, onSaved }: Props) {
 						</section>
 
 						<footer className="settings-footer">
-							<div className={`settings-message ${state}`}>{state === 'saved' && <CheckCircle2 size={15} />}{state === 'error' && <KeyRound size={15} />}<span>{message || '留空的模型密钥会保留 Hermes .env 中的现有值。'}</span></div>
+							<div className={`settings-message ${state}`} role={state === 'error' ? 'alert' : 'status'}>{state === 'saved' && <CheckCircle2 size={15} />}{state === 'error' && <CircleAlert size={15} />}<span>{message || '留空的模型密钥会保留 Hermes .env 中的现有值。'}</span></div>
 							<button type="button" onClick={onClose}>取消</button>
 							<button type="submit" className="settings-save" disabled={!config || state === 'saving' || testState === 'testing'}>{state === 'saving' ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}保存设置</button>
 						</footer>
