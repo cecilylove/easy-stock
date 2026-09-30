@@ -26,12 +26,14 @@ import { AppSettings, BackendConfig, BrowserAuthStatus, LLMConnectionTestResult,
 import { llmProviderDefinition, llmProviders } from '../lib/llm-providers';
 import { AppUpdatePanel } from './AppUpdatePanel';
 import { HermesAgentSettingsPanel } from './HermesAgentSettingsPanel';
+import { SourceIntegrationCatalog } from './SourceIntegrationCatalog';
 
 type Props = {
 	config: BackendConfig | null;
 	open: boolean;
 	onClose: () => void;
 	onSaved?: () => void;
+	initialSection?: 'data-sources';
 };
 
 type SecretKey = 'llm_api_key' | 'tushare_token' | 'ths_cookie' | 'xueqiu_cookie' | 'eastmoney_cookie' | 'wechat_api_token';
@@ -51,7 +53,7 @@ const emptySecrets = (): Record<SecretKey, string> => ({
 	wechat_api_token: '',
 });
 
-export function SettingsDrawer({ config, open, onClose, onSaved }: Props) {
+export function SettingsDrawer({ config, open, onClose, onSaved, initialSection }: Props) {
 	const [settings, setSettings] = useState<AppSettings | null>(null);
 	const [llmProfiles, setLLMProfiles] = useState<LLMProfile[]>([]);
 	const [activeLLMProfileID, setActiveLLMProfileID] = useState('');
@@ -83,6 +85,16 @@ export function SettingsDrawer({ config, open, onClose, onSaved }: Props) {
 	const [runtimeLogStatus, setRuntimeLogStatus] = useState<RuntimeLogStatus | null>(null);
 	const [openingRuntimeLogs, setOpeningRuntimeLogs] = useState(false);
 	const modelFetchSequence = useRef(0);
+	const dataSourcesRef = useRef<HTMLElement | null>(null);
+	const sourceSectionFocused = useRef(false);
+	useEffect(() => {
+		if (!open || state === 'loading') { sourceSectionFocused.current = false; return; }
+		if (initialSection === 'data-sources' && settings && !sourceSectionFocused.current && dataSourcesRef.current) {
+			sourceSectionFocused.current = true;
+			dataSourcesRef.current.scrollIntoView({ block: 'start' });
+			dataSourcesRef.current.focus({ preventScroll: true });
+		}
+	}, [initialSection, open, settings, state]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -530,16 +542,12 @@ export function SettingsDrawer({ config, open, onClose, onSaved }: Props) {
 							<p className="settings-field-note">雪球和淘股吧通过内置浏览器保存独立登录态；微信公众号扫码仅用于解析已知文章链接，历史文章列表接口已停用，暂不提供自动订阅。所有登录凭据仅保存在本机。</p>
 						</section>
 
-						<section className="settings-section">
-							<div className="settings-section-title"><Database size={18} /><div><h3>行情与内容数据源</h3><p>现有公共接口继续直接使用；以下凭据为增强数据与后续接入准备。</p></div></div>
-							<div className="public-source-status">
-								<span><CheckCircle2 size={14} />东方财富：公共行情已接入</span>
-								<span><CheckCircle2 size={14} />新浪财经：公共行情已接入</span>
-								<span><CheckCircle2 size={14} />财联社：公开资讯已接入</span>
-							</div>
-							<SecretField label="Tushare Pro Token" secretKey="tushare_token" status={settings?.credentials.tushare_token} value={secrets.tushare_token} clearing={clearSecrets.has('tushare_token')} onChange={updateSecret} onClear={toggleClear} hint="预留：基础数据、指数和日线增强" />
-							<SecretField label="同花顺 Cookie / Token" secretKey="ths_cookie" status={settings?.credentials.ths_cookie} value={secrets.ths_cookie} clearing={clearSecrets.has('ths_cookie')} onChange={updateSecret} onClear={toggleClear} hint="预留：涨停原因与题材催化数据" />
-							<SecretField label="东方财富 Cookie" secretKey="eastmoney_cookie" status={settings?.credentials.eastmoney_cookie} value={secrets.eastmoney_cookie} clearing={clearSecrets.has('eastmoney_cookie')} onChange={updateSecret} onClear={toggleClear} hint="当前公共行情不需要，预留登录态接口" />
+						<section className="settings-section" ref={dataSourcesRef} tabIndex={-1} aria-label="行情与内容数据源">
+							<div className="settings-section-title"><Database size={18} /><div><h3>行情与内容数据源</h3><p>查看全部来源的接入方式；凭据配置与数据服务实现分开管理。</p></div></div>
+							<SourceIntegrationCatalog />
+							<SecretField label="Tushare Pro Token（预留，未启用）" secretKey="tushare_token" status={settings?.credentials.tushare_token} value={secrets.tushare_token} clearing={clearSecrets.has('tushare_token')} onChange={updateSecret} onClear={toggleClear} hint="仅保存凭据；当前未实现 Tushare 取数和失败回退，填写后不会自动接入。" />
+							<SecretField label="同花顺 Cookie / Token（预留，未启用）" secretKey="ths_cookie" status={settings?.credentials.ths_cookie} value={secrets.ths_cookie} clearing={clearSecrets.has('ths_cookie')} onChange={updateSecret} onClear={toggleClear} hint="仅保存凭据；当前未实现同花顺取数，填写后不会参与题材聚合。" />
+							<SecretField label="东方财富 Cookie（增强接口预留）" secretKey="eastmoney_cookie" status={settings?.credentials.eastmoney_cookie} value={secrets.eastmoney_cookie} clearing={clearSecrets.has('eastmoney_cookie')} onChange={updateSecret} onClear={toggleClear} hint="现有公共行情无需 Cookie；此字段不会改变公共接口的可用性和回退逻辑。" />
 						</section>
 
 						<AppUpdatePanel />

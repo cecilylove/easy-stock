@@ -1,5 +1,6 @@
 import { KLine } from '../lib/backend';
 import { type MouseEvent, useState } from 'react';
+import { useChartViewport } from '../lib/use-chart-viewport';
 
 type Props = {
 	lines: KLine[];
@@ -7,6 +8,7 @@ type Props = {
 	state?: 'loading' | 'ready' | 'error' | 'idle';
 	mode?: 'intraday' | 'daily';
 	periodLabel?: string;
+	fluid?: boolean;
 };
 
 function formatTime(value: string, mode: 'intraday' | 'daily', periodLabel: string) {
@@ -55,20 +57,22 @@ function intradayLimitPercent(symbol = '') {
 	return 10;
 }
 
-export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', periodLabel = '日K' }: Props) {
+export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', periodLabel = '日K', fluid = false }: Props) {
 	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+	const { containerRef, width: containerWidth, scrollable } = useChartViewport(fluid && state !== 'loading' && lines.length > 0);
 	if (state === 'loading') return <div className="kline-chart-placeholder">正在加载{periodLabel}数据…</div>;
 	if (!lines.length) return <div className="kline-chart-placeholder">{state === 'error' ? `${periodLabel}数据暂不可用，请稍后重试。` : `暂无${periodLabel}数据。`}</div>;
 
 	const sorted = [...lines].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
-	const width = 960;
-	const height = 430;
+	const showTradingDays = fluid && mode === 'intraday' && periodLabel === '5日';
+	const width = fluid ? containerWidth : 960;
+	const height = fluid ? 400 : 430;
 	const left = 68;
 	const right = 84;
 	const chartTop = 20;
-	const chartBottom = 316;
-	const volumeTop = 338;
-	const volumeBottom = 388;
+	const chartBottom = height - 114;
+	const volumeTop = height - 92;
+	const volumeBottom = height - 42;
 	const plotWidth = width - left - right;
 	const minPrice = Math.min(...sorted.map((line) => line.low));
 	const maxPrice = Math.max(...sorted.map((line) => line.high));
@@ -79,7 +83,8 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 		? suppliedPreviousClose
 		: sorted[0].close > 0 ? sorted[0].close : Math.max(minPrice, 0.01);
 	const percentChange = (value: number) => ((value - referencePrice) / referencePrice) * 100;
-	const percentRange = mode === 'intraday' ? intradayLimitPercent(symbol) : Math.max(
+	// A multi-day change can exceed a stock's single-day limit; do not flatten it.
+	const percentRange = mode === 'intraday' && !showTradingDays ? intradayLimitPercent(symbol) : Math.max(
 		5,
 		Math.ceil((Math.max(...sorted.flatMap((line) => [Math.abs(percentChange(line.high)), Math.abs(percentChange(line.low))]), 1) * 1.08) / 5) * 5,
 	);
@@ -95,6 +100,15 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 	const percentTicks = Array.from({ length: 7 }, (_, index) => percentRange - (percentRange * 2 * index) / 6);
 	const labelIndexes = sorted.length <= 5 ? sorted.map((_, index) => index) : [0, Math.floor((sorted.length - 1) / 2), sorted.length - 1];
 	const dayKey = (value: string) => value.slice(0, 10);
+	const tradingDays: { day: string; start: number; end: number; time: string }[] = [];
+	if (showTradingDays) {
+		for (const [index, line] of sorted.entries()) {
+			const day = dayKey(line.time);
+			const group = tradingDays.at(-1);
+			if (group?.day === day) group.end = index;
+			else tradingDays.push({ day, start: index, end: index, time: line.time });
+		}
+	}
 	const intradayBaselines: Array<number | null> = [];
 	let currentDay = '';
 	let previousClose: number | null = null;
@@ -140,11 +154,14 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 	};
 	const linePath = sorted.map((line, index) => {
 		const x = left + index * step + step / 2;
-		return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${priceY(line.close).toFixed(2)}`;
+		const newDay = showTradingDays && index > 0 && dayKey(line.time) !== dayKey(sorted[index - 1].time);
+		return `${index === 0 || newDay ? 'M' : 'L'} ${x.toFixed(2)} ${priceY(line.close).toFixed(2)}`;
 	}).join(' ');
 
 	return (
-		<div className={`kline-chart-wrap ${mode === 'intraday' ? 'intraday-chart' : 'daily-chart'}`}>
+		<div className={`kline-chart-wrap ${fluid ? 'kline-chart-fluid' : ''} ${mode === 'intraday' ? 'intraday-chart' : 'daily-chart'}`}>
+			{fluid && scrollable && <p className="stock-detail-chart-scroll-hint">左右滑动查看完整图表。</p>}
+			<div ref={containerRef} className="kline-plot-scroll">
 			<svg className="kline-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${periodLabel}价格、涨跌幅和成交量图`}>
 				{percentTicks.map((tick) => {
 					const y = percentY(tick);
@@ -154,6 +171,7 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 					return <g key={tick}><line className={`kline-grid ${isZero ? 'kline-zero-grid' : ''}`} x1={left} x2={width - right} y1={y} y2={y} /><text className="kline-percent-axis-label" x={left - 9} y={y + 4} textAnchor="end">{percentLabel}</text><text className="kline-axis-label" x={width - right + 9} y={y + 4}>{price.toFixed(2)}</text></g>;
 				})}
 				<line className="kline-divider" x1={left} x2={width - right} y1={volumeTop - 12} y2={volumeTop - 12} />
+				{tradingDays.slice(1).map(day => <line key={day.day} className="kline-session-divider" x1={left + day.start * step} x2={left + day.start * step} y1={chartTop} y2={volumeBottom} />)}
 				{mode === 'intraday' ? (
 					<>
 						<path className="kline-close-line" d={linePath} />
@@ -179,7 +197,7 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 					const change = barChangePercent(index);
 					return <g className={rising ? 'kline-up' : 'kline-down'} key={`${line.time}-${index}`}><title>{`${formatLongDate(line.time)} 开 ${line.open.toFixed(2)} 高 ${line.high.toFixed(2)} 低 ${line.low.toFixed(2)} 收 ${line.close.toFixed(2)}（${change >= 0 ? '+' : ''}${change.toFixed(2)}%）成交量 ${formatVolume(line.volume)}`}</title><line className="kline-wick" x1={x} x2={x} y1={priceY(line.high)} y2={priceY(line.low)} /><rect className="kline-body" x={x - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={Math.max(bodyBottom - bodyTop, 1.5)} /><rect className="kline-volume" x={x - bodyWidth / 2} y={barTop} width={bodyWidth} height={volumeBottom - barTop} /></g>;
 				})}
-				{labelIndexes.map((index) => {
+				{showTradingDays ? tradingDays.map(day => <text className="kline-date-label" x={left + (day.start + day.end + 1) * step / 2} y={height - 15} textAnchor="middle" key={day.day}>{formatTime(day.time, 'daily', periodLabel)}</text>) : labelIndexes.map((index) => {
 					const line = sorted[index];
 					const x = left + index * step + step / 2;
 					return <text className="kline-date-label" x={x} y={height - 15} textAnchor={index === 0 ? 'start' : index === sorted.length - 1 ? 'end' : 'middle'} key={line.time}>{formatTime(line.time, mode, periodLabel)}</text>;
@@ -191,6 +209,7 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 				</>}
 				<rect className="kline-hover-layer" x={left} y={chartTop} width={plotWidth} height={volumeBottom - chartTop} onMouseMove={handleChartMove} onMouseLeave={() => setHoveredIndex(null)} aria-label="悬浮查看行情明细" />
 			</svg>
+			</div>
 			{hoveredLine && <div className={`kline-hover-card ${mode === 'intraday' ? 'right' : 'left'}`}>
 				<strong>{mode === 'intraday' ? formatLongDate(hoveredLine.time) : formatTime(hoveredLine.time, mode, periodLabel)}</strong>
 				<div><span>开盘</span><b>{hoveredLine.open.toFixed(2)}</b></div>
@@ -203,7 +222,7 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 				<div><span>成交额</span><b>{formatAmount(hoveredLine.amount)}</b></div>
 				<div><span>换手率</span><b>{hoveredLine.turnover_rate != null && Number.isFinite(hoveredLine.turnover_rate) ? `${hoveredLine.turnover_rate.toFixed(2)}%` : '--'}</b></div>
 			</div>}
-			<div className="kline-chart-legend"><span className="zero-dot" />0%基准：{referencePrice.toFixed(2)}{mode === 'intraday' && <span className="limit-note">涨跌幅范围 ±{percentRange}%</span>} <span className="volume-note">左侧涨跌幅 · 右侧价格 · 柱体为成交量</span>{mode === 'intraday' && <><span className="close-dot" />收盘价 <span className="average-dot" />20点均线</>}</div>
+			<div className="kline-chart-legend"><span className="zero-dot" />0%基准{showTradingDays ? `（${suppliedPreviousClose ? '首日昨收' : '首个采样价'}）` : ''}：{referencePrice.toFixed(2)}{mode === 'intraday' && <span className="limit-note">{showTradingDays ? '区间幅度' : '涨跌幅范围'} ±{percentRange}%</span>} <span className="volume-note">左侧涨跌幅 · 右侧价格 · 柱体为成交量</span>{mode === 'intraday' && <><span className="close-dot" />收盘价 <span className="average-dot" />20点均线</>}</div>
 		</div>
 	);
 }

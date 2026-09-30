@@ -72,7 +72,8 @@ import { stockDetailPath, stockDetailSymbolFromHash } from './lib/stock-detail';
 import { PortfolioInspectionWorkspace } from './components/PortfolioInspectionWorkspace';
 import { TokenUsageWorkspace } from './components/TokenUsageWorkspace';
 import { logRuntimeEvent } from './lib/runtime-log';
-import { sourceHealthCounts, sourceHealthDetail, sourceHealthLabel } from './lib/source-health';
+import { sourceHealthCounts } from './lib/source-health';
+import { SourceHealthPanel } from './components/SourceHealthPanel';
 import { useTheme } from './lib/theme';
 import { useLimitUpWorkspace } from './lib/use-limit-up-workspace';
 import { useThemeOverview } from './lib/use-theme-overview';
@@ -112,6 +113,7 @@ export function App() {
 	const [selectedSymbol, setSelectedSymbol] = useState('');
 	const [liveQuotes, setLiveQuotes] = useState<QuoteLookup>({});
 	const [sources, setSources] = useState<SourceHealth[]>([]);
+	const [sourceDetailsOpen, setSourceDetailsOpen] = useState(false);
 	const sourceCounts = sourceHealthCounts(sources);
 	const [news, setNews] = useState<NewsItem[]>([]);
 	const [streamStatus, setStreamStatus] = useState('实时流待命');
@@ -144,6 +146,8 @@ export function App() {
 	const [aiPrefill, setAIPrefill] = useState('');
 	const [aiAnalysisID, setAIAnalysisID] = useState<string | undefined>();
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [settingsInitialSection, setSettingsInitialSection] = useState<'data-sources' | undefined>();
+	const openSourceSettings = () => { setSettingsInitialSection('data-sources'); setSettingsOpen(true); };
 	const [settingsSavedNotice, setSettingsSavedNotice] = useState(0);
 	const [tokenUsageRefreshKey, setTokenUsageRefreshKey] = useState(0);
 
@@ -472,7 +476,7 @@ export function App() {
 				</div>
 			</aside>
 			<div className="app-shell">
-			<header className="topbar">
+			<header className={`topbar ${workspaceMode === 'stock-detail' ? 'stock-detail-topbar' : ''}`}>
 				<div className="brand-block">
 					<div className="brand-mark"><img src={`${import.meta.env.BASE_URL}easy-stock-mark.svg`} alt="easy-stock" /></div>
 					<div>
@@ -480,18 +484,18 @@ export function App() {
 						<p>{topbarDescription}</p>
 					</div>
 				</div>
-				<nav className="mode-nav" aria-label="工作台模式">
+				{workspaceMode !== 'stock-detail' && <nav className="mode-nav" aria-label="工作台模式">
 					{workspaceMode === 'token-usage' ? <button type="button" className="active"><BarChart3 size={16} aria-hidden="true" />Token统计</button> : null}
 					{workspaceMode === 'token-usage' ? null : workspaceMode === 'stock-ai' ? <>
 						<button type="button" className={stockAIWorkspaceMode === 'analysis' ? 'active' : ''} onClick={() => setStockAIWorkspaceMode('analysis')}><BrainCircuit size={16} aria-hidden="true" />个股分析</button>
 						<button type="button" className={stockAIWorkspaceMode === 'expectation' ? 'active' : ''} onClick={() => setStockAIWorkspaceMode('expectation')}><Target size={16} aria-hidden="true" />隔日预期</button>
 						<button type="button" className={stockAIWorkspaceMode === 'risk' ? 'active' : ''} onClick={() => setStockAIWorkspaceMode('risk')}><ShieldCheck size={16} aria-hidden="true" />风控执行</button>
 					</> : <>
-						<button type="button" className="active">{workspaceMode === 'mastery' ? <BookMarked size={16} aria-hidden="true" /> : workspaceMode === 'reviews' ? <BookOpen size={16} aria-hidden="true" /> : workspaceMode === 'portfolio-inspection' ? <WalletCards size={16} aria-hidden="true" /> : workspaceMode === 'ai' ? <Bot size={16} aria-hidden="true" /> : workspaceMode === 'market' ? <BarChart3 size={16} aria-hidden="true" /> : workspaceMode === 'stock-detail' ? <ChartCandlestick size={16} aria-hidden="true" /> : <Flame size={16} aria-hidden="true" />}{workspaceMode === 'themes' ? '趋势题材' : workspaceMode === 'limit-up' ? '短线连板' : workspaceMode === 'mastery' ? '游资心法' : workspaceMode === 'reviews' ? '复盘日记' : workspaceMode === 'portfolio-inspection' ? '持仓巡检' : workspaceMode === 'market' ? '行情总览' : workspaceMode === 'stock-detail' ? '个股详情' : 'AI 对话'}</button>
+						<button type="button" className="active">{workspaceMode === 'mastery' ? <BookMarked size={16} aria-hidden="true" /> : workspaceMode === 'reviews' ? <BookOpen size={16} aria-hidden="true" /> : workspaceMode === 'portfolio-inspection' ? <WalletCards size={16} aria-hidden="true" /> : workspaceMode === 'ai' ? <Bot size={16} aria-hidden="true" /> : workspaceMode === 'market' ? <BarChart3 size={16} aria-hidden="true" /> : <Flame size={16} aria-hidden="true" />}{workspaceMode === 'themes' ? '趋势题材' : workspaceMode === 'limit-up' ? '短线连板' : workspaceMode === 'mastery' ? '游资心法' : workspaceMode === 'reviews' ? '复盘日记' : workspaceMode === 'portfolio-inspection' ? '持仓巡检' : workspaceMode === 'market' ? '行情总览' : 'AI 对话'}</button>
 						<button type="button" disabled><Target size={16} aria-hidden="true" />隔日预期</button>
 						<button type="button" disabled><ShieldCheck size={16} aria-hidden="true" />风控执行</button>
 					</>}
-				</nav>
+				</nav>}
 				<div className="top-actions">
 					<div className={`data-status ${currentLoadState}`}>
 						<span className="status-dot" />
@@ -510,34 +514,22 @@ export function App() {
 			<section className="market-strip" aria-label="市场概览">
 				<div><Activity size={16} aria-hidden="true" /><span>主线平均热度</span><strong>{marketPulse.average || '--'}</strong></div>
 				<div><Flame size={16} aria-hidden="true" /><span>活跃主线</span><strong>{rankedThemes.some(item => !item.provisional) ? marketPulse.active : '--'}</strong></div>
-				<div
-					className="source-health-summary"
-					tabIndex={0}
+				<button
+					type="button"
+					className="source-health-summary source-health-toggle"
+					aria-expanded={sourceDetailsOpen}
+					aria-controls="theme-source-details"
+					onClick={() => setSourceDetailsOpen(open => !open)}
 					aria-label={`数据源最近观测，${sourceCounts.available} 个可用，${sourceCounts.degraded} 个失败，${sourceCounts.unknown} 个未检测，${sourceCounts.unconfigured} 个未接入`}
 				>
 					<Database size={16} aria-hidden="true" />
 					<span>数据源</span>
 					<strong>{sourceCounts.available}/{sources.length || '--'}</strong>
-					<div className="source-health-popover" role="tooltip">
-						<header>
-							<div><strong>数据源最近观测</strong><span>来自实际请求，不主动探测上游</span></div>
-							<em>{sourceCounts.available} 可用 · {sourceCounts.degraded} 失败 · {sourceCounts.unknown} 未检测 · {sourceCounts.unconfigured} 未接入</em>
-						</header>
-						<div className="source-health-list">
-							{sources.map((source) => (
-								<div className={source.status} key={source.id} title={sourceHealthDetail(source)}>
-									<i aria-hidden="true" />
-									<span><strong>{source.name}</strong><small>{sourceCategoryLabel(source.category)}</small></span>
-									<em>{sourceHealthLabel(source)}</em>
-								</div>
-							))}
-							{!sources.length && !sourcesError && <p>数据源状态加载中…</p>}
-							{sourcesError && <p className="load-notice">{sourcesError} <button type="button" onClick={() => setSourcesRetryKey(key => key + 1)}>重试</button></p>}
-						</div>
-					</div>
-				</div>
+					<small>{sourceDetailsOpen ? '收起详情' : '查看详情'}</small>
+				</button>
 				<div><Clock3 size={16} aria-hidden="true" /><span>题材快照</span><strong>{overviewMeta?.trade_date || formatTime(overviewMeta?.fetched_at)}</strong></div>
 			</section>
+			{sourceDetailsOpen && <SourceHealthPanel id="theme-source-details" sources={sources} context="themes" error={sourcesError} onRefresh={() => setSourcesRetryKey(key => key + 1)} onOpenSettings={openSourceSettings} meta={overviewMeta} steps={overview.steps} stepErrors={overview.errors} />}
 
 			<div className="trading-layout">
 				<aside className="theme-rail">
@@ -748,14 +740,14 @@ export function App() {
 					</section>
 				</aside>
 			</div>
-			</> : workspaceMode === 'stock-detail' ? <StockDetailWorkspace config={config} symbol={stockDetailSymbol} onSelectSymbol={selectStockDetail} onOpenAnalysis={openStockDetailAnalysis} refreshKey={stockDetailRefreshKey} /> : workspaceMode === 'limit-up' ? <LimitUpWorkspace config={config} data={limitUpData} state={limitUpState} error={limitUpError} emotionData={marketEmotionData} emotionState={marketEmotionState} emotionError={marketEmotionError} progress={limitUp.ladder.progress} onRefresh={refreshLimitUpWorkspace} /> : workspaceMode === 'mastery' ? <TradingMastery config={config} refreshKey={masteryRefreshKey} onAskAI={askMasteryAI} /> : workspaceMode === 'reviews' ? <ReviewDiary config={config} refreshKey={reviewRefreshKey} /> : workspaceMode === 'stock-ai' ? <StockAIAnalysisWorkspace config={config} refreshKey={stockAIRefreshKey} mode={stockAIWorkspaceMode} initialSymbol={stockAIPrefill} onInitialSymbolConsumed={() => setStockAIPrefill('')} initialAnalysis={stockAIInitialAnalysis} onInitialAnalysisConsumed={() => setStockAIInitialAnalysis(null)} onAskAI={askStockAnalysisAI} onOpenSettings={() => setSettingsOpen(true)} /> : workspaceMode === 'portfolio-inspection' ? <PortfolioInspectionWorkspace config={config} refreshKey={portfolioInspectionRefreshKey} onOpenSettings={() => setSettingsOpen(true)} onOpenStockAnalysis={openPortfolioStockAnalysis} /> : workspaceMode === 'market' ? <MarketOverviewWorkspace config={config} refreshKey={marketRefreshKey} onAskAI={askMarketAI} /> : <AIChatWorkspace config={config} refreshKey={aiRefreshKey} initialPrompt={aiPrefill} initialAnalysisID={aiAnalysisID} onInitialPromptConsumed={() => { setAIPrefill(''); setAIAnalysisID(undefined); }} onOpenSettings={() => setSettingsOpen(true)} />}
+			</> : workspaceMode === 'stock-detail' ? <StockDetailWorkspace config={config} symbol={stockDetailSymbol} onSelectSymbol={selectStockDetail} onOpenAnalysis={openStockDetailAnalysis} refreshKey={stockDetailRefreshKey} /> : workspaceMode === 'limit-up' ? <LimitUpWorkspace config={config} data={limitUpData} state={limitUpState} error={limitUpError} emotionData={marketEmotionData} emotionState={marketEmotionState} emotionError={marketEmotionError} progress={limitUp.ladder.progress} onRefresh={refreshLimitUpWorkspace} /> : workspaceMode === 'mastery' ? <TradingMastery config={config} refreshKey={masteryRefreshKey} onAskAI={askMasteryAI} /> : workspaceMode === 'reviews' ? <ReviewDiary config={config} refreshKey={reviewRefreshKey} /> : workspaceMode === 'stock-ai' ? <StockAIAnalysisWorkspace config={config} refreshKey={stockAIRefreshKey} mode={stockAIWorkspaceMode} initialSymbol={stockAIPrefill} onInitialSymbolConsumed={() => setStockAIPrefill('')} initialAnalysis={stockAIInitialAnalysis} onInitialAnalysisConsumed={() => setStockAIInitialAnalysis(null)} onAskAI={askStockAnalysisAI} onOpenSettings={() => setSettingsOpen(true)} /> : workspaceMode === 'portfolio-inspection' ? <PortfolioInspectionWorkspace config={config} refreshKey={portfolioInspectionRefreshKey} onOpenSettings={() => setSettingsOpen(true)} onOpenStockAnalysis={openPortfolioStockAnalysis} /> : workspaceMode === 'market' ? <MarketOverviewWorkspace config={config} refreshKey={marketRefreshKey} onAskAI={askMarketAI} onOpenSourceSettings={openSourceSettings} /> : <AIChatWorkspace config={config} refreshKey={aiRefreshKey} initialPrompt={aiPrefill} initialAnalysisID={aiAnalysisID} onInitialPromptConsumed={() => { setAIPrefill(''); setAIAnalysisID(undefined); }} onOpenSettings={() => setSettingsOpen(true)} />}
 
 			<footer className="data-footer">
 				<div><Wifi size={15} aria-hidden="true" /><span>{config?.backendUrl || '连接本地数据服务中'}</span></div>
 					<div><Radio size={15} aria-hidden="true" /><span>{workspaceMode === 'themes' ? '题材与龙一至龙五：开盘啦 · 实时行情：新浪 · K线与领导力：东方财富/新浪' : workspaceMode === 'limit-up' ? '当日涨停池与逐股题材：开盘啦优先 · 历史梯队、缺失股票与行情字段：东方财富补充 · 默认剔除ST' : workspaceMode === 'mastery' ? '来源：trading-mastery/游资心法 · 每日缓存 · 同步至 Hermes Skill 与本地记忆索引' : workspaceMode === 'reviews' ? '复盘文章：本地 SQLite 归档 · 原文观点不代表系统结论' : workspaceMode === 'stock-detail' ? '个股行情：新浪 · K 线：东方财富优先，新浪回退 · 时间、来源与降级信息以实际返回为准' : workspaceMode === 'stock-ai' ? '行情与K线：东方财富/新浪 · 涨停与题材：开盘啦/东方财富 · AI只基于结构化证据总结' : workspaceMode === 'portfolio-inspection' ? '逐股分析复用个股引擎 · 组合指标由本地程序计算 · AI只基于结构化证据汇总' : workspaceMode === 'market' ? '行情与行业强度：腾讯/东方财富 · 资金与领涨标的：新浪/东方财富 · 龙虎榜、公告与研报：东方财富 · 盘面快讯：财联社 · AI 只读取带时间和来源的证据' : workspaceMode === 'token-usage' ? '真实用量来自模型返回的 usage · 本地估算单独记录，不并入真实总量' : '模型请求由本地后端转发 · API Key 不会暴露给页面 · 对话历史保存在当前设备'}</span></div>
 			</footer>
 			</div>
-			<SettingsDrawer config={config} open={settingsOpen} onClose={() => setSettingsOpen(false)} onSaved={() => { setAIRefreshKey((current) => current + 1); setStockAIRefreshKey((current) => current + 1); setSettingsSavedNotice((current) => current + 1); }} />
+			<SettingsDrawer config={config} open={settingsOpen} initialSection={settingsInitialSection} onClose={() => { setSettingsOpen(false); setSettingsInitialSection(undefined); }} onSaved={() => { setAIRefreshKey((current) => current + 1); setStockAIRefreshKey((current) => current + 1); setSettingsSavedNotice((current) => current + 1); }} />
 			{settingsSavedNotice > 0 && <div className="settings-save-notice" role="status"><CheckCircle2 size={22} aria-hidden="true" /><span>保存成功</span></div>}
 		</main>
 	);
@@ -980,27 +972,6 @@ function formatTime(value?: string) {
 		return '--:--';
 	}
 	return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-}
-
-function sourceCategoryLabel(category: string) {
-	const labels: Record<string, string> = {
-		theme: '题材',
-		leaders: '龙头榜单',
-		'limit-up': '涨停池',
-		concept: '概念归因',
-		quote: '实时行情',
-		kline: 'K 线',
-		f10: '公司资料',
-		report: '研报',
-		'money-flow': '资金流',
-		index: '指数',
-		hk: '港股',
-		news: '资讯',
-		calendar: '日历',
-		basic: '基础资料',
-		daily: '日线',
-	};
-	return category.split(',').map((item) => labels[item.trim()] || item.trim()).filter(Boolean).join(' · ');
 }
 
 function formatSourceStrength(value?: number) {

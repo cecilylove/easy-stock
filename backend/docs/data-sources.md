@@ -13,6 +13,10 @@ This document tracks the stock-related data sources that form the `easy-stock` d
 | CLS | `www.cls.cn` | `/api/v1/market/news` | Market telegraph news. |
 | 短线侠 / 开盘啦 | `duanxianxia.com`, `ds.duanxianxia.com` | `/api/v1/themes/overview`, `/api/v1/themes/screen`, `/api/v1/short-term/limit-up-ladder` | 开盘啦题材排名、龙一至龙五、涨停/连板池与逐股炒作题材。 |
 
+## Stock K-Line Fallback
+
+`/api/v1/quotes/kline` requests EastMoney first and falls back to Sina when the primary request fails. Sina uses `scale=240` for daily bars, `1200` for weekly bars, and `7200` for calendar-month bars (`month`, `monthly`, `103`, or `7200`). Monthly bars come directly from the source, rather than aggregating a fixed number of trading days. Read each bar's `meta.source` and `meta.source_url` to identify the actual source; the source's latest monthly bar may still represent an unfinished month.
+
 ## Trend Theme Radar Priority
 
 - 开盘啦当天快照优先，题材榜和领涨股作为同一来源快照使用。
@@ -76,11 +80,25 @@ If EastMoney `push2` closes the constituent connection, the node falls back to `
 
 `GET /api/v1/quotes/auction?symbol=600519.SH` 使用东方财富 `stock/trends2/get` 的单交易日分钟快照，仅筛选 09:15–09:25 价格点；09:15–09:25 价格是**参考价而非逐分钟成交价**，不从 09:26 来源量额推断竞价最终成交。该接口不改写普通 K 线口径；返回 `data.meta` 的来源/抓取时间与 `data.trade_date`，历史交易日只给 `status=historical`、空点，避免旧日数据冒充当日竞价。东财主节点失败可尝试现有行情镜像节点，但可用性与盘中更新频率仍须在交易时段持续验证；无可靠点时页面显示缺失，不用 09:30 开盘价补造；页面可暂存同股同日已经成功获取的真实参考点，后续刷新失败时明确标为旧快照，跨交易日不可复用。仅个股详情的 `detail=1` 单股请求使用本机短时复用：成功至少间隔 5 秒，按股票/周期/上海日期隔离，同键合并在途请求，失败暂时退避 30–120 秒；取消最后一个查看者时取消尚未完成的来源请求。普通报价/K 线公共接口的行为不变。返回的 `meta.stale`、行情时间及来源仍是判断旧快照的依据；昨天的数据不能当作今天行情。
 
+## 接入方式与降级边界
+
+东方财富、新浪、腾讯、财联社、短线侠/开盘啦已内置公共接口，无需用户 Token；来源按具体功能自动选择，不支持任意替换供应商。设置中的 Tushare Token、同花顺 Cookie/Token 和东方财富登录态 Cookie 是预留凭据，当前没有相应取数实现，保存后不会启用新数据源。TradingView 没有配置入口。来源状态目录的 7 项不包含尚未实现的同花顺；设置目录额外展示其预留项，不改变可用来源计数。
+
+- 个股 K 线：东方财富失败回退新浪；普通日/周/月 K 没有统一服务器旧快照兜底，两源均失败可能不可用。个股详情报价/分时的同股同日成功快照另有短时复用和 30–120 秒退避，旧快照标记陈旧，无快照时不可用。
+- 指数：东方财富失败回退腾讯，备用覆盖范围较少；行业强度：腾讯失败回退东方财富；资金榜：新浪失败回退东方财富，备用可能缺字段。
+- 行情总览模块：成功数据缓存 45 秒，刷新失败可返回本次服务运行中已有的成功快照并标记陈旧；没有快照时模块报错。融资余额、龙虎榜、公告/研报没有统一备用供应商，不能用 Tushare 或同花顺预留凭据兜底。
+- 趋势题材：融合行业和开盘啦的有效结果，缺一方时使用其余来源；开盘啦旧题材超过两个交易日不再参与融合。渐进页面可保留旧快照并显示失败步骤；来源和快照均不可用时仍会报错。
+- 财联社快讯没有备用供应商，失败后页面可能保留已有内容，无内容时快讯不可用。陈旧数据只能作为历史参考，以抓取时间、来源和缺失字段判断当前功能是否可用。
+
+来源详情的接入与配置按钮直达系统设置的数据源区块；SettingsDrawer 展示 SourceIntegrationCatalog 的全部来源说明，预留凭据不能视为已实现服务。
+
 ## 数据源最近观测状态
 
 `GET /api/v1/sources` 只读取本机运行期间的请求记录，**不主动访问第三方**。`status` 为 `available`（最近一次实际请求成功）、`degraded`（最近一次失败或回退到缓存/备用来源）、`unknown`（尚未观测，或最近观测已超过 10 分钟）、`unconfigured`（当前版本没有接入该来源）。`ok` 仅在 `available` 时为 `true`。`checked_at`、`last_success`、`last_failure` 只在发生实际观测后出现；再次读取目录不会刷新这些时间。失败消息经过概括，不回显第三方请求 URL 或密钥。
 
-该状态不是对整个供应商所有接口的全面探针：目前从 HTTP/WebSocket 行情、K 线、财联社快讯、渐进题材和行情总览的实际刷新记录观测；渐进题材仅在来源可归因且有实际结果的刷新时记录，不因轮询或读取本地快照续期；组合刷新整体超时但无法确认哪家上游失败时，只在题材步骤显示超时，不猜测具体供应商。缓存读取不制造新观测；可确认的单一来源实时刷新失败与备用来源成功分别记录，无法归因的组合失败不据旧快照推断故障来源。开盘啦同一批题材与涨停池若部分成功、部分失败，最近状态为降级；来源列表不能替代具体能力的状态。TradingView 与 Tushare 当前未接入，标记未接入而非等待检测。某个接口成功或回退成功，不等于该供应商的全部服务正常。请同时以具体功能页面的 `meta.source`、`meta.fetched_at`、`meta.stale` 和 `meta.fallback_reason` 判断数据能否使用。
+该状态不是对整个供应商所有接口的全面探针：目前从 HTTP/WebSocket 行情、K 线、财联社快讯、普通/渐进题材和行情总览的实际刷新记录观测；渐进题材仅在来源可归因且有实际结果的刷新时记录，不因轮询或读取本地快照续期；组合刷新整体超时但无法确认哪家上游失败时，只在题材步骤显示超时，不猜测具体供应商。缓存读取不制造新观测；可确认的单一来源实时刷新失败与备用来源成功分别记录，无法归因的组合失败不据旧快照推断故障来源。开盘啦同一批题材与涨停池若部分成功、部分失败，最近状态为降级；来源列表不能替代具体能力的状态。TradingView 与 Tushare 当前未接入，标记未接入而非等待检测。某个接口成功或回退成功，不等于该供应商的全部服务正常。请同时以具体功能页面的 `meta.source`、`meta.fetched_at`、`meta.stale` 和 `meta.fallback_reason` 判断数据能否使用。
+
+普通题材接口与渐进接口共用来源观测规则：融合后的总元数据不能代替内部来源记录，分别记录行业实际来源、开盘啦题材/涨停池真实刷新与部分失败；5 分钟闸门内的缓存读取和旧失败不会生成新的开盘啦观测。普通接口后续计算超时不会丢弃已完成的来源结果，用户主动取消时不记录来源故障。前端趋势题材和行情总览的数据源入口可点击展开来源名单、时间、状态说明和取数规则；趋势题材另展示当前更新步骤，供应商全局状态与该步骤的可用性分别判断。
 
 ## Source Reliability Rules
 

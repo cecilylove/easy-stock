@@ -919,7 +919,26 @@ func (s *Server) themeOverviewHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	items, meta, err := s.themeOverview.Overviews(ctx)
+	var items []foundation.ThemeOverview
+	var meta foundation.SourceMeta
+	var err error
+	if provider, ok := s.themeOverview.(interface {
+		OverviewsWithObservations(context.Context) ([]foundation.ThemeOverview, foundation.SourceMeta, []foundation.SourceObservation, error)
+	}); ok {
+		var observations []foundation.SourceObservation
+		items, meta, observations, err = provider.OverviewsWithObservations(ctx)
+		if shouldObserveFailure(ctx) {
+			for _, observation := range observations {
+				s.sourceHealth.observe(observation)
+			}
+		}
+	} else {
+		items, meta, err = s.themeOverview.Overviews(ctx)
+		if err == nil && ctx.Err() == nil {
+			s.sourceHealth.fallback(meta)
+			s.sourceHealth.success(meta)
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

@@ -61,5 +61,5 @@ export function useThemeOverview(config: BackendConfig | null, active: boolean) 
 	}, [active, run]);
 	const refresh = useCallback(() => run(true), [run]);
 	const state = fetching ? 'loading' : error ? (value?.data.length ? 'partial' : 'error') : value ? 'ready' : 'idle';
-	return { data: value?.data || [], meta: value?.meta || null, state, fetching, error, refresh } as const;
+	return { data: value?.data || [], meta: value?.meta || null, steps: value?.steps || {}, errors: value?.errors || {}, state, fetching, error, refresh } as const;
 }

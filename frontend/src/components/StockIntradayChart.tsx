@@ -1,6 +1,7 @@
 import { type MouseEvent, type TouchEvent, useState } from 'react';
 import type { AuctionTrace, KLine } from '../lib/backend';
 import { auctionFraction, shanghaiDayAndMinute, tradingFraction, tradingSessionForDay } from '../lib/stock-intraday';
+import { useChartViewport } from '../lib/use-chart-viewport';
 
 type Props = {
 	lines: KLine[];
@@ -14,10 +15,11 @@ type Props = {
 export function StockIntradayChart({ lines, auction, showAuction, symbol, tradeDay, previousClose }: Props) {
 	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 	const [hoveredAuctionIndex, setHoveredAuctionIndex] = useState<number | null>(null);
+	const { containerRef, width, scrollable } = useChartViewport();
 	const session = tradingSessionForDay(lines, tradeDay);
 	const day = tradeDay;
 	const auctionPoints = showAuction && auction?.trade_date === day ? (auction.points || []).map(point => ({ point, stamp: shanghaiDayAndMinute(point.time) })).filter(item => item.stamp?.day === day && auctionFraction(item.stamp.minute) != null) : [];
-	const width = 960, height = 400, left = 60, right = 65, top = 25, priceBottom = 300, volumeTop = 327, volumeBottom = 366;
+	const height = 400, left = 68, right = 84, top = 25, priceBottom = 300, volumeTop = 327, volumeBottom = 366;
 	const chartWidth = width - left - right;
 	const auctionWidth = showAuction ? chartWidth * .19 : 0;
 	const gap = showAuction ? 12 : 0;
@@ -36,6 +38,7 @@ export function StockIntradayChart({ lines, auction, showAuction, symbol, tradeD
 	const draw = (items: typeof session) => items.map((item, index) => `${index ? 'L' : 'M'} ${tradeX(item.instant.minute).toFixed(1)} ${priceY(item.line.close).toFixed(1)}`).join(' ');
 	const auctionPath = auctionPoints.map((item, index) => `${index ? 'L' : 'M'} ${auctionX(item.stamp!.minute).toFixed(1)} ${priceY(item.point.price).toFixed(1)}`).join(' ');
 	const maxVolume = Math.max(...session.map(item => item.line.volume || 0), 1);
+	const volumeWidth = Math.max(2, Math.min(8, tradeWidth / 240 * .65));
 	const timeTicks = [{ minute: 9 * 60 + 30, label: '09:30', shift: 0 }, { minute: 11 * 60 + 30, label: '11:30', shift: -25 }, { minute: 13 * 60, label: '13:00', shift: 25 }, { minute: 15 * 60, label: '15:00', shift: 0 }];
 	const selectedAuction = hoveredAuctionIndex == null ? null : auctionPoints[hoveredAuctionIndex];
 	const selectedLine = hoveredIndex == null ? null : session[hoveredIndex];
@@ -72,8 +75,8 @@ export function StockIntradayChart({ lines, auction, showAuction, symbol, tradeD
 	const change = knownPreviousClose && hoveredPrice != null ? hoveredPrice - knownPreviousClose : null;
 	const signed = (value: number, digits = 2) => `${value > 0 ? '+' : ''}${value.toFixed(digits)}`;
 	return <div className="stock-intraday-wrap">
-		<p className="stock-intraday-mobile-hint">左右滑动查看完整交易时段，触摸走势查看分钟数据。</p>
-		<div className="stock-intraday-scroll"><svg viewBox={`0 0 ${width} ${height}`} className="stock-intraday-chart" role="img" aria-label={`${symbol} ${day} 固定交易时段分时图${showAuction ? '，含集合竞价参考价' : ''}`} onMouseMove={onChartMove} onMouseLeave={() => { setHoveredIndex(null); setHoveredAuctionIndex(null); }} onTouchStart={onChartTouch} onTouchMove={onChartTouch}>
+		{scrollable && <p className="stock-intraday-mobile-hint">左右滑动查看完整交易时段，触摸走势查看分钟数据。</p>}
+		<div ref={containerRef} className="stock-intraday-scroll"><svg viewBox={`0 0 ${width} ${height}`} className="stock-intraday-chart" role="img" aria-label={`${symbol} ${day} 固定交易时段分时图${showAuction ? '，含集合竞价参考价' : ''}`} onMouseMove={onChartMove} onMouseLeave={() => { setHoveredIndex(null); setHoveredAuctionIndex(null); }} onTouchStart={onChartTouch} onTouchMove={onChartTouch}>
 			{showAuction && <><rect x={left} y={top} width={auctionWidth} height={volumeBottom - top} className="stock-intraday-auction-zone" /><line x1={tradeLeft - gap / 2} x2={tradeLeft - gap / 2} y1={top} y2={volumeBottom} className="stock-intraday-auction-separator" /><text x={left + auctionWidth / 2} y={height - 7} textAnchor="middle" className="stock-intraday-label">09:15–09:25</text></>}
 			{[-range, 0, range].map(value => <g key={value}><line x1={left} x2={width - right} y1={priceY(baseline * (1 + value / 100))} y2={priceY(baseline * (1 + value / 100))} className="stock-intraday-grid" />{knownPreviousClose && <text x={left - 9} y={priceY(baseline * (1 + value / 100)) + 4} textAnchor="end" className="stock-intraday-label">{value > 0 ? '+' : ''}{value.toFixed(1)}%</text>}</g>)}
 			{[-range, 0, range].map(value => <text key={`price-${value}`} x={width - right + 6} y={priceY(baseline * (1 + value / 100)) + 4} className="stock-intraday-label">{(baseline * (1 + value / 100)).toFixed(2)}</text>)}
@@ -83,7 +86,7 @@ export function StockIntradayChart({ lines, auction, showAuction, symbol, tradeD
 			{showAuction && auctionPath && <path d={auctionPath} className="stock-intraday-auction-line" />}
 			{morning.length > 0 && <path d={draw(morning)} className="stock-intraday-price-line" />}
 			{afternoon.length > 0 && <path d={draw(afternoon)} className="stock-intraday-price-line" />}
-			{session.map(item => <rect key={item.line.time} x={tradeX(item.instant.minute) - 1.5} y={volumeBottom - (item.line.volume / maxVolume) * (volumeBottom - volumeTop)} width={3} height={(item.line.volume / maxVolume) * (volumeBottom - volumeTop)} className="stock-intraday-volume" />)}
+			{session.map(item => <rect key={item.line.time} x={tradeX(item.instant.minute) - volumeWidth / 2} y={volumeBottom - (item.line.volume / maxVolume) * (volumeBottom - volumeTop)} width={volumeWidth} height={(item.line.volume / maxVolume) * (volumeBottom - volumeTop)} className="stock-intraday-volume" />)}
 			{latestLine && <circle cx={tradeX(latestLine.instant.minute)} cy={priceY(latestLine.line.close)} r={4} className="stock-intraday-last-dot" />}
 			<rect x={tradeX(11 * 60 + 30) - 3} y={top} width={6} height={volumeBottom - top} className="stock-intraday-lunch-gap" />
 			{showAuction && auctionPoints.map(item => <circle key={item.point.time} cx={auctionX(item.stamp!.minute)} cy={priceY(item.point.price)} r={3} className="stock-intraday-auction-dot"><title>{`${item.point.time} 参考价 ${item.point.price.toFixed(2)}（非成交价）`}</title></circle>)}

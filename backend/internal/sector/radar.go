@@ -76,6 +76,13 @@ func NewRadarProvider(source RadarSnapshotSource, fallback RadarFallback, quotes
 }
 
 func (p *RadarProvider) Overviews(ctx context.Context) ([]foundation.ThemeOverview, foundation.SourceMeta, error) {
+	items, meta, _, err := p.OverviewsWithObservations(ctx)
+	return items, meta, err
+}
+
+// OverviewsWithObservations retains each actual upstream outcome for the plain
+// overview route, whose fused metadata cannot identify its component sources.
+func (p *RadarProvider) OverviewsWithObservations(ctx context.Context) ([]foundation.ThemeOverview, foundation.SourceMeta, []foundation.SourceObservation, error) {
 	start := time.Now()
 	var snapshot duanxianxia.Snapshot
 	var fetchMeta duanxianxia.FetchMeta
@@ -105,9 +112,16 @@ func (p *RadarProvider) Overviews(ctx context.Context) ([]foundation.ThemeOvervi
 	}
 	wg.Wait()
 
+	var observations []foundation.SourceObservation
+	// Keep completed supplier outcomes even if later enrichment times out.
+	// Caller cancellation is not evidence of an upstream failure.
+	if ctx.Err() != context.Canceled {
+		observations = append(observations, radarEventObservations(radarProgressEvent{step: "industry", meta: industryMeta, err: industryErr})...)
+		observations = append(observations, radarEventObservations(radarProgressEvent{step: "kaipanla", snapshot: snapshot, fetchMeta: fetchMeta})...)
+	}
 	items, meta, err := p.fusedOverviews(ctx, snapshot, fetchMeta, snapshotErr, industries, industryMeta, industryErr)
 	meta.LatencyMS = time.Since(start).Milliseconds()
-	return items, meta, err
+	return items, meta, observations, err
 }
 
 func (p *RadarProvider) Build(ctx context.Context, themeID string) (foundation.SectorMap, error) {

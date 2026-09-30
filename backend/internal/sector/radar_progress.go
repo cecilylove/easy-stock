@@ -125,22 +125,7 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 		case e := <-events:
 			steps[e.step] = "ready"
 			if ctx.Err() == nil {
-				switch e.step {
-				case "industry":
-					if e.err == nil {
-						observations = append(observations, foundation.SourceObservation{Meta: e.meta})
-					} // No provider identity is available for a failed fusion.
-				case "kaipanla":
-					if e.fetchMeta.Refreshed && !e.snapshot.FetchedAt.IsZero() {
-						observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.snapshot.FetchedAt}})
-					}
-					if e.fetchMeta.PoolRefreshed && !e.fetchMeta.PoolFetchedAt.IsZero() {
-						observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.fetchMeta.PoolFetchedAt}})
-					}
-					if e.fetchMeta.Attempted && !e.fetchMeta.LastAttemptAt.IsZero() && e.fetchMeta.RefreshError != "" {
-						observations = append(observations, foundation.SourceObservation{SourceID: "duanxianxia", AttemptAt: time.Now(), Failed: true})
-					}
-				}
+				observations = append(observations, radarEventObservations(e)...)
 			}
 			if e.err != nil {
 				steps[e.step] = "error"
@@ -162,6 +147,27 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 			emit(remaining > 1)
 		}
 	}
+}
+
+func radarEventObservations(e radarProgressEvent) []foundation.SourceObservation {
+	var observations []foundation.SourceObservation
+	switch e.step {
+	case "industry":
+		if e.err == nil {
+			observations = append(observations, foundation.SourceObservation{Meta: e.meta})
+		} // A failed composed provider has no reliable supplier identity.
+	case "kaipanla":
+		if e.fetchMeta.Refreshed && !e.snapshot.FetchedAt.IsZero() {
+			observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.snapshot.FetchedAt}})
+		}
+		if e.fetchMeta.PoolRefreshed && !e.fetchMeta.PoolFetchedAt.IsZero() {
+			observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.fetchMeta.PoolFetchedAt}})
+		}
+		if e.fetchMeta.Attempted && !e.fetchMeta.LastAttemptAt.IsZero() && e.fetchMeta.RefreshError != "" {
+			observations = append(observations, foundation.SourceObservation{SourceID: "duanxianxia", AttemptAt: time.Now(), Failed: true})
+		}
+	}
+	return observations
 }
 
 func industryLeaderStocks(item foundation.MarketIndustryMomentum) []foundation.BoardStock {
