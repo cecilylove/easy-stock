@@ -301,7 +301,7 @@ func parseKLineTime(value string) (time.Time, error) {
 		"2006/01/02 15:04",
 		"2006/01/02",
 	} {
-		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+		if parsed, err := time.ParseInLocation(layout, value, time.FixedZone("CST", 8*60*60)); err == nil {
 			return parsed, nil
 		}
 	}

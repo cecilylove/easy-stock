@@ -70,6 +70,7 @@ import {
 	signedPercent,
 } from '../lib/stock-analysis';
 import { useStockResearch } from '../lib/use-stock-research';
+import { loadCachedStockDirectory, saveCachedStockDirectory } from '../lib/stock-directory-cache';
 import { isResearchRunning, researchPlanText, type ResearchAnalysisLevel, type ResearchRequest } from '../lib/stock-research';
 import { StockResearchHistory, StockResearchOptions, StockResearchProgress, StockResearchReportView } from './StockResearchReport';
 
@@ -81,6 +82,8 @@ type Props = {
 	mode: StockAIWorkspaceMode;
 	initialAnalysis?: StockAIAnalysis | null;
 	onInitialAnalysisConsumed?: () => void;
+	initialSymbol?: string;
+	onInitialSymbolConsumed?: () => void;
 	onAskAI: (analysis: StockAIAnalysis) => void;
 	onOpenSettings: () => void;
 };
@@ -100,9 +103,7 @@ type AnalysisHistoryItem = {
 const symbolStorageKey = 'easy-stock.stock-ai-symbol.v1';
 const historyStorageKey = 'easy-stock.stock-ai-history.v2';
 const capitalStorageKey = 'easy-stock.stock-ai-capital.v1';
-const directoryStorageKey = 'easy-stock.stock-directory.v1';
 const hotStockSidebarStorageKey = 'easy-stock.stock-ai-popular-sidebar-collapsed.v1';
-const directoryStorageTTL = 24 * 60 * 60 * 1000;
 const examples = ['600519', '300750', '002594', '601138', '688981'];
 
 const researchLevelOptions: Array<{ value: ResearchAnalysisLevel; title: string; description: string; coverage: string; tokens: string; time: string }> = [
@@ -117,7 +118,7 @@ function writeStoredValue(key: string, value: string) { try { window.localStorag
 
 type DirectoryState = 'idle' | 'loading' | 'cached' | 'ready' | 'error';
 type HotRankState = 'idle' | 'loading' | 'ready' | 'error';
-export function StockAIAnalysisWorkspace({ config, refreshKey, mode, initialAnalysis, onInitialAnalysisConsumed, onAskAI, onOpenSettings }: Props) {
+export function StockAIAnalysisWorkspace({ config, refreshKey, mode, initialAnalysis, onInitialAnalysisConsumed, initialSymbol, onInitialSymbolConsumed, onAskAI, onOpenSettings }: Props) {
 	const research = useStockResearch(config);
 	const [purpose, setPurpose] = useState<ResearchRequest['purpose']>('observe');
 	const [horizon, setHorizon] = useState<ResearchRequest['horizon']>('swing');
@@ -187,6 +188,17 @@ export function StockAIAnalysisWorkspace({ config, refreshKey, mode, initialAnal
 			return next;
 		});
 	}, []);
+
+	useEffect(() => {
+		if (!initialSymbol) return;
+		// Do not let a previously selected job overwrite the new prefill.
+		// This is navigation only; research starts after explicit confirmation.
+		research.clear();
+		setAnalysis(null);
+		setState('idle');
+		setQuery(initialSymbol);
+		onInitialSymbolConsumed?.();
+	}, [initialSymbol, onInitialSymbolConsumed, research.clear]);
 
 	useEffect(() => {
 		if (!initialAnalysis) return;
@@ -675,26 +687,6 @@ function stockMarketLabel(symbol: string) {
 	if (symbol.endsWith('.SZ')) return '深市';
 	if (symbol.endsWith('.BJ')) return '北交所';
 	return 'A股';
-}
-
-function loadCachedStockDirectory(): StockDirectoryEntry[] {
-	try {
-		const raw = window.localStorage.getItem(directoryStorageKey);
-		if (!raw) return [];
-		const cached = JSON.parse(raw) as { cachedAt?: number; stocks?: StockDirectoryEntry[] };
-		if (!cached.cachedAt || Date.now() - cached.cachedAt > directoryStorageTTL || !Array.isArray(cached.stocks)) return [];
-		return cached.stocks.filter((stock) => stock && typeof stock.symbol === 'string' && typeof stock.code === 'string' && typeof stock.name === 'string');
-	} catch {
-		return [];
-	}
-}
-
-function saveCachedStockDirectory(stocks: StockDirectoryEntry[]) {
-	try {
-		window.localStorage.setItem(directoryStorageKey, JSON.stringify({ cachedAt: Date.now(), stocks }));
-	} catch {
-		// Search remains available from the in-memory directory when storage quota is unavailable.
-	}
 }
 
 function AnalysisHistory({ items, activeSymbol, onSelect, onRemove }: {

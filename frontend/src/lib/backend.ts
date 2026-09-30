@@ -282,6 +282,10 @@ export type Quote = {
   meta: SourceMeta;
 };
 
+export type AuctionPoint = { time: string; price: number; volume?: number; amount?: number };
+export type AuctionTrace = { symbol: string; trade_date: string; points: AuctionPoint[]; meta: SourceMeta };
+export type AuctionResponse = { data: AuctionTrace; status: 'ready' | 'historical' };
+
 export type KLine = {
   symbol: string;
   time: string;

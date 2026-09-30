@@ -39,6 +39,11 @@ type Server struct {
 	mux                   *http.ServeMux
 	token                 string
 	realtimeProvider      RealtimeProvider
+	detailQuotes          *detailPollCache[[]foundation.Quote]
+	detailKLines          *detailPollCache[[]foundation.KLine]
+	detailAuctions        *detailPollCache[foundation.AuctionTrace]
+	auctionProvider       AuctionProvider
+	auctionSourceID       string
 	realtimeSourceID      string
 	kLinePrimary          KLineProvider
 	kLinePrimarySourceID  string
@@ -105,6 +110,11 @@ func NewServer(config any) *Server {
 	if cfg.Realtime == nil {
 		cfg.Realtime = sinaClient
 		realtimeSourceID = "sina"
+	}
+	auctionSourceID := ""
+	if cfg.Auction == nil {
+		cfg.Auction = eastMoneyClient
+		auctionSourceID = "eastmoney"
 	}
 	if cfg.KLinePrimary == nil {
 		cfg.KLinePrimary = eastMoneyClient
@@ -294,6 +304,11 @@ func NewServer(config any) *Server {
 		mux:                   http.NewServeMux(),
 		token:                 cfg.Token,
 		realtimeProvider:      cfg.Realtime,
+		detailQuotes:          newDetailPollCache[[]foundation.Quote](),
+		detailKLines:          newDetailPollCache[[]foundation.KLine](),
+		detailAuctions:        newDetailPollCache[foundation.AuctionTrace](),
+		auctionProvider:       cfg.Auction,
+		auctionSourceID:       auctionSourceID,
 		realtimeSourceID:      realtimeSourceID,
 		kLinePrimary:          cfg.KLinePrimary,
 		kLinePrimarySourceID:  primarySourceID,
@@ -510,6 +525,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/health", s.health)
 	s.mux.HandleFunc("GET /api/v1/sources", s.sources)
 	s.mux.HandleFunc("GET /api/v1/quotes/realtime", s.realtime)
+	s.mux.HandleFunc("GET /api/v1/quotes/auction", s.auctionTrace)
 	s.mux.HandleFunc("GET /api/v1/quotes/kline", s.kline)
 	s.mux.HandleFunc("GET /api/v1/quotes/kline/batch", s.klineBatch)
 	s.mux.HandleFunc("GET /api/v1/market/news", s.news)
@@ -616,6 +632,35 @@ func (s *Server) realtime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if r.URL.Query().Get("detail") == "1" && len(symbols) == 1 {
+		quotes, stale, err := s.detailQuotes.load(r.Context(), detailPollKey(symbols[0], "quote", time.Now()), func(ctx context.Context) ([]foundation.Quote, error) {
+			items, loadErr := s.realtimeProvider.Realtime(ctx, symbols)
+			if loadErr == nil && len(items) == 0 {
+				loadErr = fmt.Errorf("realtime source returned no quotes")
+			}
+			if loadErr != nil && shouldObserveFailure(ctx) {
+				s.sourceHealth.failure(s.realtimeSourceID, loadErr)
+			}
+			if loadErr == nil {
+				for _, item := range items {
+					s.sourceHealth.success(item.Meta)
+				}
+			}
+			if loadErr == nil {
+				items = markHistoricalDetailQuotes(items, time.Now())
+			}
+			return items, loadErr
+		})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "单股行情暂不可用，请稍后重试")
+			return
+		}
+		if stale {
+			quotes = cloneDetailQuotesAsStale(quotes)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": quotes})
+		return
+	}
 	quotes, err := s.realtimeProvider.Realtime(r.Context(), symbols)
 	if err != nil {
 		if shouldObserveFailure(r.Context()) {
@@ -645,6 +690,32 @@ func (s *Server) kline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		limit = parsed
+	}
+	if r.URL.Query().Get("detail") == "1" && strings.TrimSpace(period) == "1" {
+		normalized, normalizeErr := foundation.NormalizeSymbol(symbol)
+		if normalizeErr != nil {
+			writeError(w, http.StatusBadRequest, normalizeErr.Error())
+			return
+		}
+		lines, stale, loadErr := s.detailKLines.load(r.Context(), detailPollKey(normalized.Canonical, "1m:"+strconv.Itoa(limit), time.Now()), func(ctx context.Context) ([]foundation.KLine, error) {
+			items, upstreamErr := s.loadKLine(ctx, normalized.Canonical, "1", limit)
+			if upstreamErr == nil && len(items) == 0 {
+				upstreamErr = fmt.Errorf("minute source returned no lines")
+			}
+			if upstreamErr == nil {
+				items = markHistoricalDetailKLines(items, time.Now())
+			}
+			return items, upstreamErr
+		})
+		if loadErr != nil {
+			writeError(w, http.StatusBadGateway, "单股分时暂不可用，请稍后重试")
+			return
+		}
+		if stale {
+			lines = cloneDetailKLinesAsStale(lines)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": lines})
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()

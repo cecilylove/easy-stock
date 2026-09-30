@@ -7444,3 +7444,70 @@ a:focus-visible {
 .limit-stock-concept-toggle { padding: 3px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--theme-blue, #175ea9); font-size: 11px; line-height: 1.4; cursor: pointer; }
 .limit-stock-concept-toggle:hover { background: var(--theme-blue-soft, rgba(23, 94, 169, .07)); }
 .limit-stock-concept-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* On-demand stock quotes reuse the existing chart without starting research. */
+.stock-detail-workspace { display: grid; gap: 16px; padding: 20px; min-width: 0; }
+.stock-detail-hero, .stock-detail-quote, .stock-detail-chart-panel, .stock-detail-empty { border: 1px solid var(--line); border-radius: 12px; background: var(--theme-surface, #fff); padding: 20px; }
+.stock-detail-hero { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.stock-detail-eyebrow, .stock-detail-quote > div:first-child > span, .stock-detail-chart-header > div:first-child > span { color: var(--theme-blue, #2476d2); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
+.stock-detail-hero h2, .stock-detail-quote h3, .stock-detail-chart-header h3 { margin: 5px 0; color: var(--text); }
+.stock-detail-hero p { margin: 0; color: var(--muted); font-size: 12px; }
+.stock-detail-search { display: flex; align-items: stretch; position: relative; gap: 8px; width: min(100%, 500px); }
+.stock-detail-search label { display: flex; align-items: center; flex: 1; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; color: var(--muted); background: var(--theme-surface, #fff); }
+.stock-detail-search input { width: 100%; min-width: 0; height: 42px; border: 0; background: transparent; color: var(--text); outline: none; }
+.stock-detail-search label:focus-within { outline: 2px solid var(--theme-blue-line, #4da3ff); }
+.stock-detail-search > button, .stock-detail-actions button, .stock-detail-error button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--theme-surface, #fff); color: var(--theme-blue, #2476d2); cursor: pointer; }
+.stock-detail-search > button { background: var(--theme-blue, #2476d2); border-color: var(--theme-blue, #2476d2); color: #fff; }
+.stock-detail-suggestions { position: absolute; z-index: 20; top: calc(100% + 4px); right: 0; left: 0; max-height: 240px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--theme-surface, #fff); box-shadow: 0 12px 30px var(--theme-shadow, rgba(0, 0, 0, .14)); }
+.stock-detail-suggestions button { display: flex; justify-content: space-between; gap: 10px; width: 100%; padding: 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.stock-detail-suggestions button:hover, .stock-detail-suggestions button:focus-visible, .stock-detail-suggestions button.active { background: var(--theme-blue-soft, #edf5ff); }
+.stock-detail-suggestions small { color: var(--muted); }
+.stock-detail-empty { padding: 68px 20px; text-align: center; color: var(--muted); }
+.stock-detail-empty h3 { color: var(--text); }
+.stock-detail-quote { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; }
+.stock-detail-quote h3 small { margin-left: 10px; color: var(--muted); font-size: 12px; font-weight: normal; }
+.stock-detail-price { display: flex; align-items: baseline; gap: 9px; }
+.stock-detail-price strong { font-size: 29px; font-variant-numeric: tabular-nums; }
+.stock-detail-price span.up { color: var(--theme-red, #d8323d); }
+.stock-detail-price span.down { color: var(--theme-green, #14865f); }
+.stock-detail-old-badge { padding: 3px 6px; border-radius: 6px; background: var(--theme-amber-soft, #fff4e5); color: var(--theme-amber, #ae6507); font-size: 10px; white-space: nowrap; }
+.stock-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.stock-detail-quote-meta { display: flex; align-items: center; grid-column: 1 / -1; gap: 6px; min-width: 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.stock-detail-chart-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.stock-detail-periods { display: flex; flex-wrap: wrap; gap: 5px; }
+.stock-detail-periods button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--theme-surface, #fff); color: var(--muted); cursor: pointer; }
+.stock-detail-periods button.active { background: var(--theme-blue-soft, #edf5ff); border-color: var(--theme-blue, #2476d2); color: var(--theme-blue, #2476d2); }
+.stock-detail-chart-panel { min-width: 0; }
+.stock-detail-chart-panel .kline-chart-wrap { width: 100%; }
+.stock-detail-auction-toggle { display: inline-flex; align-items: center; gap: 8px; margin: 0 0 12px; color: var(--text); font-size: 12px; cursor: pointer; }
+.stock-detail-auction-toggle input { accent-color: var(--theme-blue, #2476d2); }
+.stock-intraday-wrap { position: relative; width: 100%; max-width: 100%; min-width: 0; }
+.stock-intraday-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
+.stock-intraday-mobile-hint { display: none; margin: 2px 0 8px; color: var(--muted); font-size: 11px; }
+@media (max-width: 600px) { .stock-intraday-mobile-hint { display: block; } }
+.stock-intraday-chart { display: block; width: 100%; max-height: 440px; color: var(--text); }
+.stock-intraday-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 4; }
+.stock-intraday-lunch-gap { fill: var(--theme-surface, #fff); opacity: .95; }
+.stock-intraday-label { fill: var(--muted); font-size: 11px; }
+.stock-intraday-price-line { fill: none; stroke: var(--theme-blue, #2476d2); stroke-width: 2; stroke-linejoin: round; }
+.stock-intraday-volume { fill: var(--theme-blue, #2476d2); opacity: .55; }
+.stock-intraday-last-dot { fill: var(--theme-blue, #2476d2); stroke: var(--theme-surface, #fff); stroke-width: 1.5; pointer-events: none; }
+.stock-intraday-auction-zone { fill: var(--theme-blue-soft, #edf5ff); opacity: .7; }
+.stock-intraday-auction-line { fill: none; stroke: var(--theme-amber, #d89b40); stroke-width: 2; }
+.stock-intraday-auction-separator { stroke: var(--line); stroke-width: 2; stroke-dasharray: 5 4; }
+.stock-intraday-auction-dot { fill: var(--theme-amber, #d89b40); }
+.stock-intraday-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted); font-size: 11px; }
+.stock-intraday-chart { cursor: crosshair; }
+.stock-intraday-hit-zone { fill: transparent; }
+.stock-intraday-crosshair { pointer-events: none; }
+.stock-intraday-crosshair line { stroke: var(--theme-blue, #2476d2); stroke-width: 1; stroke-dasharray: 4 4; }
+.stock-intraday-crosshair circle { fill: var(--theme-surface, #fff); stroke: var(--theme-blue, #2476d2); stroke-width: 2; }
+.stock-intraday-hover-card { top: 12px; min-width: 186px; }
+.stock-intraday-hover-card small { grid-column: 1 / -1; max-width: 220px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+@media (max-width: 600px) { .stock-intraday-hover-card { top: 3px; min-width: 145px; padding: 6px; font-size: 10px; } .stock-intraday-hover-card.left { left: 5px; right: auto; } .stock-intraday-hover-card.right { right: 5px; } }
+.stock-detail-hint, .stock-detail-chart-meta { margin: 7px 0; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.stock-detail-error { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--theme-red, #c43e3e); font-size: 12px; overflow-wrap: anywhere; }
+.stock-detail-warning { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; color: var(--theme-red, #c43e3e); }
+.stock-detail-warning button { border: 0; background: transparent; color: var(--theme-blue, #2476d2); cursor: pointer; }
+@media (max-width: 960px) { .stock-detail-hero { align-items: stretch; flex-direction: column; } .stock-detail-search { width: 100%; } .stock-detail-quote { grid-template-columns: 1fr; } .stock-detail-quote-meta { grid-column: 1; } }
+@media (max-width: 600px) { .stock-detail-workspace { padding: 10px; } .stock-detail-hero, .stock-detail-quote, .stock-detail-chart-panel { padding: 12px; } .stock-detail-search input { font-size: 12px; } .stock-intraday-chart { min-width: 720px; } }

@@ -44,7 +44,7 @@ func TestClientKLineParsesEastMoneyResponse(t *testing.T) {
 	if got[0].Symbol != "000001.SZ" || got[0].Close != 10.50 || got[0].Volume != 123456 {
 		t.Fatalf("unexpected kline: %+v", got[0])
 	}
-	wantDate := time.Date(2026, 6, 12, 0, 0, 0, 0, time.Local)
+	wantDate := time.Date(2026, 6, 12, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	if !got[0].Time.Equal(wantDate) {
 		t.Fatalf("Time = %v, want %v", got[0].Time, wantDate)
 	}
@@ -78,6 +78,13 @@ func TestClientKLineRetriesTransientHTTPFailure(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestEastMoneyKLineUsesShanghaiTimeIndependentOfHost(t *testing.T) {
+	value, err := parseKLineTime("2026-09-30 09:31")
+	if err != nil || value.Format(time.RFC3339) != "2026-09-30T09:31:00+08:00" {
+		t.Fatalf("market timestamp changed with server timezone: %v %v", value, err)
 	}
 }
 

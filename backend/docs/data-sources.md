@@ -72,6 +72,10 @@ If EastMoney `push2` closes the constituent connection, the node falls back to `
 | Juyangongshe | `app.jiuyangongshe.com` | Investment calendar. |
 | CNInfo IRM | `irm.cninfo.com.cn` | Investor interaction answers. |
 
+## 单股盘前竞价参考轨迹
+
+`GET /api/v1/quotes/auction?symbol=600519.SH` 使用东方财富 `stock/trends2/get` 的单交易日分钟快照，仅筛选 09:15–09:25 价格点；09:15–09:25 价格是**参考价而非逐分钟成交价**，不从 09:26 来源量额推断竞价最终成交。该接口不改写普通 K 线口径；返回 `data.meta` 的来源/抓取时间与 `data.trade_date`，历史交易日只给 `status=historical`、空点，避免旧日数据冒充当日竞价。东财主节点失败可尝试现有行情镜像节点，但可用性与盘中更新频率仍须在交易时段持续验证；无可靠点时页面显示缺失，不用 09:30 开盘价补造；页面可暂存同股同日已经成功获取的真实参考点，后续刷新失败时明确标为旧快照，跨交易日不可复用。仅个股详情的 `detail=1` 单股请求使用本机短时复用：成功至少间隔 5 秒，按股票/周期/上海日期隔离，同键合并在途请求，失败暂时退避 30–120 秒；取消最后一个查看者时取消尚未完成的来源请求。普通报价/K 线公共接口的行为不变。返回的 `meta.stale`、行情时间及来源仍是判断旧快照的依据；昨天的数据不能当作今天行情。
+
 ## 数据源最近观测状态
 
 `GET /api/v1/sources` 只读取本机运行期间的请求记录，**不主动访问第三方**。`status` 为 `available`（最近一次实际请求成功）、`degraded`（最近一次失败或回退到缓存/备用来源）、`unknown`（尚未观测，或最近观测已超过 10 分钟）、`unconfigured`（当前版本没有接入该来源）。`ok` 仅在 `available` 时为 `true`。`checked_at`、`last_success`、`last_failure` 只在发生实际观测后出现；再次读取目录不会刷新这些时间。失败消息经过概括，不回显第三方请求 URL 或密钥。

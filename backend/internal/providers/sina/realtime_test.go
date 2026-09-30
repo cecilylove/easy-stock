@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"easy-stock/backend/internal/foundation"
 )
@@ -35,6 +36,9 @@ func TestClientRealtimeParsesSinaResponse(t *testing.T) {
 	if got[0].Meta.Source != "sina" || got[0].Meta.SourceURL == "" {
 		t.Fatalf("unexpected meta: %+v", got[0].Meta)
 	}
+	if got[0].TradeTime.Format(time.RFC3339) != "2026-06-12T15:00:00+08:00" {
+		t.Fatalf("quote timestamp must use Shanghai time: %v", got[0].TradeTime)
+	}
 }
 
 func TestClientRealtimeHonorsGB18030EvenWhenBytesAreValidUTF8(t *testing.T) {
@@ -53,6 +57,13 @@ func TestClientRealtimeHonorsGB18030EvenWhenBytesAreValidUTF8(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "赢时胜" {
 		t.Fatalf("GB18030 name decoded incorrectly: %+v", got)
+	}
+}
+
+func TestSinaKLineUsesShanghaiTimeIndependentOfHost(t *testing.T) {
+	value, err := parseKLineTime("2026-09-30 09:31")
+	if err != nil || value.Format(time.RFC3339) != "2026-09-30T09:31:00+08:00" {
+		t.Fatalf("market timestamp changed with server timezone: %v %v", value, err)
 	}
 }
 

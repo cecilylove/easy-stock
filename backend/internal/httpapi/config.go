@@ -21,6 +21,10 @@ type RealtimeProvider interface {
 	Realtime(ctx context.Context, symbols []string) ([]foundation.Quote, error)
 }
 
+type AuctionProvider interface {
+	AuctionTrace(ctx context.Context, symbol string) (foundation.AuctionTrace, error)
+}
+
 type KLineProvider interface {
 	KLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error)
 }
@@ -105,6 +109,7 @@ type ReviewImporter interface {
 type Config struct {
 	Token                string
 	Realtime             RealtimeProvider
+	Auction              AuctionProvider
 	KLinePrimary         KLineProvider
 	KLineFallback        KLineProvider
 	News                 NewsProvider

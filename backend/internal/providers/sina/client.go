@@ -246,7 +246,7 @@ func parseKLineTime(value string) (time.Time, error) {
 		"2006/01/02 15:04",
 		"2006/01/02",
 	} {
-		if parsed, err := time.ParseInLocation(layout, value, time.Local); err == nil {
+		if parsed, err := time.ParseInLocation(layout, value, time.FixedZone("CST", 8*60*60)); err == nil {
 			return parsed, nil
 		}
 	}
@@ -308,7 +308,7 @@ func parseRealtime(body string, symbols []foundation.Symbol, meta foundation.Sou
 		if prevClose != 0 {
 			changePercent = change / prevClose * 100
 		}
-		tradeTime, _ := time.ParseInLocation("2006-01-02 15:04:05", fields[30]+" "+fields[31], time.Local)
+		tradeTime, _ := time.ParseInLocation("2006-01-02 15:04:05", fields[30]+" "+fields[31], time.FixedZone("CST", 8*60*60))
 		quotes = append(quotes, foundation.Quote{
 			Symbol:        symbol.Canonical,
 			Name:          fields[0],

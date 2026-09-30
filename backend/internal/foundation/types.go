@@ -30,6 +30,22 @@ type Quote struct {
 	Meta          SourceMeta `json:"meta"`
 }
 
+// AuctionTrace is a separately sourced indicative pre-open price series.
+// Pre-09:26 values are not transaction prices or executed minute bars.
+type AuctionTrace struct {
+	Symbol    string         `json:"symbol"`
+	TradeDate string         `json:"trade_date"`
+	Points    []AuctionPoint `json:"points"`
+	Meta      SourceMeta     `json:"meta"`
+}
+
+type AuctionPoint struct {
+	Time   time.Time `json:"time"`
+	Price  float64   `json:"price"`
+	Volume float64   `json:"volume,omitempty"`
+	Amount float64   `json:"amount,omitempty"`
+}
+
 type KLine struct {
 	Symbol        string     `json:"symbol"`
 	Time          time.Time  `json:"time"`
