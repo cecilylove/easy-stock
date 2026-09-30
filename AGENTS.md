@@ -20,6 +20,7 @@
 
 - 根目录安装依赖：`npm ci`。
 - Web 分别开发：`npm run dev:backend` 与 `npm run dev:frontend`；默认只监听本机 `127.0.0.1` 的 `20081` 与 `20073` 端口。`dev:backend` 使用 POSIX 环境变量写法，在 Windows 原生终端应按 `backend/cmd/server/main.go` 设置环境变量后从 `backend/` 运行 `go run ./cmd/server`；不要假设脚本可直接跨平台执行。
+- Windows 原生 PowerShell：分别运行 `./scripts/dev-windows.ps1 -Service Backend`、`-Service Frontend`；桌面使用 `-Service Desktop`。脚本优先使用 `.runtime/tools/go/`，隔离 Web/桌面数据；当前终端加载环境使用 `. ./scripts/dev-windows.ps1`。准备条件见 `docs/development.md`。
 - 后端测试：在 `backend/` 执行 `go test ./...`。
 - 前端测试与构建：`npm --workspace frontend test -- --run`、`npm run build:frontend`。
 - 桌面主进程测试：`npm --workspace desktop test`；根目录 `npm test` 包含后端和前端测试，不包含桌面测试。

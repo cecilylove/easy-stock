@@ -83,6 +83,17 @@ VITE_A_STOCK_BACKEND_URL=http://127.0.0.1:20081 npm run dev:frontend
 
 前端默认运行在 `127.0.0.1:20073`，后端默认运行在 `127.0.0.1:20081`。开发模式未设置 `A_STOCK_TOKEN` 时，本机 API 不要求鉴权。
 
+Windows 原生 PowerShell 可在仓库根目录的两个终端分别执行：
+
+```powershell
+./scripts/dev-windows.ps1 -Service Backend
+./scripts/dev-windows.ps1 -Service Frontend
+```
+
+脚本使用独立的 `.runtime/web-data/` 保存设置、数据库、日志和 Hermes Home；优先使用 `.runtime/tools/go/bin/go.exe`，否则使用 PATH 中的 Go。需先准备 Go 1.26 并运行 `npm ci`。前端端口被占用时直接报错。需要在当前终端运行 Go 测试时，先执行 `. ./scripts/dev-windows.ps1` 加载本地环境。上述 Bash 一键重启脚本不适用于未配置 Bash 和 `lsof` 的原生 Windows 环境。
+
+前端已启动后，执行 `./scripts/dev-windows.ps1 -Service Desktop` 可启动 Electron；它先准备锁定的 Hermes/Python Runtime，再加载开发前端。桌面开发数据独立保存在 `.runtime/desktop-data/`，不会覆盖已安装版数据；Web 与桌面设置分别配置。
+
 ### 启动 Electron 桌面开发模式
 
 终端 1：
