@@ -13,12 +13,15 @@ describe('stock detail automatic refresh schedule', () => {
 		expect(refreshInterval('intraday', china('2026-09-30', 9, 29))).toBeNull();
 		expect(refreshInterval('intraday', china('2026-09-30', 9, 30))).toBe(5_000);
 		expect(refreshInterval('quote', china('2026-09-30', 14, 15))).toBe(5_000);
+		expect(refreshInterval('kline', china('2026-09-30', 14, 15))).toBe(60_000);
+		expect(refreshInterval('kline', china('2026-09-30', 9, 25))).toBeNull();
 	});
 	it('pauses for lunch, after the close, and weekends', () => {
 		for (const date of [china('2026-09-30', 12, 1), china('2026-09-30', 15, 1), china('2026-10-03', 9, 23)]) {
 			expect(refreshInterval('quote', date)).toBeNull();
 			expect(refreshInterval('auction', date)).toBeNull();
 			expect(refreshInterval('intraday', date)).toBeNull();
+			expect(refreshInterval('kline', date)).toBeNull();
 		}
 	});
 });

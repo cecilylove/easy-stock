@@ -7643,6 +7643,13 @@ a:focus-visible {
 .stock-detail-periods button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--theme-surface, #fff); color: var(--muted); cursor: pointer; }
 .stock-detail-periods button.active { background: var(--theme-blue-soft, #edf5ff); border-color: var(--theme-blue, #2476d2); color: var(--theme-blue, #2476d2); }
 .stock-detail-chart-panel { min-width: 0; }
+.stock-detail-actions button:disabled { cursor: default; opacity: .65; }
+.stock-detail-refresh-status { display: flex; align-items: center; gap: 6px; height: 28px; min-width: 0; margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.stock-detail-refresh-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stock-detail-refresh-status button { flex-shrink: 0; padding: 2px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--theme-surface, #fff); color: var(--theme-blue, #2476d2); cursor: pointer; }
+.stock-detail-refresh-status button:disabled { cursor: default; opacity: .65; }
+.stock-detail-refresh-status.stock-detail-error { color: var(--theme-red, #c43e3e); }
+.stock-detail-refresh-status.stock-detail-hint { margin: 4px 0 0; }
 .stock-detail-chart-panel .kline-chart-wrap { width: 100%; }
 .kline-chart-fluid { min-height: 0; padding: 0; overflow: visible; }
 .kline-chart-fluid .kline-plot-scroll { width: 100%; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; }

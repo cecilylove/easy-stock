@@ -1,6 +1,6 @@
 import { shanghaiDayAndMinute } from './stock-intraday';
 
-export type RefreshKind = 'quote' | 'intraday' | 'auction';
+export type RefreshKind = 'quote' | 'intraday' | 'kline' | 'auction';
 
 export function refreshInterval(kind: RefreshKind, now: Date): number | null {
 	const china = shanghaiDayAndMinute(now.toISOString());
@@ -12,5 +12,6 @@ export function refreshInterval(kind: RefreshKind, now: Date): number | null {
 	const trade = (minute >= 9 * 60 + 30 && minute < 11 * 60 + 31) || (minute >= 13 * 60 && minute <= 15 * 60);
 	if (kind === 'auction') return auction ? 5_000 : null;
 	if (kind === 'intraday') return trade ? 5_000 : null;
+	if (kind === 'kline') return trade ? 60_000 : null;
 	return auction || trade ? 5_000 : null;
 }

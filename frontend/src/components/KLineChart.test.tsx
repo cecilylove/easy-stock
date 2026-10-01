@@ -8,6 +8,15 @@ const line = (time: string, price: number) => ({ time, open: price, close: price
 describe('stock detail multi-day chart', () => {
 	const lines = [line('2026-09-29T09:35:00+08:00', 10), line('2026-09-29T15:00:00+08:00', 11), line('2026-09-30T09:35:00+08:00', 12), line('2026-09-30T15:00:00+08:00', 13)];
 
+	it('keeps the chart and scroll container while existing data refreshes', () => {
+		const html = renderToStaticMarkup(<KLineChart lines={lines} state="loading" fluid />);
+		expect(html).toContain('kline-plot-scroll');
+		expect(html).toContain('<svg');
+		expect(html).not.toContain('kline-chart-placeholder');
+		const empty = renderToStaticMarkup(<KLineChart lines={[]} state="loading" fluid />);
+		expect(empty).toContain('正在加载日K数据');
+	});
+
 	it('keeps multi-day gains above a single-day limit inside the plotted range', () => {
 		const html = renderToStaticMarkup(<KLineChart lines={lines} symbol="000002.SZ" mode="intraday" periodLabel="5日" fluid />);
 		const path = /class="kline-close-line" d="([^"]+)"/.exec(html)![1];

@@ -58,12 +58,16 @@ function intradayLimitPercent(symbol = '') {
 }
 
 export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', periodLabel = '日K', fluid = false }: Props) {
-	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-	const { containerRef, width: containerWidth, scrollable } = useChartViewport(fluid && state !== 'loading' && lines.length > 0);
-	if (state === 'loading') return <div className="kline-chart-placeholder">正在加载{periodLabel}数据…</div>;
+	const [hoveredPoint, setHoveredPoint] = useState<{ context: string; time: string } | null>(null);
+	const context = JSON.stringify([symbol, mode, periodLabel]);
+	const { containerRef, width: containerWidth, scrollable } = useChartViewport(fluid && lines.length > 0);
+	if (state === 'loading' && !lines.length) return <div className="kline-chart-placeholder">正在加载{periodLabel}数据…</div>;
 	if (!lines.length) return <div className="kline-chart-placeholder">{state === 'error' ? `${periodLabel}数据暂不可用，请稍后重试。` : `暂无${periodLabel}数据。`}</div>;
 
 	const sorted = [...lines].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+	// Anchor inspection to the observed candle, not its index in a refreshed window.
+	const selectedIndex = hoveredPoint?.context === context ? sorted.findIndex(line => line.time === hoveredPoint.time) : -1;
+	const hoveredIndex = selectedIndex >= 0 ? selectedIndex : null;
 	const showTradingDays = fluid && mode === 'intraday' && periodLabel === '5日';
 	const width = fluid ? containerWidth : 960;
 	const height = fluid ? 400 : 430;
@@ -150,7 +154,8 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 		const bounds = event.currentTarget.getBoundingClientRect();
 		if (!bounds.width) return;
 		const plotX = left + ((event.clientX - bounds.left) / bounds.width) * plotWidth;
-		setHoveredIndex(Math.max(0, Math.min(sorted.length - 1, Math.floor((plotX - left) / step))));
+		const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((plotX - left) / step)));
+		setHoveredPoint({ context, time: sorted[index].time });
 	};
 	const linePath = sorted.map((line, index) => {
 		const x = left + index * step + step / 2;
@@ -207,7 +212,7 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 					<line className="kline-crosshair kline-crosshair-horizontal" x1={left} x2={width - right} y1={hoveredY} y2={hoveredY} />
 					<circle className="kline-crosshair-point" cx={hoveredX} cy={hoveredY} r="4" />
 				</>}
-				<rect className="kline-hover-layer" x={left} y={chartTop} width={plotWidth} height={volumeBottom - chartTop} onMouseMove={handleChartMove} onMouseLeave={() => setHoveredIndex(null)} aria-label="悬浮查看行情明细" />
+				<rect className="kline-hover-layer" x={left} y={chartTop} width={plotWidth} height={volumeBottom - chartTop} onMouseMove={handleChartMove} onMouseLeave={() => setHoveredPoint(null)} aria-label="悬浮查看行情明细" />
 			</svg>
 			</div>
 			{hoveredLine && <div className={`kline-hover-card ${mode === 'intraday' ? 'right' : 'left'}`}>
