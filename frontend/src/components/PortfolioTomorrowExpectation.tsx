@@ -1,7 +1,8 @@
 import { BrainCircuit, CheckCircle2, ChevronRight, CircleAlert, Clock3, LoaderCircle, RefreshCw, ShieldAlert, Sparkles, Target, WalletCards, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BackendConfig, PortfolioExpectationJob, PortfolioExpectationReport, StockDirectoryData, StockDirectoryEntry, requestJSON } from '../lib/backend';
-import { PortfolioDraft, portfolioDraftToHoldings, readPortfolioDraft, writePortfolioDraft } from '../lib/portfolio-draft';
+import { PortfolioDraft, portfolioDraftChangedEvent, portfolioDraftStorageKey, portfolioDraftToHoldings, readPortfolioDraft, writePortfolioDraft } from '../lib/portfolio-draft';
+import { matchingPortfolioExpectation, portfolioExpectationIdentity } from '../lib/portfolio-expectation';
 import { PortfolioSetupForm } from './PortfolioSetupForm';
 
 type Props = {
@@ -10,35 +11,49 @@ type Props = {
 };
 
 export function PortfolioTomorrowExpectation({ config, summaryDate }: Props) {
+	// A new review date/backend must never reuse an earlier session's report.
+	return <PortfolioExpectationSession key={JSON.stringify([config?.backendUrl, config?.token, summaryDate])} config={config} summaryDate={summaryDate} />;
+}
+
+function PortfolioExpectationSession({ config, summaryDate }: Props) {
 	const [job, setJob] = useState<PortfolioExpectationJob | null>(null);
+	const [portfolio, setPortfolio] = useState(readPortfolioDraft);
 	const [setupDraft, setSetupDraft] = useState<PortfolioDraft | null>(null);
 	const [directory, setDirectory] = useState<StockDirectoryEntry[]>([]);
 	const [reportOpen, setReportOpen] = useState(false);
 	const [starting, setStarting] = useState(false);
 	const [error, setError] = useState('');
-	const running = job?.status === 'running';
+	const currentJob = matchingPortfolioExpectation(job, summaryDate, portfolio) ? job : null;
+	const running = currentJob?.status === 'running';
+	const portfolioKey = portfolioExpectationIdentity(summaryDate, portfolio);
+	useEffect(() => {
+		const changed = () => setPortfolio(readPortfolioDraft());
+		const stored = (event: StorageEvent) => { if (event.key === portfolioDraftStorageKey || event.key === null) changed(); };
+		window.addEventListener(portfolioDraftChangedEvent, changed); window.addEventListener('storage', stored);
+		return () => { window.removeEventListener(portfolioDraftChangedEvent, changed); window.removeEventListener('storage', stored); };
+	}, []);
 
 	useEffect(() => {
 		if (!config || !summaryDate) return;
+		setJob(current => matchingPortfolioExpectation(current, summaryDate, portfolio) ? current : null);
+		setReportOpen(false); setError('');
 		let active = true;
 		requestJSON<{ data: PortfolioExpectationJob | null }>(config, `/api/v1/reviews/portfolio-expectations/latest?summary_date=${encodeURIComponent(summaryDate)}`)
 			.then((payload) => {
-				if (!active || !payload.data) return;
-				const draft = readPortfolioDraft();
-				const current = portfolioDraftToHoldings(draft.holdings);
-				if (draft.profile === payload.data.request.trader_profile && sameHoldings(current, payload.data.request.holdings)) setJob(payload.data);
+				if (!active || !matchingPortfolioExpectation(payload.data, summaryDate, readPortfolioDraft())) return;
+				setJob(current => current && matchingPortfolioExpectation(current, summaryDate, readPortfolioDraft()) ? current : payload.data);
 			})
 			.catch(() => undefined);
 		return () => { active = false; };
-	}, [config, summaryDate]);
+	}, [config, summaryDate, portfolioKey]);
 
 	useEffect(() => {
-		if (!config || !job || job.status !== 'running') return;
+		if (!config || !currentJob || currentJob.status !== 'running') return;
 		let active = true;
 		const poll = async () => {
 			try {
-				const payload = await requestJSON<{ data: PortfolioExpectationJob }>(config, `/api/v1/reviews/portfolio-expectations/${encodeURIComponent(job.id)}`);
-				if (!active) return;
+				const payload = await requestJSON<{ data: PortfolioExpectationJob }>(config, `/api/v1/reviews/portfolio-expectations/${encodeURIComponent(currentJob.id)}`);
+				if (!active || !matchingPortfolioExpectation(payload.data, summaryDate, readPortfolioDraft())) return;
 				setJob(payload.data);
 				if (payload.data.report_available && payload.data.status !== 'running') setReportOpen(true);
 				if (payload.data.status === 'failed') setError(payload.data.error || payload.data.message || '持仓明日预期生成失败');
@@ -49,19 +64,21 @@ export function PortfolioTomorrowExpectation({ config, summaryDate }: Props) {
 		void poll();
 		const timer = window.setInterval(() => void poll(), 3000);
 		return () => { active = false; window.clearInterval(timer); };
-	}, [config, job?.id, job?.status]);
+	}, [config, currentJob?.id, currentJob?.status, portfolioKey, summaryDate]);
 
 	const startExpectation = useCallback(async (draft: PortfolioDraft, force = false) => {
 		if (!config || !draft.holdings.length) return;
 		setStarting(true);
 		setError('');
+		setReportOpen(false);
 		try {
 			const payload = await requestJSON<{ data: PortfolioExpectationJob }>(config, '/api/v1/reviews/portfolio-expectations', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ summary_date: summaryDate, trader_profile: draft.profile, holdings: portfolioDraftToHoldings(draft.holdings), force }),
 			});
-			setJob(payload.data);
+			if (!matchingPortfolioExpectation(payload.data, summaryDate, readPortfolioDraft())) return;
+			setPortfolio(readPortfolioDraft()); setJob(payload.data);
 			setSetupDraft(null);
 			if (payload.data.report_available) setReportOpen(true);
 		} catch (cause) {
@@ -84,18 +101,18 @@ export function PortfolioTomorrowExpectation({ config, summaryDate }: Props) {
 
 	const handlePrimaryAction = () => {
 		if (running || starting) return;
-		if (job?.report_available && job.report) { setReportOpen(true); return; }
+		if (currentJob?.report_available && currentJob.report && matchingPortfolioExpectation(currentJob, summaryDate, readPortfolioDraft())) { setReportOpen(true); return; }
 		const draft = readPortfolioDraft();
 		if (!draft.holdings.length) { void openSetup(); return; }
 		void startExpectation(draft);
 	};
 
-	const label = running ? `分析中 ${job?.completed_stocks || 0}/${job?.total_stocks || '—'}` : starting ? '正在启动' : job?.report_available ? '查看明日预期' : '持仓明日预期';
+	const label = running ? `分析中 ${currentJob?.completed_stocks || 0}/${currentJob?.total_stocks || '—'}` : starting ? '正在启动' : currentJob?.report_available ? '查看明日预期' : '持仓明日预期';
 	return <>
-		<button type="button" className="portfolio-expectation-trigger" onClick={handlePrimaryAction} disabled={running || starting} title="结合今日复盘和当前持仓生成明日情景预期">{running || starting ? <LoaderCircle className="spin" size={14} /> : job?.report_available ? <CheckCircle2 size={14} /> : <WalletCards size={14} />}{label}</button>
+		<button type="button" className="portfolio-expectation-trigger" onClick={handlePrimaryAction} disabled={running || starting} title="结合今日复盘和当前持仓生成明日情景预期">{running || starting ? <LoaderCircle className="spin" size={14} /> : currentJob?.report_available ? <CheckCircle2 size={14} /> : <WalletCards size={14} />}{label}</button>
 		{error && <div className="portfolio-expectation-error" role="alert"><CircleAlert size={14} /><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭错误"><X size={13} /></button></div>}
 		{setupDraft && <PortfolioExpectationSetupDialog draft={setupDraft} directory={directory} busy={starting} onChange={setSetupDraft} onClose={() => setSetupDraft(null)} onSubmit={() => { writePortfolioDraft(setupDraft); void startExpectation(setupDraft); }} />}
-		{reportOpen && job?.report && <PortfolioExpectationReportDialog report={job.report} partial={job.status === 'partial'} onClose={() => setReportOpen(false)} onRegenerate={() => { setReportOpen(false); void startExpectation(readPortfolioDraft(), true); }} />}
+		{reportOpen && currentJob?.report && <PortfolioExpectationReportDialog report={currentJob.report} partial={currentJob.status === 'partial'} onClose={() => setReportOpen(false)} onRegenerate={() => { setReportOpen(false); void startExpectation(readPortfolioDraft(), true); }} />}
 	</>;
 }
 
@@ -130,8 +147,5 @@ function PortfolioExpectationReportDialog({ report, partial, onClose, onRegenera
 function EvidenceGroup({ label, items }: { label: string; items: string[] }) { return <div><b>{label}</b>{items?.length ? <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul> : <span>暂无直接证据</span>}</div>; }
 function TimelineStage({ label, items }: { label: string; items: string[] }) { return <article><strong>{label}</strong><BulletList items={items} empty="等待盘面确认" /></article>; }
 function BulletList({ items, empty }: { items?: string[]; empty: string }) { return items?.length ? <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul> : <p>{empty}</p>; }
-function sameHoldings(left: Array<{ symbol: string; weight_percent: number; cost_price?: number }>, right: Array<{ symbol: string; weight_percent: number; cost_price?: number }>) { return JSON.stringify(left.map(normalizeHolding).sort(bySymbol)) === JSON.stringify(right.map(normalizeHolding).sort(bySymbol)); }
-function normalizeHolding(item: { symbol: string; weight_percent: number; cost_price?: number }) { return { symbol: item.symbol, weight_percent: item.weight_percent, cost_price: item.cost_price || 0 }; }
-function bySymbol(left: { symbol: string }, right: { symbol: string }) { return left.symbol.localeCompare(right.symbol); }
 function biasClass(value: string) { return value === '有利' ? 'positive' : value === '承压' ? 'negative' : 'neutral'; }
 function alignmentClass(value: string) { return value === '共振' ? 'positive' : value === '背离' ? 'negative' : value === '部分共振' ? 'partial' : 'neutral'; }

@@ -188,6 +188,9 @@ func (c *Client) KLine(ctx context.Context, symbol string, period string, limit 
 		}
 		items = append(items, item)
 	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("eastmoney returned no kline bars")
+	}
 	return items, nil
 }
 

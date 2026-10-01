@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const {
   findFreePort,
@@ -31,7 +31,8 @@ const { resolveUserDataPath } = require('./user-data.cjs');
 const { resolveHermesRuntimeRoot } = require('./hermes-runtime-root.cjs');
 const { createUpdateBackup, resolveBackupRoot } = require('./data-protection.cjs');
 const { UpdateManager } = require('./update-manager.cjs');
-const { resolveUpdateFeedURL } = require('./update-feed.cjs');
+const { resolveUpdateFeedURL, packagedUpdateFeed } = require('./update-feed.cjs');
+const { resolveResearchData } = require('./research-data.cjs');
 const { createRotatingLogger } = require('./runtime-logger.cjs');
 
 app.setName('easy-stock');
@@ -76,6 +77,8 @@ let wechatServiceConfig;
 let wechatServiceError = '';
 let updateManager;
 let updateCheckTimer;
+let researchData;
+let researchPython;
 const reviewLoginWindows = new Map();
 
 function featureLogger(feature) {
@@ -303,9 +306,10 @@ async function stopRuntime() {
 }
 
 function initializeUpdateManager() {
-  const enabled = app.isPackaged && ['darwin', 'win32'].includes(process.platform);
+  const feedURL = resolveUpdateFeedURL(process.env.A_STOCK_UPDATE_FEED_URL, packagedUpdateFeed(resourcesRoot()));
+  const enabled = Boolean(feedURL) && app.isPackaged && ['darwin', 'win32'].includes(process.platform);
   if (enabled) {
-    autoUpdater.setFeedURL({ provider: 'generic', url: resolveUpdateFeedURL() });
+    autoUpdater.setFeedURL({ provider: 'generic', url: feedURL });
   }
   updateManager = new UpdateManager({
     updater: autoUpdater,
@@ -319,6 +323,8 @@ function initializeUpdateManager() {
       backupRoot: resolveBackupRoot(app.getPath('userData')),
       fromVersion,
       toVersion,
+      researchDBPath: researchData?.path,
+      sqlitePython: researchPython,
     }),
 		logger: featureLogger('updater'),
   });
@@ -356,12 +362,27 @@ function buildRuntimeEnv(resourcesRoot) {
   fs.mkdirSync(hermesHome, { recursive: true });
   fs.mkdirSync(hermesWorkDir, { recursive: true });
   fs.mkdirSync(browserStateDir, { recursive: true, mode: 0o700 });
+  researchPython = process.env.A_STOCK_HERMES_PYTHON || resolveWechatPython(hermesRuntimeRoot);
+  researchData = resolveResearchData({
+    userDataPath: userData,
+    configDir: app.getPath('appData'),
+    configuredPath: process.env.A_STOCK_RESEARCH_DB,
+    isolated: Boolean(process.env.A_STOCK_USER_DATA_DIR),
+    python: researchPython,
+  });
+  if (researchData.state !== 'local' && researchData.state !== 'explicit') {
+    desktopLogger.event('info', 'research-data', researchData.message);
+    if (researchData.notify && ['migration-deferred', 'preserved-both', 'isolated-source-preserved'].includes(researchData.state)) {
+      dialog.showErrorBox('个股研究历史保留提示', `${researchData.message}\n原数据库：${researchData.source}\n当前数据库：${researchData.path}`);
+    }
+  }
   return {
 		A_STOCK_LOG_DIR: runtimeLogDirectory,
 		A_STOCK_APP_VERSION: app.getVersion(),
     A_STOCK_SETTINGS_PATH: path.join(userData, 'settings.json'),
     A_STOCK_REVIEW_DB: path.join(userData, 'reviews.db'),
     A_STOCK_PORTFOLIO_DB: path.join(userData, 'portfolio-inspections.db'),
+    A_STOCK_RESEARCH_DB: researchData.path,
     A_STOCK_MARKET_EMOTION_DB: path.join(userData, 'market-emotion.db'),
     A_STOCK_THEME_RADAR_DB: path.join(userData, 'theme-radar.db'),
     A_STOCK_MASTERY_CACHE: path.join(userData, 'trading-mastery'),
@@ -453,7 +474,7 @@ ipcMain.handle('app-update-status', () => updateManager?.getStatus() || {
 ipcMain.handle('app-update-check', () => updateManager.checkForUpdates());
 ipcMain.handle('app-update-download', () => updateManager.downloadUpdate());
 ipcMain.handle('app-update-install', () => updateManager.installUpdate());
-ipcMain.handle('app-update-open-release', () => shell.openExternal(`https://github.com/jundizhou/easy-stock/releases/tag/v${updateManager?.getStatus().latestVersion || app.getVersion()}`));
+ipcMain.handle('app-update-open-release', () => shell.openExternal(`https://github.com/cecilylove/easy-stock/releases/tag/v${updateManager?.getStatus().latestVersion || app.getVersion()}`));
 ipcMain.handle('app-update-open-backups', async () => {
   const backupRoot = resolveBackupRoot(app.getPath('userData'));
   fs.mkdirSync(backupRoot, { recursive: true, mode: 0o700 });

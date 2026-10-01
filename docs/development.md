@@ -1,6 +1,6 @@
 # easy-stock 开发者文档
 
-本文面向需要从源码运行、调试、测试、扩展或打包 easy-stock 的开发者。普通用户请直接前往 [GitHub Releases](https://github.com/jundizhou/easy-stock/releases/latest) 下载桌面版本。
+本文面向需要从源码运行、调试、测试、扩展或打包 easy-stock 的开发者。当前二开版本的安装包以本 fork 的 [GitHub Releases](https://github.com/cecilylove/easy-stock/releases) 为准。
 
 ## 目录
 
@@ -40,7 +40,7 @@
 ## 获取代码与安装依赖
 
 ```bash
-git clone https://github.com/jundizhou/easy-stock.git
+git clone https://github.com/cecilylove/easy-stock.git
 cd easy-stock
 npm ci
 ```
@@ -81,7 +81,7 @@ npm run dev:backend
 VITE_A_STOCK_BACKEND_URL=http://127.0.0.1:20081 npm run dev:frontend
 ```
 
-前端默认运行在 `127.0.0.1:20073`，后端默认运行在 `127.0.0.1:20081`。开发模式未设置 `A_STOCK_TOKEN` 时，本机 API 不要求鉴权。
+前端默认运行在 `127.0.0.1:20073`，后端默认运行在 `127.0.0.1:20081`。未设置 `A_STOCK_TOKEN` 时，本机 CLI 和受信前端仍可访问。后端入口拒绝非 loopback Host 和不可信浏览器 Origin（包括预检和 WebSocket）；默认允许本机 `20073` 前端及后端自身来源。使用其他前端端口（例如 Vite preview 的 `4173`）时，将完整来源加入 `A_STOCK_ALLOWED_ORIGINS`。该列表只允许本机 HTTP/HTTPS 来源，不是开放公网访问的开关。Electron 的 `null` 来源只有配置 Token 才允许，实际 API 请求仍校验 Token。
 
 Windows 原生 PowerShell 可在仓库根目录的两个终端分别执行：
 
@@ -150,6 +150,7 @@ Electron 桌面模式
 | --- | --- | --- |
 | `A_STOCK_ADDR` | `127.0.0.1:20081` | 后端监听地址 |
 | `A_STOCK_TOKEN` | 空 | 可选的本机 API Bearer Token |
+| `A_STOCK_ALLOWED_ORIGINS` | 空 | 额外受信本机前端完整来源，逗号分隔，例如 `http://127.0.0.1:4173`；默认已允许本机 `20073` 前端 |
 | `A_STOCK_FRONTEND_HOST` | `127.0.0.1` | `npm run restart` 使用的前端地址 |
 | `A_STOCK_FRONTEND_PORT` | `20073` | `npm run restart` 使用的前端端口 |
 | `VITE_A_STOCK_BACKEND_URL` | `http://127.0.0.1:20081` | 前端连接的后端地址 |
@@ -161,6 +162,7 @@ Electron 桌面模式
 | --- | --- |
 | `A_STOCK_SETTINGS_PATH` | 设置文件路径 |
 | `A_STOCK_REVIEW_DB` | 复盘文章 SQLite 路径 |
+| `A_STOCK_RESEARCH_DB` | 个股研究 SQLite 路径；桌面默认放在独立 userData 内，显式外置库也纳入更新备份 |
 | `A_STOCK_MARKET_EMOTION_DB` | 市场情绪历史 SQLite 路径 |
 | `A_STOCK_THEME_RADAR_DB` | 趋势题材与短线侠快照 SQLite 路径 |
 | `A_STOCK_MASTERY_CACHE` | 游资心法缓存目录 |
@@ -262,7 +264,7 @@ Windows 正式发布当前使用 `x64`。构建产物位于 `desktop/dist/`，�
 
 ### GitHub Release
 
-推送与 `desktop/package.json` 版本一致的 `v*` 标签后，[桌面发布工作流](../.github/workflows/release.yml) 会运行测试，并分别生成 macOS Intel、macOS Apple Silicon 和 Windows x64 产物。工作流会将自动更新所需的 ZIP/EXE、blockmap 和 `latest*.yml` 上传到 OSS，最后只把 DMG、Windows 安装器和 `SHA256SUMS.txt` 发布到 GitHub Releases，避免用户在下载页误选更新内部文件。完整流程和必需 secrets 见 [桌面自动更新文档](../desktop/AUTO_UPDATE.md)。
+推送与 `desktop/package.json` 版本一致的 `v*` 标签后，[桌面发布工作流](../.github/workflows/release.yml) 会运行测试，并分别生成 macOS Intel、macOS Apple Silicon 和 Windows x64 产物。默认只把 DMG、Windows 安装器和 `SHA256SUMS.txt` 发布到 GitHub Releases，fork 自动更新关闭。配置自己的更新源、OSS 目标与凭据后才发布更新资产；构建时的源写入安装包，不再默认指向原作者 OSS。完整配置与签名要求见 [桌面自动更新文档](../desktop/AUTO_UPDATE.md)。
 
 ## 本地数据与日志
 
@@ -278,7 +280,7 @@ Web 开发的一键启动模式使用：
 Go 后端在未显式配置路径时，会使用操作系统用户配置目录下的 `easy-stock` 数据目录。Electron 使用系统提供的 `userData` 目录保存：
 
 - 应用设置；
-- 复盘、情绪和题材数据库；
+- 复盘、情绪、题材和个股研究数据库；
 - Hermes 配置、密钥和会话；
 - 游资心法缓存；
 - 雪球、淘股吧等持久浏览器会话。
@@ -296,6 +298,8 @@ Go 后端在未显式配置路径时，会使用操作系统用户配置目录�
 普通用户可从「系统设置 → 运行日志」直接打开目录。直接运行后端时，可通过 `A_STOCK_LOG_DIR` 指定相同的日志目录。
 
 可使用 `A_STOCK_USER_DATA_DIR` 覆盖 Electron 用户数据目录。清理这些目录会删除本机配置、登录态和历史数据，操作前应先备份。
+
+桌面默认数据目录首次遇到旧研究库时，通过 SQLite 一致性快照复制到 `userData/stock-research.db`，保留原库且不覆盖已有目标。自定义隔离目录不会自动导入系统历史；迁移失败会继续使用原库并提示。显式 `A_STOCK_RESEARCH_DB` 保持原路径，更新时研究库统一生成一致性快照。备份保留策略只清理通过应用标记和结构校验的自有备份，未知目录和旧版无标记备份不自动删除；详见 [桌面数据保护](../desktop/AUTO_UPDATE.md#data-protection)。
 
 ## 相关技术文档
 

@@ -164,7 +164,7 @@ func (p *RadarProvider) buildKaipanlaRadarOverviews(
 	freshness := math.Pow(.9, float64(max(tradeAge, 0)))
 	result := make([]foundation.ThemeOverview, 0, len(themes))
 	for index, theme := range themes {
-		strength, strengthAvailable := strengths[theme.Code]
+		strength := strengths[theme.Code]
 		rankAbsolute := clampFloat(100-float64(max(theme.Rank-1, 0))*4, 0, 100)
 		rankScore := rankAbsolute*.6 + rankPercentiles[index]*.4
 		persistence := float64(min(len(theme.History), 5)) * 20
@@ -172,13 +172,13 @@ func (p *RadarProvider) buildKaipanlaRadarOverviews(
 			radarMetric{rankScore, true, .45},
 			radarMetric{strengthPercentiles[index], hasSourceStrength, .15},
 			radarMetric{persistence, len(theme.History) > 0, .15},
-			radarMetric{float64(strength.daily), strengthAvailable, .25},
+			radarMetric{float64(strength.daily), strength.dailyValid, .25},
 		)
 		fiveDay, _ := weightedRadarScore(
 			radarMetric{rankScore, true, .35},
 			radarMetric{strengthPercentiles[index], hasSourceStrength, .15},
 			radarMetric{persistence, len(theme.History) > 0, .20},
-			radarMetric{float64(strength.fiveDay), strengthAvailable, .30},
+			radarMetric{float64(strength.fiveDay), strength.fiveDayValid, .30},
 		)
 		dailyScore := roundedRadarScore(daily * freshness)
 		fiveDayScore := roundedRadarScore(fiveDay * freshness)

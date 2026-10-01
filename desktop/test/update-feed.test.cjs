@@ -1,10 +1,26 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { DEFAULT_UPDATE_FEED_URL, resolveUpdateFeedURL } = require('../update-feed.cjs');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { DEFAULT_UPDATE_FEED_URL, resolveUpdateFeedURL, packagedUpdateFeed } = require('../update-feed.cjs');
 
-test('uses the public OSS update feed by default', () => {
+test('fork updates are disabled by default', () => {
   assert.equal(resolveUpdateFeedURL(''), DEFAULT_UPDATE_FEED_URL);
+  assert.equal(DEFAULT_UPDATE_FEED_URL, '');
+  assert.equal(resolveUpdateFeedURL(undefined, ''), '');
+});
+
+test('packaged fork feed persists without runtime env and upstream source is rejected', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-stock-update-feed-'));
+  fs.writeFileSync(path.join(root, 'desktop-update-config.json'), '{"feedURL":"https://updates.example.com/fork"}');
+  assert.equal(resolveUpdateFeedURL(undefined, packagedUpdateFeed(root)), 'https://updates.example.com/fork');
+  assert.equal(resolveUpdateFeedURL('', packagedUpdateFeed(root)), '');
+  assert.throws(() => resolveUpdateFeedURL('https://easy-stock-fs.oss-cn-beijing.aliyuncs.com/updates/desktop'), /own update feed/);
+  for (const url of ['https://user:pass@updates.example.com/', 'https://updates.example.com/?token=secret', 'https://updates.example.com/#fragment']) {
+    assert.throws(() => resolveUpdateFeedURL(url), /credentials/);
+  }
 });
 
 test('normalizes and validates a configured HTTPS update feed', () => {

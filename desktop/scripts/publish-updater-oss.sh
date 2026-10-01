@@ -2,11 +2,11 @@
 set -euo pipefail
 
 asset_dir=${1:-}
-target_uri=${2:-oss://easy-stock-fs/updates/desktop}
-public_url=${3:-https://easy-stock-fs.oss-cn-beijing.aliyuncs.com/updates/desktop}
+target_uri=${2:-}
+public_url=${3:-}
 
-if [[ ! -d "$asset_dir" ]]; then
-  echo "Usage: publish-updater-oss.sh <asset-dir> [target-uri] [public-url]" >&2
+if [[ ! -d "$asset_dir" || -z "$target_uri" || -z "$public_url" || "$target_uri" == oss://easy-stock-fs/* || "$public_url" == https://easy-stock-fs.oss-cn-beijing.aliyuncs.com/* ]]; then
+  echo "Usage: publish-updater-oss.sh <asset-dir> <fork-owned-target-uri> <fork-owned-public-url>" >&2
   exit 2
 fi
 if command -v ossutil >/dev/null 2>&1; then

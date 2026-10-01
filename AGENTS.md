@@ -11,7 +11,7 @@
 - 个股详情、行情、题材或数据源：从 `frontend/src/components/StockDetailWorkspace.tsx`、`frontend/src/components/MarketOverviewWorkspace.tsx` 或 `frontend/src/App.tsx` 的请求出发 → `backend/internal/httpapi/server.go` 的路由与 `market_overview.go` 等缓存/处理器 → `backend/internal/providers/`、`backend/internal/sector/` 及 `backend/internal/foundation/types.go` 的来源元数据。先找相应 Provider 测试、`backend/internal/httpapi/market_overview_test.go`、`frontend/src/lib/stock-detail.test.ts` 和 `frontend/src/lib/market-overview.test.ts`；来源、回退规则见 `backend/docs/data-sources.md`。
 - 个股研究：从 `frontend/src/components/StockAIAnalysisWorkspace.tsx`、`frontend/src/lib/use-stock-research.ts` → `backend/internal/httpapi/stock_research.go` → `backend/internal/stockanalysis/research_service.go`、`research_store.go`。先查 `backend/internal/httpapi/stock_research_test.go`、`backend/internal/stockanalysis/research_test.go` 和 `frontend/src/components/StockResearchReport.test.tsx`；证据与任务约束见 `docs/stock-research.md`。
 - 数据源状态：从 `frontend/src/components/SourceHealthPanel.tsx`、`frontend/src/lib/source-health.ts` → `backend/internal/httpapi/source_health.go`。普通/渐进题材分别经 `server.go`、`theme_progress.go` 记录 `sector/radar.go`、`radar_progress.go` 的真实来源观测；缓存读取不续期。接入清单、预留凭据和直达入口见 `SettingsDrawer.tsx`、`SourceIntegrationCatalog.tsx`、`lib/source-integrations.ts`；保存预留凭据不代表已实现取数。先查 `source_health_test.go`、`theme_observation_test.go` 和 `sector/radar_observation_test.go`，规则见 `backend/docs/data-sources.md`。
-- 桌面启动或本地数据：从 `desktop/main.cjs` 的启动/运行环境 → `desktop/backend-process.cjs` 的进程、`desktop/preload.cjs` 的桥接与 `backend/cmd/server/main.go` 的监听/数据路径。先查 `desktop/test/backend-process.test.cjs`，运行 `npm --workspace desktop test` 和受影响的后端测试；打包和运行时依赖见 `docs/development.md`。
+- 桌面启动或本地数据：从 `desktop/main.cjs` 的启动/运行环境 → `desktop/backend-process.cjs` 的进程、`desktop/preload.cjs` 的桥接与 `backend/cmd/server/main.go` 的监听/数据路径。研究库隔离/迁移见 `desktop/research-data.cjs`，更新备份见 `desktop/data-protection.cjs`；先查对应桌面测试，运行 `npm --workspace desktop test` 和受影响的后端测试。打包和运行时依赖见 `docs/development.md`，fork 默认关闭自动更新，自有源及备份约束见 `desktop/AUTO_UPDATE.md`。
 
 其他页面可由 `frontend/src/App.tsx` 的组件入口和 `backend/internal/httpapi/server.go` 的路由注册定位；复杂实现按需查源码和专项文档，不复制完整调用图。
 
@@ -38,7 +38,8 @@
 
 - 本仓库当前开发目标是用户自己的 fork，远程 `origin` 指向 `cecilylove/easy-stock`，当前本地 `main` 跟踪 `origin/main`。开始改动和提交前核对当前工作树、分支、远程及未提交改动；不得依据旧文档中的 `upstream`、`oss-main` 或其他机器的工作树布局切换目标。仅在用户明确要求时推送；本地提交不等于允许推送远程 `main`。
 - 项目采用 `LICENSE` 中的 PolyForm Noncommercial License 1.0.0；自用二开限非商业用途。分发修改版时保留许可证和要求的版权声明，商业使用需另外取得授权。
-- 桌面端由 Electron 启动仅监听本机的 Go 后端，并用随机 Token 保护；Web 开发模式未配置 `A_STOCK_TOKEN` 时本机 API 不要求鉴权。开发调试不得把无鉴权服务暴露到公网。
+- 桌面端由 Electron 启动仅监听本机的 Go 后端，并用随机 Token 保护；Web 未配置 `A_STOCK_TOKEN` 时允许本机 CLI 和受信前端访问。后端启动入口强制校验 loopback Host，浏览器来源默认仅允许本机 `20073` 前端与后端自身；额外本机前端来源通过 `A_STOCK_ALLOWED_ORIGINS` 配置。Electron 的 `null` 来源仍须 Token；不得放宽成任意 Origin 或把无鉴权服务暴露到公网。
+- 本项目适合并行的任务默认使用智能体团队，由主智能体安排独立文件/模块的分工、协调共享边界并统一审查和验证；有顺序依赖的步骤串行处理。
 - 本机设置、SQLite、日志、Hermes Home、模型密钥和浏览器登录态不入库；使用独立数据路径验证二开，避免覆盖已安装版用户数据。参见 `.gitignore` 与 `docs/development.md`。
 
 ## 文档自维护

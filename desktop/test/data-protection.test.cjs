@@ -195,3 +195,36 @@ test('rejects a backup root nested inside user data', () => {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-stock-backup-'));
   assert.throws(() => resolveBackupRoot(userData, path.join(userData, 'backups')), /不能位于应用数据目录内/);
 });
+
+test('retention preserves unrelated folders, invalid manifests and directory links', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-stock-owned-backup-'));
+  const userData = path.join(root, 'user');
+  const backups = path.join(root, 'backups');
+  fs.mkdirSync(userData); fs.mkdirSync(backups);
+  write(userData, 'settings.json', '{}');
+  const unrelated = path.join(backups, 'other-project');
+  fs.mkdirSync(unrelated); write(unrelated, 'keep.txt', 'keep');
+  const invalid = path.join(backups, '2020-01-01T00-00-00-000Z-v1-to-v2');
+  fs.mkdirSync(invalid); write(invalid, 'manifest.json', '{"schemaVersion":1}');
+  const linked = path.join(backups, '2021-01-01T00-00-00-000Z-v1-to-v2');
+  fs.symlinkSync(unrelated, linked, process.platform === 'win32' ? 'junction' : 'dir');
+  for (let day = 1; day <= 4; day += 1) {
+    await createUpdateBackup({ userDataPath: userData, backupRoot: backups, fromVersion: '1', toVersion: '2', now: new Date(`2026-08-0${day}T00:00:00Z`), keep: 1 });
+  }
+  assert.equal(fs.readFileSync(path.join(unrelated, 'keep.txt'), 'utf8'), 'keep');
+  assert.ok(fs.existsSync(invalid)); assert.ok(fs.lstatSync(linked).isSymbolicLink());
+  assert.equal(listUpdateBackups(backups).length, 1);
+});
+
+test('rejects a backup root aliased through a junction or directory symlink', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-stock-backup-alias-'));
+  const userData = path.join(root, 'user'); fs.mkdirSync(userData);
+  const alias = path.join(root, 'alias');
+  fs.symlinkSync(userData, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => resolveBackupRoot(userData, path.join(alias, 'not-created', 'backups')), /不能位于应用数据目录内/);
+});
+
+test('Windows nested paths are rejected regardless of casing', { skip: process.platform !== 'win32' }, () => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-stock-backup-case-'));
+  assert.throws(() => resolveBackupRoot(userData, path.join(userData.toUpperCase(), 'BACKUPS')), /不能位于应用数据目录内/);
+});

@@ -40,10 +40,31 @@ func (p *RadarProvider) realtimeStrengthScores(ctx context.Context, themes []dua
 
 	// Record attempts as well as successful refreshes so a failing upstream
 	// cannot trigger a recalculation on every page request.
+	previousAttempt := p.strengthAttemptAt
 	p.strengthAttemptAt = now
 	scores, err := p.calculateRealtimeStrengthScores(ctx, themes)
+	if ctx.Err() != nil {
+		p.strengthAttemptAt = previousAttempt
+		return cloneThemeStrengthScores(p.strengthCache)
+	}
 	if err == nil {
-		p.strengthCache = cloneThemeStrengthScores(scores)
+		// Missing windows are not zero-strength observations. Preserve each
+		// last usable window independently when only part of a refresh works.
+		nextCache := make(map[string]themeStrengthScore, len(themes))
+		for _, theme := range themes {
+			score := scores[theme.Code]
+			previous := p.strengthCache[theme.Code]
+			if !score.dailyValid {
+				score.daily, score.dailyValid = previous.daily, previous.dailyValid
+			}
+			if !score.fiveDayValid {
+				score.fiveDay, score.fiveDayValid = previous.fiveDay, previous.fiveDayValid
+			}
+			if score.dailyValid || score.fiveDayValid {
+				nextCache[theme.Code] = score
+			}
+		}
+		p.strengthCache = nextCache
 	}
 	return cloneThemeStrengthScores(p.strengthCache)
 }
@@ -52,10 +73,6 @@ func (p *RadarProvider) calculateRealtimeStrengthScores(ctx context.Context, the
 	start := time.Now()
 	pools, poolErr := p.loadRealtimeStrengthPools(ctx, themes)
 	log.Printf("event=theme_stage stage=strength_pools duration_ms=%d themes=%d", time.Since(start).Milliseconds(), len(themes))
-	if poolErr != nil && !themePoolsHaveStocks(pools) {
-		return nil, poolErr
-	}
-
 	symbols := uniqueSortedThemeSymbols(pools)
 	start = time.Now()
 	changes := p.strengthChangeLookup(ctx, symbols, pools)
@@ -64,14 +81,21 @@ func (p *RadarProvider) calculateRealtimeStrengthScores(ctx context.Context, the
 	scores := make(map[string]themeStrengthScore, len(themes))
 	for _, theme := range themes {
 		stocks := pools[theme.Code]
-		scores[theme.Code] = themeStrengthScore{
-			daily: calculateThemeStrength(stocks, changes, func(change stockStrengthChange) (float64, bool) {
-				return change.daily, change.dailyValid
-			}),
-			fiveDay: calculateThemeStrength(stocks, changes, func(change stockStrengthChange) (float64, bool) {
-				return change.fiveDay, change.fiveDayValid
-			}),
+		daily, dailyValid := calculateThemeStrengthWithCoverage(stocks, changes, func(change stockStrengthChange) (float64, bool) {
+			return change.daily, change.dailyValid
+		})
+		fiveDay, fiveDayValid := calculateThemeStrengthWithCoverage(stocks, changes, func(change stockStrengthChange) (float64, bool) {
+			return change.fiveDay, change.fiveDayValid
+		})
+		if dailyValid || fiveDayValid {
+			scores[theme.Code] = themeStrengthScore{daily: daily, fiveDay: fiveDay, dailyValid: dailyValid, fiveDayValid: fiveDayValid}
 		}
+	}
+	if len(scores) == 0 {
+		if poolErr != nil {
+			return nil, poolErr
+		}
+		return nil, fmt.Errorf("theme strength has no usable price-change samples")
 	}
 	return scores, nil
 }
@@ -172,6 +196,15 @@ func calculateThemeStrength(
 	changes map[string]stockStrengthChange,
 	selectChange func(stockStrengthChange) (float64, bool),
 ) int {
+	score, _ := calculateThemeStrengthWithCoverage(stocks, changes, selectChange)
+	return score
+}
+
+func calculateThemeStrengthWithCoverage(
+	stocks []foundation.BoardStock,
+	changes map[string]stockStrengthChange,
+	selectChange func(stockStrengthChange) (float64, bool),
+) (int, bool) {
 	values := make([]float64, 0, len(stocks))
 	rising := 0
 	strong := 0
@@ -196,7 +229,7 @@ func calculateThemeStrength(
 		}
 	}
 	if len(values) == 0 {
-		return 0
+		return 0, false
 	}
 
 	meanScore := normalizeStrengthRange(trimmedWinsorizedMean(values), -3, 5)
@@ -206,7 +239,7 @@ func calculateThemeStrength(
 	limitRatio := float64(limitLike) / valid
 	limitScore := math.Min(limitRatio/0.08, 1) * 100
 	score := meanScore*0.40 + breadthScore*0.30 + strongScore*0.20 + limitScore*0.10
-	return int(math.Round(clampFloat(score, 0, 100)))
+	return int(math.Round(clampFloat(score, 0, 100))), true
 }
 
 func calculateRealtimeThemeStrength(stocks []foundation.BoardStock, quotes map[string]foundation.Quote) int {
@@ -287,15 +320,6 @@ func uniqueSortedThemeSymbols(pools map[string][]foundation.BoardStock) []string
 	}
 	sort.Strings(symbols)
 	return symbols
-}
-
-func themePoolsHaveStocks(pools map[string][]foundation.BoardStock) bool {
-	for _, stocks := range pools {
-		if len(stocks) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func stocksFromSectorMap(sectorMap foundation.SectorMap) []foundation.BoardStock {

@@ -108,6 +108,8 @@ type ReviewImporter interface {
 
 type Config struct {
 	Token                string
+	AllowedOrigins       []string
+	EnforceLoopbackHost  bool
 	Realtime             RealtimeProvider
 	Auction              AuctionProvider
 	KLinePrimary         KLineProvider

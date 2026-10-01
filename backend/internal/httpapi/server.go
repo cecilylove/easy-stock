@@ -38,6 +38,8 @@ type Server struct {
 	ladderThemeAI         *ladderThemeAI
 	mux                   *http.ServeMux
 	token                 string
+	allowedOrigins        []string
+	enforceLoopbackHost   bool
 	realtimeProvider      RealtimeProvider
 	detailQuotes          *detailPollCache[[]foundation.Quote]
 	detailKLines          *detailPollCache[[]foundation.KLine]
@@ -303,6 +305,8 @@ func NewServer(config any) *Server {
 	s := &Server{
 		mux:                   http.NewServeMux(),
 		token:                 cfg.Token,
+		allowedOrigins:        append([]string(nil), cfg.AllowedOrigins...),
+		enforceLoopbackHost:   cfg.EnforceLoopbackHost,
 		realtimeProvider:      cfg.Realtime,
 		detailQuotes:          newDetailPollCache[[]foundation.Quote](),
 		detailKLines:          newDetailPollCache[[]foundation.KLine](),
@@ -443,6 +447,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	loggedWriter.Header().Set("X-Request-ID", requestID)
 	defer s.logRequest(r, loggedWriter, requestID, startedAt)
 
+	if !s.browserRequestAllowed(r) {
+		writeError(loggedWriter, http.StatusForbidden, "untrusted browser origin or host")
+		return
+	}
 	s.withCORS(loggedWriter, r)
 	if r.Method == http.MethodOptions {
 		loggedWriter.WriteHeader(http.StatusNoContent)
@@ -793,7 +801,27 @@ func (s *Server) klineBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loadKLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error) {
-	lines, err := s.kLinePrimary.KLine(ctx, symbol, period, limit)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// The primary gets at most half of the remaining request budget, capped
+	// at six seconds, so a slow primary cannot prevent the fallback running.
+	primaryBudget := 6 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		primaryBudget = min(primaryBudget, time.Until(deadline)/2)
+	}
+	primaryCtx, cancelPrimary := context.WithTimeout(ctx, primaryBudget)
+	lines, err := s.kLinePrimary.KLine(primaryCtx, symbol, period, limit)
+	if err == nil {
+		err = primaryCtx.Err()
+	}
+	cancelPrimary()
+	if err == nil && len(lines) == 0 {
+		err = fmt.Errorf("primary kline source returned no bars")
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, ctx.Err()
+	}
 	if err == nil {
 		for _, line := range lines {
 			s.sourceHealth.success(line.Meta)
@@ -803,15 +831,33 @@ func (s *Server) loadKLine(ctx context.Context, symbol string, period string, li
 	if shouldObserveFailure(ctx) {
 		s.sourceHealth.failure(s.kLinePrimarySourceID, err)
 	}
-	lines, err = s.kLineFallback.KLine(ctx, symbol, period, limit)
+	// Do not attribute an already expired/cancelled request to a fallback
+	// that has not actually been called.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	primaryErr := err
+	fallbackCtx, cancelFallback := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelFallback()
+	lines, err = s.kLineFallback.KLine(fallbackCtx, symbol, period, limit)
+	if err == nil {
+		err = fallbackCtx.Err()
+	}
+	if err == nil && len(lines) == 0 {
+		err = fmt.Errorf("fallback kline source returned no bars")
+	}
 	if err != nil {
 		if shouldObserveFailure(ctx) {
 			s.sourceHealth.failure(s.kLineFallbackSourceID, err)
 		}
-		return nil, err
+		return nil, fmt.Errorf("primary kline failed: %v; fallback failed: %w", primaryErr, err)
 	}
-	for _, line := range lines {
-		s.sourceHealth.success(line.Meta)
+	lines = append([]foundation.KLine(nil), lines...)
+	for index := range lines {
+		if lines[index].Meta.FallbackReason == "" {
+			lines[index].Meta.FallbackReason = "主 K 线来源不可用，已切换备用来源"
+		}
+		s.sourceHealth.success(lines[index].Meta)
 	}
 	return normalizeKLinePeriod(lines, period), nil
 }

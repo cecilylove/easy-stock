@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import updateFeed from '../update-feed.cjs';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageManifest = JSON.parse(fs.readFileSync(path.join(desktopRoot, 'package.json'), 'utf8'));
-const updateFeedURL = process.env.A_STOCK_UPDATE_FEED_URL || 'https://easy-stock-fs.oss-cn-beijing.aliyuncs.com/updates/desktop';
+const updateFeedURL = updateFeed.resolveUpdateFeedURL(process.env.A_STOCK_UPDATE_FEED_URL);
 const platform = process.argv[2];
 const mode = process.argv[3] || 'release';
 const arch = process.env.A_STOCK_DESKTOP_ARCH || process.arch;
@@ -31,6 +32,8 @@ const hasMacNotarizationCredentials = Boolean(
   ),
 );
 fs.mkdirSync(outputDirectory, { recursive: true });
+fs.mkdirSync(path.join(desktopRoot, 'resources'), { recursive: true });
+fs.writeFileSync(path.join(desktopRoot, 'resources', 'desktop-update-config.json'), `${JSON.stringify({ feedURL: updateFeedURL })}\n`);
 if (mode === 'release') {
   for (const entry of fs.readdirSync(outputDirectory)) {
     if (entry === 'builder-debug.yml') continue;
@@ -53,6 +56,7 @@ const config = {
     'runtime-logger.cjs',
     'browser-auth.cjs',
     'data-protection.cjs',
+    'research-data.cjs',
     'hermes-runtime-root.cjs',
     'taoguba-browser-bridge.cjs',
     'update-feed.cjs',
@@ -68,7 +72,7 @@ const config = {
   ],
   extraResources: [{ from: path.join(desktopRoot, 'resources'), to: 'resources' }],
   asar: true,
-  publish: [{ provider: 'generic', url: updateFeedURL }],
+  publish: updateFeedURL ? [{ provider: 'generic', url: updateFeedURL }] : null,
   mac: {
     category: 'public.app-category.finance',
     icon: path.join(desktopRoot, 'assets', 'easy-stock.icns'),

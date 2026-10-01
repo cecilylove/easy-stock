@@ -25,12 +25,13 @@ const updaterNames = [
   'latest.yml',
 ];
 
-for (const name of [...new Set([...githubNames, ...updaterNames])]) {
+const updatesEnabled = fs.existsSync(path.join(sourceRoot, 'latest.yml')) || fs.existsSync(path.join(sourceRoot, 'latest-mac.yml'));
+for (const name of [...new Set([...githubNames, ...(updatesEnabled ? updaterNames : [])])]) {
   const source = path.join(sourceRoot, name);
   if (!fs.statSync(source, { throwIfNoEntry: false })?.isFile()) throw new Error(`Required release asset is missing: ${name}`);
 }
 
-for (const [directory, names] of [['github', githubNames], ['updater', updaterNames]]) {
+for (const [directory, names] of [['github', githubNames], ['updater', updatesEnabled ? updaterNames : []]]) {
   const targetRoot = path.join(outputRoot, directory);
   fs.rmSync(targetRoot, { recursive: true, force: true });
   fs.mkdirSync(targetRoot, { recursive: true });

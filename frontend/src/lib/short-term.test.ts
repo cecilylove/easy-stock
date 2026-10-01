@@ -5,6 +5,33 @@ import { buildThemeStocks, calculateThemeEmotion, rankThemeOverviews, themeStren
 const meta = { source: 'test', fetched_at: '', latency_ms: 0, stale: false };
 
 describe('short-term theme helpers', () => {
+	it('uses the same compounded five intervals for a stock and its theme', () => {
+		const symbol = '000001.SZ';
+		const [result] = buildThemeStocks(themeMap([stock(symbol, '相同基准', 10, 100_000_000)]), {}, {
+			[symbol]: makeHistory(symbol, [0, 10, 10, 10, 10, 10], 100_000_000),
+		});
+		expect(result.metrics.return_5d).toBeCloseTo(61.051);
+		expect(result.metrics.relative_strength_5d).toBeCloseTo(0);
+		expect(result.evidence.some((item) => item.includes('中位数领先'))).toBe(false);
+	});
+	it('compares matching intervals when fewer than six closes are available', () => {
+		const symbol = '000001.SZ';
+		const [result] = buildThemeStocks(themeMap([stock(symbol, '短历史', 5, 100_000_000)]), {}, {
+			[symbol]: makeHistory(symbol, [0, -10, 5], 100_000_000),
+		});
+		expect(result.metrics.return_5d).toBeCloseTo(-5.5);
+		expect(result.metrics.relative_strength_5d).toBeCloseTo(0);
+	});
+	it('excludes earlier returns and the anchor close from the five-day benchmark', () => {
+		const symbol = '000001.SZ';
+		const changes = [0, 80, -30, 10, -5, 6, -2, 3];
+		const [result] = buildThemeStocks(themeMap([stock(symbol, '长历史', 3, 100_000_000)]), {}, {
+			[symbol]: makeHistory(symbol, changes, 100_000_000),
+		});
+		const expected = (changes.slice(-5).reduce((growth, change) => growth * (1 + change / 100), 1) - 1) * 100;
+		expect(result.metrics.return_5d).toBeCloseTo(expected);
+		expect(result.metrics.relative_strength_5d).toBeCloseTo(0);
+	});
 	it('scores stronger and broader themes above weak themes', () => {
 		const strong: ThemeOverview = {
 			theme: 'strong', name: '强题材', change_percent: 3, main_net_inflow: 800_000_000,

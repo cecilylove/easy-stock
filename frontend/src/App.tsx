@@ -33,6 +33,7 @@ import {
 	WalletCards,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { disconnectLiveQuotes, mergeLiveQuotes } from './lib/live-quotes';
 import {
 	BackendConfig,
 	KLine,
@@ -112,6 +113,8 @@ export function App() {
 	const [selectedNode, setSelectedNode] = useState('all');
 	const [selectedSymbol, setSelectedSymbol] = useState('');
 	const [liveQuotes, setLiveQuotes] = useState<QuoteLookup>({});
+	const [quoteClock, setQuoteClock] = useState(Date.now);
+	useEffect(() => { const timer = window.setInterval(() => setQuoteClock(Date.now()), 15_000); return () => window.clearInterval(timer); }, []);
 	const [sources, setSources] = useState<SourceHealth[]>([]);
 	const [sourceDetailsOpen, setSourceDetailsOpen] = useState(false);
 	const sourceCounts = sourceHealthCounts(sources);
@@ -200,10 +203,10 @@ export function App() {
 	const kLines = history.lines;
 	const klineState = history.klineState;
 	const themeStocks = useMemo(() => {
-		if (!sectorMap || !selectedBase || baseThemeStocks.some(stock => stock.symbol === selectedBase.symbol)) return buildThemeStocks(sectorMap, liveQuotes, leadershipHistories);
+		if (!sectorMap || !selectedBase || baseThemeStocks.some(stock => stock.symbol === selectedBase.symbol)) return buildThemeStocks(sectorMap, liveQuotes, leadershipHistories, quoteClock);
 		const withSelection = { ...sectorMap, groups: [...sectorMap.groups, { id: 'selected', name: '当前选择', nodes: [{ id: 'selected', name: selectedBase.nodes[0] || '当前选择', change_percent: 0, main_net_inflow: 0, match_status: 'matched', stocks: [selectedBase] }] }] };
-		return buildThemeStocks(withSelection, liveQuotes, leadershipHistories);
-	}, [leadershipHistories, liveQuotes, sectorMap, selectedBase, baseThemeStocks]);
+		return buildThemeStocks(withSelection, liveQuotes, leadershipHistories, quoteClock);
+	}, [leadershipHistories, liveQuotes, sectorMap, selectedBase, baseThemeStocks, quoteClock]);
 	// The server orders the complete pool. Keep rows stable as individual metrics arrive.
 	const visibleStocks = useMemo(() => {
 		const order = new Map(baseThemeStocks.map((stock, index) => [stock.symbol, index]));
@@ -281,33 +284,42 @@ export function App() {
 
 	useEffect(() => {
 		if (!config || !streamKey || workspaceMode !== 'themes') {
+			setLiveQuotes(current => disconnectLiveQuotes(current));
 			setStreamStatus('实时流待命');
 			return;
 		}
 		let disposed = false;
 		const socket = new WebSocket(buildStreamUrl(config, streamSymbols, 3000));
-		socket.onopen = () => setStreamStatus('实时行情已连接');
+		socket.onopen = () => { if (!disposed) setStreamStatus('实时行情已连接'); };
 		socket.onclose = () => {
+			if (disposed) return;
+			setLiveQuotes(current => disconnectLiveQuotes(current));
 			setStreamStatus('实时行情已断开');
 			if (!disposed) logRuntimeEvent('warn', 'quotes', { event: 'websocket_closed' });
 		};
 		socket.onerror = () => {
+			if (disposed) return;
+			setLiveQuotes(current => disconnectLiveQuotes(current));
 			setStreamStatus('实时行情异常');
 			logRuntimeEvent('error', 'quotes', { event: 'websocket_failure' });
 		};
 		socket.onmessage = (event) => {
+			if (disposed) return;
 			const message = JSON.parse(event.data) as StreamMessage;
 			if (message.type === 'quotes' && message.quotes) {
-				setLiveQuotes((current) => mergeQuotes(current, message.quotes || []));
+				const now = Date.now(); setQuoteClock(now);
+				setLiveQuotes((current) => mergeLiveQuotes(current, message.quotes || [], now));
 				setStreamStatus('实时行情更新中');
 			}
 			if (message.type === 'error') {
+				setLiveQuotes(current => disconnectLiveQuotes(current));
 				setStreamStatus(message.error || '实时行情异常');
 				logRuntimeEvent('warn', 'quotes', { event: 'websocket_message_error' });
 			}
 		};
 		return () => {
 			disposed = true;
+			setLiveQuotes(current => disconnectLiveQuotes(current));
 			socket.close();
 		};
 	}, [config, streamKey, workspaceMode]);
@@ -920,18 +932,6 @@ function RailSkeleton() {
 
 function TableSkeleton() {
 	return <>{Array.from({ length: 6 }, (_, index) => <tr className="table-skeleton" key={index}><td colSpan={8}><span /></td></tr>)}</>;
-}
-
-function mergeQuotes(current: QuoteLookup, quotes: Quote[]): QuoteLookup {
-	const next = { ...current };
-	for (const quote of quotes) {
-		next[quote.symbol] = {
-			price: quote.price,
-			change: quote.change,
-			change_percent: quote.change_percent,
-		};
-	}
-	return next;
 }
 
 function toneForValue(value?: number): 'up' | 'down' | 'flat' {

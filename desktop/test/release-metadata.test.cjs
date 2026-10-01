@@ -125,3 +125,13 @@ test('separates user downloads from internal updater assets', () => {
     'latest.yml',
   ].sort());
 });
+
+test('fork releases without an update feed still publish GitHub installers', () => {
+  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-stock-fork-assets-'));
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'easy-stock-fork-publish-'));
+  const names = ['easy-stock-v1.2.2-macos-arm64.dmg', 'easy-stock-v1.2.2-macos-x64.dmg', 'easy-stock-v1.2.2-windows-x64-setup.exe'];
+  for (const name of names) fs.writeFileSync(path.join(sourceRoot, name), 'synthetic installer');
+  execFileSync(process.execPath, [path.resolve(__dirname, '../scripts/prepare-publish-assets.mjs'), sourceRoot, outputRoot, 'v1.2.2']);
+  assert.deepEqual(fs.readdirSync(path.join(outputRoot, 'github')).sort(), names.sort());
+  assert.deepEqual(fs.readdirSync(path.join(outputRoot, 'updater')), []);
+});

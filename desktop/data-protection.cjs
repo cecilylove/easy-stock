@@ -26,10 +26,26 @@ function delay(ms) {
 function resolveBackupRoot(userDataPath, configuredPath = process.env.A_STOCK_UPDATE_BACKUP_DIR) {
   const userData = path.resolve(userDataPath);
   const backupRoot = path.resolve(configuredPath || path.join(path.dirname(userData), `${path.basename(userData)}-update-backups`));
-  if (backupRoot === userData || backupRoot.startsWith(`${userData}${path.sep}`)) {
+  if (pathContains(userData, backupRoot) || pathContains(realPath(userData), realPath(backupRoot))) {
     throw new Error('更新备份目录不能位于应用数据目录内');
   }
   return backupRoot;
+}
+
+function realPath(value) {
+  const resolved = path.resolve(value);
+  try { return fs.realpathSync(resolved); } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    const parent = path.dirname(resolved);
+    if (parent === resolved) return resolved;
+    return path.join(realPath(parent), path.basename(resolved));
+  }
+}
+
+function pathContains(parent, child) {
+  const normalize = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+  const relative = path.relative(normalize(path.resolve(parent)), normalize(path.resolve(child)));
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 function shouldExclude(relativePath) {
@@ -72,7 +88,7 @@ async function copyFileWithRetry(sourcePath, targetPath) {
   }
 }
 
-async function copyUserData(userDataPath, destinationPath) {
+async function copyUserData(userDataPath, destinationPath, excludedPaths = new Set()) {
   const files = [];
   const skipped = [];
   if (!fs.existsSync(userDataPath)) return { files, skipped };
@@ -81,7 +97,8 @@ async function copyUserData(userDataPath, destinationPath) {
     fs.mkdirSync(targetDirectory, { recursive: true, mode: 0o700 });
     for (const entry of fs.readdirSync(sourceDirectory, { withFileTypes: true })) {
       const relativePath = relativeDirectory ? path.join(relativeDirectory, entry.name) : entry.name;
-      if (shouldExclude(relativePath)) continue;
+      const comparisonPath = process.platform === 'win32' ? relativePath.toLowerCase() : relativePath;
+      if (shouldExclude(relativePath) || excludedPaths.has(comparisonPath)) continue;
       const sourcePath = path.join(sourceDirectory, entry.name);
       const targetPath = path.join(targetDirectory, entry.name);
       if (entry.isDirectory()) {
@@ -126,22 +143,19 @@ function readableErrorReason(error) {
 }
 
 function pruneBackups(backupRoot, keep = 3) {
-  const backups = fs.readdirSync(backupRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.includes('.partial-'))
-    .map((entry) => {
-      const backupPath = path.join(backupRoot, entry.name);
-      return { path: backupPath, modifiedAt: fs.statSync(backupPath).mtimeMs };
-    })
-    .sort((left, right) => right.modifiedAt - left.modifiedAt);
+  // Pre-marker backups remain visible but are never automatically removed.
+  const backups = listUpdateBackups(backupRoot).filter(backup => backup.manifest.application === 'easy-stock');
   for (const backup of backups.slice(Math.max(1, keep))) {
     fs.rmSync(backup.path, { recursive: true, force: true });
   }
 }
 
-async function createUpdateBackup({ userDataPath, backupRoot, fromVersion, toVersion, now = new Date(), keep = 3 }) {
+async function createUpdateBackup({ userDataPath, backupRoot, fromVersion, toVersion, now = new Date(), keep = 3, researchDBPath, sqlitePython }) {
   const userData = path.resolve(userDataPath);
   const resolvedBackupRoot = resolveBackupRoot(userData, backupRoot);
   fs.mkdirSync(resolvedBackupRoot, { recursive: true, mode: 0o700 });
+  // Validate the physical directory after creation as well (junctions may alias userData).
+  resolveBackupRoot(userData, resolvedBackupRoot);
   const backupName = `${timestamp(now)}-v${safeVersion(fromVersion)}-to-v${safeVersion(toVersion)}`;
   const finalPath = path.join(resolvedBackupRoot, backupName);
   const stagingPath = `${finalPath}.partial-${process.pid}`;
@@ -152,15 +166,34 @@ async function createUpdateBackup({ userDataPath, backupRoot, fromVersion, toVer
   try {
     fs.mkdirSync(stagingPath, { recursive: true, mode: 0o700 });
     const dataPath = path.join(stagingPath, 'data');
-    const { files, skipped } = await copyUserData(userData, dataPath);
+    const researchInside = researchDBPath && pathContains(realPath(userData), realPath(researchDBPath));
+    const researchSnapshotPath = researchDBPath ? researchInside
+      ? path.relative(realPath(userData), realPath(researchDBPath)) : 'stock-research-external.db' : '';
+    const excludedPaths = new Set();
+    if (researchInside) {
+      // Do not copy a changing SQLite file or its WAL/SHM independently.
+      for (const suffix of ['', '-wal', '-shm', '-journal']) {
+        const relativePath = researchSnapshotPath + suffix;
+        excludedPaths.add(process.platform === 'win32' ? relativePath.toLowerCase() : relativePath);
+      }
+    }
+    const { files, skipped } = await copyUserData(userData, dataPath, excludedPaths);
+    if (researchDBPath && fs.existsSync(researchDBPath)) {
+      const { snapshotSQLite } = require('./research-data.cjs');
+      const snapshotPath = path.join(dataPath, researchSnapshotPath);
+      snapshotSQLite({ python: sqlitePython, source: researchDBPath, destination: snapshotPath });
+      files.push({ path: researchSnapshotPath, type: 'file', size: fs.statSync(snapshotPath).size, sha256: sha256(snapshotPath) });
+    }
     const manifest = {
       schemaVersion: 1,
+      application: 'easy-stock',
       createdAt: now.toISOString(),
       fromVersion: String(fromVersion || ''),
       toVersion: String(toVersion || ''),
       userDataDirectoryName: path.basename(userData),
       files,
       skipped,
+      ...(researchDBPath ? { researchDBPath, researchSnapshotPath } : {}),
     };
     const manifestTemporaryPath = path.join(stagingPath, 'manifest.json.tmp');
     fs.writeFileSync(manifestTemporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
@@ -181,13 +214,19 @@ async function createUpdateBackup({ userDataPath, backupRoot, fromVersion, toVer
 function listUpdateBackups(backupRoot) {
   if (!fs.existsSync(backupRoot)) return [];
   return fs.readdirSync(backupRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.includes('.partial-'))
+    .filter((entry) => entry.isDirectory() && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-v[0-9A-Za-z._-]+-to-v[0-9A-Za-z._-]+$/.test(entry.name))
     .map((entry) => {
       const backupPath = path.join(backupRoot, entry.name);
       const manifestPath = path.join(backupPath, 'manifest.json');
-      if (!fs.existsSync(manifestPath)) return null;
       try {
-        return { path: backupPath, manifest: JSON.parse(fs.readFileSync(manifestPath, 'utf8')) };
+        if (fs.lstatSync(backupPath).isSymbolicLink() || !fs.lstatSync(manifestPath).isFile() || fs.lstatSync(manifestPath).isSymbolicLink()) return null;
+        if (!fs.lstatSync(path.join(backupPath, 'data')).isDirectory() || fs.lstatSync(path.join(backupPath, 'data')).isSymbolicLink()) return null;
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.files) || !Array.isArray(manifest.skipped)
+          || typeof manifest.userDataDirectoryName !== 'string' || path.basename(manifest.userDataDirectoryName) !== manifest.userDataDirectoryName
+          || !Number.isFinite(Date.parse(manifest.createdAt)) || typeof manifest.fromVersion !== 'string' || typeof manifest.toVersion !== 'string'
+          || entry.name !== `${timestamp(new Date(manifest.createdAt))}-v${safeVersion(manifest.fromVersion)}-to-v${safeVersion(manifest.toVersion)}`) return null;
+        return { path: backupPath, manifest };
       } catch {
         return null;
       }

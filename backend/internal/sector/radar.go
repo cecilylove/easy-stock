@@ -536,8 +536,10 @@ func (p *RadarProvider) themeOverview(
 }
 
 type themeStrengthScore struct {
-	daily   int
-	fiveDay int
+	daily        int
+	fiveDay      int
+	dailyValid   bool
+	fiveDayValid bool
 }
 
 func (p *RadarProvider) quoteLookup(ctx context.Context, themes []duanxianxia.Theme) map[string]foundation.Quote {

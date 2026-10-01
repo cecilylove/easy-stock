@@ -1,4 +1,5 @@
-import { BoardStock, KLine, Quote, SectorMap, ThemeOverview } from './backend';
+import { BoardStock, KLine, SectorMap, ThemeOverview } from './backend';
+import { isCurrentLiveQuote, type LiveQuoteLookup } from './live-quotes';
 
 export type EmotionTone = 'hot' | 'warm' | 'mixed' | 'cool' | 'cold';
 
@@ -74,7 +75,7 @@ export type ThemeStock = BoardStock & {
 	live: boolean;
 };
 
-export type QuoteLookup = Record<string, Pick<Quote, 'price' | 'change' | 'change_percent'>>;
+export type QuoteLookup = LiveQuoteLookup;
 export type KLineLookup = Record<string, KLine[]>;
 
 type BaseThemeStock = BoardStock & { nodes: string[]; occurrence: number; live: boolean };
@@ -163,8 +164,9 @@ export function buildThemeStocks(
 	map: SectorMap | null,
 	liveQuotes: QuoteLookup = {},
 	histories: KLineLookup = {},
+	now = Date.now(),
 ): ThemeStock[] {
-	const baseStocks = flattenThemeStocks(map, liveQuotes);
+	const baseStocks = flattenThemeStocks(map, liveQuotes, now);
 	if (!baseStocks.length) {
 		return [];
 	}
@@ -209,7 +211,7 @@ export function buildThemeStocks(
 		.sort((a, b) => b.leader_score - a.leader_score || b.tradability_score - a.tradability_score);
 }
 
-function flattenThemeStocks(map: SectorMap | null, liveQuotes: QuoteLookup): BaseThemeStock[] {
+function flattenThemeStocks(map: SectorMap | null, liveQuotes: QuoteLookup, now: number): BaseThemeStock[] {
 	if (!map) {
 		return [];
 	}
@@ -218,7 +220,8 @@ function flattenThemeStocks(map: SectorMap | null, liveQuotes: QuoteLookup): Bas
 		for (const node of group.nodes) {
 			for (const stock of node.stocks) {
 				const previous = stocks.get(stock.symbol);
-				const quote = liveQuotes[stock.symbol];
+				const candidate = liveQuotes[stock.symbol];
+				const quote = candidate && isCurrentLiveQuote(candidate, stock.meta, now) ? candidate : undefined;
 				const hydrated = quote
 					? { ...stock, price: quote.price, change: quote.change, change_percent: quote.change_percent }
 					: stock;
@@ -254,7 +257,6 @@ function calculateLeadershipMetrics(
 	const recent20 = history.slice(-20);
 	const recent10Returns = dailyReturns.slice(-10);
 	const recent5 = history.slice(-5);
-	const recent5Returns = dailyReturns.slice(-5);
 	const threshold = approximateLimitThreshold(stock.symbol);
 	const limitFlags = dailyReturns.slice(-20).map((item) => item.value >= threshold);
 	const kLineFirstStrong = dailyReturns.slice(-20).find((item) => item.value >= 5)?.date;
@@ -263,7 +265,9 @@ function calculateLeadershipMetrics(
 	const minLow = recent20.length ? Math.min(...recent20.map((line) => line.low)) : 0;
 	const maxHigh = recent20.length ? Math.max(...recent20.map((line) => line.high)) : 0;
 	const position20 = lastLine && maxHigh > minLow ? ((lastLine.close - minLow) / (maxHigh - minLow)) * 100 : 50;
-	const theme5 = themeReturnForDates(themeDailyReturns, recent5Returns.map((item) => item.date));
+	// Six closes contain five return intervals. For short histories use the
+	// same available intervals for both the stock and its theme benchmark.
+	const theme5 = themeReturnForDates(themeDailyReturns, history.slice(-6).slice(1).map((item) => item.time.slice(0, 10)));
 	const return5 = cumulativeReturn(history, 5);
 	const downDayEdges = recent10Returns
 		.filter((item) => (themeDailyReturns.get(item.date) || 0) < 0)
@@ -536,7 +540,7 @@ function calculateDailyReturns(history: KLine[]): Array<{ date: string; value: n
 		const calculated = previous?.close ? ((line.close / previous.close) - 1) * 100 : 0;
 		return {
 			date: line.time.slice(0, 10),
-			value: typeof line.change_percent === 'number' && line.change_percent !== 0 ? line.change_percent : calculated,
+			value: previous?.close ? calculated : line.change_percent || 0,
 		};
 	});
 }
@@ -592,8 +596,7 @@ function calculateStartLag(firstStrong?: string, themeStart?: string, tradingDat
 }
 
 function themeReturnForDates(themeReturns: Map<string, number>, dates: string[]): number {
-	if (dates.length < 2) return 0;
-	return dates.slice(1).reduce((total, date) => total + (themeReturns.get(date) || 0), 0);
+	return (dates.reduce((growth, date) => growth * (1 + (themeReturns.get(date) || 0) / 100), 1) - 1) * 100;
 }
 
 function cumulativeReturn(history: KLine[], bars: number): number {

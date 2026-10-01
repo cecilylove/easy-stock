@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -63,6 +64,9 @@ func (c *marketEmotionIntradayCache) load(
 	ctx context.Context,
 	loader func(context.Context) (marketemotion.IntradaySnapshot, error),
 ) (marketemotion.IntradaySnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return marketemotion.IntradaySnapshot{}, err
+	}
 	now := c.now()
 	c.mu.Lock()
 	if !c.expiresAt.IsZero() && now.Before(c.expiresAt) {
@@ -98,6 +102,17 @@ func (c *marketEmotionIntradayCache) load(
 
 	c.mu.Lock()
 	c.inflight = nil
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		// Leaving a page is not an upstream failure. Keep the previous cache
+		// and expiry unchanged so the next viewer can refresh immediately.
+		flight.err = ctx.Err()
+		if flight.err == nil {
+			flight.err = err
+		}
+		close(flight.done)
+		c.mu.Unlock()
+		return flight.snapshot, flight.err
+	}
 	c.expiresAt = computedAt.Add(c.ttl)
 	if err == nil {
 		c.snapshot = snapshot

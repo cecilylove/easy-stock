@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import updateFeed from '../update-feed.cjs';
 
 const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const platform = process.argv[2];
@@ -19,7 +20,7 @@ for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
   fs.copyFileSync(path.join(sourceRoot, entry.name), path.join(releaseRoot, entry.name));
   staged.push(entry.name);
 }
-if (!staged.some((name) => platform === 'mac' ? name === 'latest-mac.yml' : name === 'latest.yml')) {
+if (updateFeed.packagedUpdateFeed(path.join(desktopRoot, 'resources')) && !staged.some((name) => platform === 'mac' ? name === 'latest-mac.yml' : name === 'latest.yml')) {
   throw new Error(`Updater metadata was not generated for ${platform}`);
 }
 console.log(`Staged ${platform} release artifacts:\n${staged.map((name) => `- ${name}`).join('\n')}`);

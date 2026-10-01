@@ -15,7 +15,7 @@ This document tracks the stock-related data sources that form the `easy-stock` d
 
 ## Stock K-Line Fallback
 
-`/api/v1/quotes/kline` requests EastMoney first and falls back to Sina when the primary request fails. Sina uses `scale=240` for daily bars, `1200` for weekly bars, and `7200` for calendar-month bars (`month`, `monthly`, `103`, or `7200`). Monthly bars come directly from the source, rather than aggregating a fixed number of trading days. Read each bar's `meta.source` and `meta.source_url` to identify the actual source; the source's latest monthly bar may still represent an unfinished month.
+`/api/v1/quotes/kline` requests EastMoney first and falls back to Sina when the primary request fails or returns no bars. The primary has at most 6 seconds and half the remaining request budget; the fallback has at most 10 seconds within the original deadline. This reserves time for a healthy fallback during slow primary failures. Caller cancellation stops both, and an unattempted fallback is not recorded as a failed source. If both sources return no bars, the API reports an error rather than a successful empty result. Sina uses `scale=240` for daily bars, `1200` for weekly bars, and `7200` for calendar-month bars (`month`, `monthly`, `103`, or `7200`). Monthly bars come directly from the source, rather than aggregating a fixed number of trading days. Read each bar's `meta.source` and `meta.source_url` to identify the actual source; the source's latest monthly bar may still represent an unfinished month.
 
 ## Trend Theme Radar Priority
 
@@ -29,6 +29,8 @@ This document tracks the stock-related data sources that form the `easy-stock` d
 - 没有任何可用开盘啦快照时，完整回退到现有趋势题材识别。
 - 开盘啦只负责题材归属和龙一至龙五，实时行情、K 线及领导力指标继续由现有行情源计算。
 - 默认缓存路径由 `A_STOCK_THEME_RADAR_DB` 覆盖；测试环境可用 `A_STOCK_DUANXIANXIA_BASE_URL` 指向模拟服务。
+- 行业/股票强度按当日和五日分别校验有效样本；只有名称、没有可用行情或 K 线的结果不作为零分成功。失败窗口保留本次运行中已有的有效强度，真实零分仍参与计算；这类保留值没有新增跨交易日过期机制，不能据此判断当前行情已恢复。
+- 前端五日相对强度使用最近六个价格点形成的五个交易间隔，股票与题材均按相同日期复利计算。趋势 WebSocket 报价保留来源与行情时间，断线、跨日、来源标陈旧或超时后不继续显示为实时。
 
 ## Short-Term Limit-Up Radar Priority
 
@@ -87,6 +89,7 @@ If EastMoney `push2` closes the constituent connection, the node falls back to `
 - 个股 K 线：东方财富失败回退新浪；普通日/周/月 K 没有统一服务器旧快照兜底，两源均失败可能不可用。个股详情报价/分时的同股同日成功快照另有短时复用和 30–120 秒退避，旧快照标记陈旧，无快照时不可用。
 - 指数：东方财富失败回退腾讯，备用覆盖范围较少；行业强度：腾讯失败回退东方财富；资金榜：新浪失败回退东方财富，备用可能缺字段。
 - 行情总览模块：成功数据缓存 45 秒，刷新失败可返回本次服务运行中已有的成功快照并标记陈旧；没有快照时模块报错。融资余额、龙虎榜、公告/研报没有统一备用供应商，不能用 Tushare 或同花顺预留凭据兜底。
+- 盘中情绪刷新被调用者取消或其上下文超时时，不把取消错误写入缓存、不延长缓存期限；重新进入可以重新请求。真实上游失败仍遵循原有缓存策略。
 - 趋势题材：融合行业和开盘啦的有效结果，缺一方时使用其余来源；开盘啦旧题材超过两个交易日不再参与融合。渐进页面可保留旧快照并显示失败步骤；来源和快照均不可用时仍会报错。
 - 财联社快讯没有备用供应商，失败后页面可能保留已有内容，无内容时快讯不可用。陈旧数据只能作为历史参考，以抓取时间、来源和缺失字段判断当前功能是否可用。
 

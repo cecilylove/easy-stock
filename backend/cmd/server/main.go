@@ -87,6 +87,8 @@ func main() {
 	})
 	server := httpapi.NewServer(httpapi.Config{
 		Token:                os.Getenv("A_STOCK_TOKEN"),
+		AllowedOrigins:       strings.FieldsFunc(os.Getenv("A_STOCK_ALLOWED_ORIGINS"), func(r rune) bool { return r == ',' || r == ' ' }),
+		EnforceLoopbackHost:  true,
 		ReviewDBPath:         reviewDBPath,
 		PortfolioDBPath:      portfolioDBPath,
 		StockResearchDBPath:  stockResearchDBPath,

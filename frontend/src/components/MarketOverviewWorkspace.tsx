@@ -20,7 +20,7 @@ import {
 	TrendingUp,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
 	BackendConfig,
 	LimitUpLadderData,
@@ -44,6 +44,7 @@ import { requestJSON } from '../lib/backend';
 import { formatFuturesOpeningHands } from '../lib/futures-position';
 import { sourceHealthCounts } from '../lib/source-health';
 import { SourceHealthPanel } from './SourceHealthPanel';
+import { LatestRequest } from '../lib/latest-request';
 import {
 	type MarketOverviewView,
 	buildMarketBillboardPrompt,
@@ -123,6 +124,12 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 	const [announcementCategory, setAnnouncementCategory] = useState('all');
 	const [aiPreparing, setAIPreparing] = useState(false);
 	const activeModule = useMemo(() => findMarketOverviewModule(activeView), [activeView]);
+	const queryKey = JSON.stringify([config?.backendUrl, config?.token, activeView, announcementCategory, futuresVariety, marginLimit, submittedQuery, tradeDate]);
+	const currentQuery = useRef(queryKey); currentQuery.current = queryKey;
+	const requests = useRef(new LatestRequest());
+	const evidenceRequest = useRef<AbortController | null>(null);
+	const [dataKey, setDataKey] = useState('');
+	const currentData = dataKey === queryKey;
 
 	const loadPulse = useCallback(async () => {
 		if (!config) {
@@ -132,12 +139,16 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 		}
 		setPulseState('loading');
 		setPulseError('');
+		evidenceRequest.current?.abort(); evidenceRequest.current = null; setAIPreparing(false);
+		const generation = requests.current.begin(queryKey);
 		const [newsResult, themeResult] = await Promise.allSettled([
-			requestJSON<{ data: NewsItem[] }>(config, '/api/v1/market/news?source=cls&limit=30'),
-			requestJSON<{ data: ThemeOverview[]; meta: SourceMeta }>(config, '/api/v1/themes/overview'),
+			requestJSON<{ data: NewsItem[] }>(config, '/api/v1/market/news?source=cls&limit=30', { signal: generation.signal }),
+			requestJSON<{ data: ThemeOverview[]; meta: SourceMeta }>(config, '/api/v1/themes/overview', { signal: generation.signal }),
 		]);
+		if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 		// Read passive observations after the market requests, not before them.
-		const [sourceResult] = await Promise.allSettled([requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources')]);
+		const [sourceResult] = await Promise.allSettled([requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources', { signal: generation.signal })]);
+		if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 
 		let successes = 0;
 		const errors: string[] = [];
@@ -162,29 +173,41 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 		setLastUpdated(new Date().toISOString());
 		setPulseError(errors.join('；'));
 		setPulseState(successes > 0 ? 'ready' : 'error');
-	}, [config]);
+		setDataKey(queryKey);
+	}, [config, queryKey]);
 
 	const loadModule = useCallback(async () => {
 		if (!config || activeView === 'pulse') return;
 		setModuleState('loading');
 		setModuleError('');
+		evidenceRequest.current?.abort(); evidenceRequest.current = null; setAIPreparing(false);
+		const generation = requests.current.begin(queryKey);
+		const request = async <T,>(backend: BackendConfig, path: string): Promise<T> => {
+			const payload = await requestJSON<T>(backend, path, { signal: generation.signal });
+			if (!requests.current.isCurrent(generation, currentQuery.current)) throw new DOMException('Superseded', 'AbortError');
+			return payload;
+		};
 		try {
 			if (activeView === 'core-indexes') {
-				const payload = await requestJSON<{ data: MarketIndexSnapshot[]; meta: SourceMeta }>(config, '/api/v1/market/indexes?scope=core');
+				const payload = await request<{ data: MarketIndexSnapshot[]; meta: SourceMeta }>(config, '/api/v1/market/indexes?scope=core');
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				setIndexes(payload.data);
 				setModuleMeta(payload.meta);
 				setSelectedIndexID((current) => payload.data.some((item) => item.id === current) ? current : payload.data[0]?.id || '');
 			} else if (activeView === 'industry-momentum') {
-				const payload = await requestJSON<{ data: MarketIndustryMomentum[]; meta: SourceMeta }>(config, '/api/v1/market/industries?limit=80');
+				const payload = await request<{ data: MarketIndustryMomentum[]; meta: SourceMeta }>(config, '/api/v1/market/industries?limit=80');
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				setIndustries(payload.data);
 				setModuleMeta(payload.meta);
 			} else if (isFlowView(activeView)) {
 				const dimension = flowDimension(activeView);
-				const payload = await requestJSON<{ data: MarketFundFlow[]; meta: SourceMeta }>(config, `/api/v1/market/flows?dimension=${dimension}&sort=net&limit=100`);
+				const payload = await request<{ data: MarketFundFlow[]; meta: SourceMeta }>(config, `/api/v1/market/flows?dimension=${dimension}&sort=net&limit=100`);
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				setFlows(payload.data);
 				setModuleMeta(payload.meta);
 			} else if (activeView === 'margin-balance') {
-				const payload = await requestJSON<{ data: MarketMarginPoint[]; meta: SourceMeta }>(config, `/api/v1/market/margin-balance?limit=${marginLimit}`);
+				const payload = await request<{ data: MarketMarginPoint[]; meta: SourceMeta }>(config, `/api/v1/market/margin-balance?limit=${marginLimit}`);
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				setMargins(payload.data);
 				setModuleMeta(payload.meta);
 			} else if (activeView === 'futures-position') {
@@ -192,9 +215,10 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 				setFuturesMembers(null);
 				const varieties = ['IF', 'IH', 'IC', 'IM'];
 				const [consensusPayload, positionResults] = await Promise.all([
-					requestJSON<{ data: MarketFuturesConsensus }>(config, '/api/v1/market/futures-consensus').catch(() => null),
-					Promise.allSettled(varieties.map((item) => requestJSON<{ data: MarketFuturesPositionSeries; meta: SourceMeta }>(config, `/api/v1/market/futures-position?variety=${item}&limit=60`))),
+					request<{ data: MarketFuturesConsensus }>(config, '/api/v1/market/futures-consensus').catch(() => null),
+					Promise.allSettled(varieties.map((item) => request<{ data: MarketFuturesPositionSeries; meta: SourceMeta }>(config, `/api/v1/market/futures-position?variety=${item}&limit=60`))),
 				]);
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				setFuturesConsensus(consensusPayload?.data || null);
 				const selectedResult = positionResults[varieties.indexOf(futuresVariety)];
 				if (!selectedResult || selectedResult.status !== 'fulfilled') throw selectedResult?.reason || new Error(`${futuresVariety}期指持仓加载失败`);
@@ -205,14 +229,16 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 				const memberResults = await Promise.allSettled(seriesEntries.map(async (series) => {
 					const latest = series.rows.at(-1);
 					if (!latest || !series.contract_code) throw new Error(`${series.variety}会员明细不可用`);
-					const memberPayload = await requestJSON<{ data: MarketFuturesMembers }>(config, `/api/v1/market/futures-members?contract=${encodeURIComponent(series.contract_code)}&trade_date=${encodeURIComponent(latest.trade_date)}`);
+					const memberPayload = await request<{ data: MarketFuturesMembers }>(config, `/api/v1/market/futures-members?contract=${encodeURIComponent(series.contract_code)}&trade_date=${encodeURIComponent(latest.trade_date)}`);
 					return { series, members: memberPayload.data };
 				}));
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				const successfulMembers = memberResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
 				setFuturesMembers(successfulMembers.find((entry) => entry.series.variety === futuresVariety)?.members || null);
 			} else if (activeView === 'billboard') {
 				const query = tradeDate ? `&trade_date=${encodeURIComponent(tradeDate)}` : '';
-				const payload = await requestJSON<{ data: MarketBillboardItem[]; meta: SourceMeta }>(config, `/api/v1/market/billboard?limit=100${query}`);
+				const payload = await request<{ data: MarketBillboardItem[]; meta: SourceMeta }>(config, `/api/v1/market/billboard?limit=100${query}`);
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				setBillboard(payload.data);
 				setBillboardDetails({});
 				setModuleMeta(payload.meta);
@@ -223,22 +249,27 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 				if (activeView === 'announcements') params.set('category', announcementCategory);
 				if (activeView === 'institution-reports') endpoint = '/api/v1/research/institution-reports';
 				if (activeView === 'industry-research') endpoint = '/api/v1/research/industries';
-				const payload = await requestJSON<{ data: MarketResearchItem[]; meta: SourceMeta }>(config, `${endpoint}?${params.toString()}`);
+				const payload = await request<{ data: MarketResearchItem[]; meta: SourceMeta }>(config, `${endpoint}?${params.toString()}`);
+				if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 				setResearch(payload.data);
 				setModuleMeta(payload.meta);
 			}
+			if (!requests.current.isCurrent(generation, currentQuery.current)) return;
+			setDataKey(queryKey);
 			setLastUpdated(new Date().toISOString());
 			setModuleState('ready');
 		} catch (error) {
+			if (!requests.current.isCurrent(generation, currentQuery.current)) return;
+			setDataKey(queryKey);
 			setModuleError(errorMessage(error, `${activeModule.name}加载失败`));
 			setModuleState('error');
 		}
-	}, [activeModule.name, activeView, announcementCategory, config, futuresVariety, marginLimit, submittedQuery, tradeDate]);
+	}, [activeModule.name, activeView, announcementCategory, config, futuresVariety, marginLimit, submittedQuery, tradeDate, queryKey]);
 
-	const requestBillboardDetail = useCallback(async (item: MarketBillboardItem) => {
+	const requestBillboardDetail = useCallback(async (item: MarketBillboardItem, signal?: AbortSignal) => {
 		if (!config) throw new Error('后端尚未连接');
 		const params = new URLSearchParams({ symbol: item.symbol, trade_date: item.trade_date, reason: item.reason });
-		const payload = await requestJSON<{ data: MarketBillboardDetail; meta: SourceMeta }>(config, `/api/v1/market/billboard/detail?${params.toString()}`);
+		const payload = await requestJSON<{ data: MarketBillboardDetail; meta: SourceMeta }>(config, `/api/v1/market/billboard/detail?${params.toString()}`, { signal });
 		return payload.data;
 	}, [config]);
 
@@ -248,15 +279,18 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 		setBillboardDetails((current) => ({ ...current, [key]: { state: 'loading' } }));
 		try {
 			const detail = await requestBillboardDetail(item);
+			if (currentQuery.current !== queryKey) return;
 			setBillboardDetails((current) => ({ ...current, [key]: { state: 'ready', detail } }));
 		} catch (error) {
+			if (currentQuery.current !== queryKey) return;
 			setBillboardDetails((current) => ({ ...current, [key]: { state: 'error', error: errorMessage(error, '买卖五席加载失败') } }));
 		}
-	}, [config, requestBillboardDetail]);
+	}, [config, requestBillboardDetail, queryKey]);
 
 	useEffect(() => {
 		if (activeView === 'pulse') void loadPulse();
 		else void loadModule();
+		return () => { requests.current.cancel(); evidenceRequest.current?.abort(); setAIPreparing(false); };
 	}, [activeView, loadModule, loadPulse, refreshKey]);
 
 	useEffect(() => {
@@ -320,11 +354,12 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 		meta: moduleMeta,
 	}), [activeView, billboard, flows, futuresConsensus, futuresPosition, futuresMembers, futuresVariety, indexes, industries, margins, moduleMeta, research]);
 
-	const hasEvidence = activeView === 'pulse'
+	const hasEvidence = currentData && (activeView === 'pulse' ? pulseState === 'ready' : moduleState === 'ready') && (activeView === 'pulse'
 		? Boolean(news.length || themes.length)
-		: Boolean(activeEvidence.indexes?.length || activeEvidence.industries?.length || activeEvidence.flows?.length || activeEvidence.margins?.length || activeEvidence.futures?.rows?.length || activeEvidence.billboard?.length || activeEvidence.research?.length);
+		: Boolean(activeEvidence.indexes?.length || activeEvidence.industries?.length || activeEvidence.flows?.length || activeEvidence.margins?.length || activeEvidence.futures?.rows?.length || activeEvidence.billboard?.length || activeEvidence.research?.length));
 
 	const askAI = async () => {
+		if (!hasEvidence) return;
 		const asOf = formatDateTime(lastUpdated || new Date().toISOString());
 		if (activeView !== 'billboard') {
 			onAskAI(activeView === 'pulse' ? buildMarketPulsePrompt(news, themes, asOf) : buildMarketModulePrompt(activeView, activeEvidence, asOf));
@@ -332,6 +367,7 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 		}
 		if (!config || !billboard.length || aiPreparing) return;
 		setAIPreparing(true);
+		const abort = new AbortController(); evidenceRequest.current?.abort(); evidenceRequest.current = abort;
 		const evidenceItems = uniqueBillboardItems(billboard, 20);
 		try {
 			const [detailResults, limitUpResult] = await Promise.all([
@@ -340,13 +376,14 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 					const existing = billboardDetails[key];
 					if (existing?.state === 'ready' && existing.detail) return { key, detail: existing.detail };
 					try {
-						return { key, detail: await requestBillboardDetail(item) };
+						return { key, detail: await requestBillboardDetail(item, abort.signal) };
 					} catch (error) {
 						return { key, error: errorMessage(error, '买卖五席加载失败') };
 					}
 				}),
-				requestJSON<{ data: LimitUpLadderData }>(config, '/api/v1/short-term/limit-up-ladder').then((payload) => payload.data).catch(() => null),
+				requestJSON<{ data: LimitUpLadderData }>(config, '/api/v1/short-term/limit-up-ladder', { signal: abort.signal }).then((payload) => payload.data).catch(() => null),
 			]);
+			if (abort.signal.aborted || currentQuery.current !== queryKey) return;
 			const details: Record<string, MarketBillboardDetail | undefined> = Object.fromEntries(Object.entries(billboardDetails).filter(([, entry]) => entry.state === 'ready' && entry.detail).map(([key, entry]) => [key, entry.detail]));
 			for (const result of detailResults) {
 				if (result.detail) details[result.key] = result.detail;
@@ -362,7 +399,7 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 			});
 			onAskAI(buildMarketBillboardPrompt({ items: billboard, details, limitUp: limitUpResult, meta: moduleMeta }, asOf));
 		} finally {
-			setAIPreparing(false);
+			if (evidenceRequest.current === abort) { evidenceRequest.current = null; setAIPreparing(false); }
 		}
 	};
 
@@ -390,7 +427,7 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 				<div><button type="button" className="market-ai-button" onClick={() => void askAI()} disabled={!hasEvidence || aiPreparing}>{aiPreparing ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}{aiPreparing ? '正在聚合席位与连板证据' : '交给 AI 解读'}</button><button type="button" className="market-refresh-button" onClick={refresh} disabled={(activeView === 'pulse' ? pulseState : moduleState) === 'loading'}>{(activeView === 'pulse' ? pulseState : moduleState) === 'loading' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新</button></div>
 			</header>
 
-			{activeView === 'pulse' ? <PulseView news={news} themes={themes} themeMeta={themeMeta} sources={sources} sourcesError={sourcesError} onRefreshSources={() => setSourcesRetryKey(key => key + 1)} onOpenSourceSettings={onOpenSourceSettings} state={pulseState} error={pulseError} lastUpdated={lastUpdated} /> : <ModuleState state={moduleState} error={moduleError}>
+			{activeView === 'pulse' ? <PulseView news={currentData ? news : []} themes={currentData ? themes : []} themeMeta={currentData ? themeMeta : null} sources={sources} sourcesError={sourcesError} onRefreshSources={() => setSourcesRetryKey(key => key + 1)} onOpenSourceSettings={onOpenSourceSettings} state={currentData ? pulseState : 'loading'} error={currentData ? pulseError : ''} lastUpdated={currentData ? lastUpdated : ''} /> : <ModuleState state={currentData ? moduleState : 'loading'} error={currentData ? moduleError : ''}>
 				{activeView === 'core-indexes' && <CoreIndexView indexes={indexes} selectedID={selectedIndexID} onSelect={setSelectedIndexID} series={indexSeries} seriesLoading={seriesLoading} meta={moduleMeta} />}
 				{activeView === 'industry-momentum' && <IndustryMomentumView items={industries} meta={moduleMeta} />}
 				{isFlowView(activeView) && <FundFlowView key={activeView} items={flows} dimension={flowDimension(activeView)} meta={moduleMeta} />}

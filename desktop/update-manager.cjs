@@ -26,7 +26,7 @@ class UpdateManager extends EventEmitter {
       supported: this.enabled,
       installMode: this.installMode,
       currentVersion,
-      message: this.enabled ? '可检查正式更新源的新版本' : '开发模式不启用自动更新',
+      message: this.enabled ? '可检查正式更新源的新版本' : '当前未配置此 fork 的更新源；可到发布页获取安装包',
       progress: 0,
     };
     if (this.enabled) this.bindUpdater();
