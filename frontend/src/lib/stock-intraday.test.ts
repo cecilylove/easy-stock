@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { KLine } from './backend';
-import { auctionFraction, latestTradingSession, shanghaiDayAndMinute, tradingFraction, tradingSessionForDay } from './stock-intraday';
+import { auctionFraction, intradaySampleCoverage, latestTradingSession, minuteText, shanghaiDayAndMinute, tradingFraction, tradingSessionForDay } from './stock-intraday';
 
 const line = (time: string) => ({ time, close: 10, open: 10, high: 10, low: 10, volume: 1 }) as KLine;
 
@@ -32,5 +32,19 @@ describe('fixed session time axis', () => {
 			{ ...line('2026-09-30T09:32:00+08:00'), close: Number.NaN },
 			{ ...line('2026-09-30T09:33:00+08:00'), volume: Number.POSITIVE_INFINITY },
 		], '2026-09-30')).toEqual([]);
+	});
+	it('distinguishes a truncated first sample and interior gaps from the lunch and closing-auction grid', () => {
+		const full = [...Array.from({ length: 120 }, (_, i) => 571 + i), ...Array.from({ length: 117 }, (_, i) => 781 + i), 900];
+		expect(intradaySampleCoverage(full)).toMatchObject({ startsAtOpen: true, hasGaps: false, count: 238 });
+		expect(intradaySampleCoverage([570, ...full])).toMatchObject({ startsAtOpen: true, hasGaps: false });
+		expect(intradaySampleCoverage(full.filter(minute => minute !== 590)).hasGaps).toBe(true);
+		expect(intradaySampleCoverage([815, 816, 817])).toMatchObject({ startsAtOpen: false, hasGaps: false, first: 815 });
+		expect(intradaySampleCoverage([571, 573])).toMatchObject({ startsAtOpen: true, hasGaps: true });
+		expect(intradaySampleCoverage([])).toMatchObject({ startsAtOpen: false, hasGaps: false, count: 0 });
+		expect(minuteText(815)).toBe('13:35');
+	});
+	it('does not turn a masked numeric close into a verified minute sample', () => {
+		const sample = { ...line('2026-09-30T09:31:00+08:00'), meta: { source: 'sina', fields_known: true, available_fields: ['volume'], fetched_at: '', stale: false, latency_ms: 0 } };
+		expect(tradingSessionForDay([sample], '2026-09-30')).toEqual([]);
 	});
 });

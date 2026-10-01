@@ -116,12 +116,23 @@ type KLine struct {
 	High          float64    `json:"high"`
 	Low           float64    `json:"low"`
 	Close         float64    `json:"close"`
+	AveragePrice  float64    `json:"average_price,omitempty"`
 	PreviousClose float64    `json:"previous_close,omitempty"`
 	Volume        float64    `json:"volume"`
 	Amount        float64    `json:"amount"`
 	TurnoverRate  float64    `json:"turnover_rate,omitempty"`
 	ChangePercent float64    `json:"change_percent,omitempty"`
 	Meta          SourceMeta `json:"meta"`
+}
+
+// StockIntradayHistory preserves the archive's own date, baseline and points.
+type StockIntradayHistory struct {
+	Symbol         string
+	TradeDate      string
+	Lines          []KLine
+	AvailableDates []string
+	PreviousClose  float64
+	Meta           SourceMeta
 }
 
 type NewsItem struct {

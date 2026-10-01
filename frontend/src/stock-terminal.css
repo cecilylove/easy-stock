@@ -1,4 +1,7 @@
 /* Professional quote workspace: compact controls, chart-led hierarchy. */
+.stock-intraday-price-dot { fill: var(--theme-blue, #2476d2); pointer-events: none; }
+.stock-intraday-average-dot { fill: none; stroke: var(--theme-amber, #b9770e); stroke-width: 1.5; pointer-events: none; }
+
 .stock-terminal { gap: 8px; }
 .stock-terminal .stock-detail-hero { padding: 8px 12px; gap: 12px; border-radius: 6px; background: var(--surface); }
 .stock-terminal-title { display: flex; align-items: center; gap: 12px; }
@@ -46,6 +49,14 @@
 .professional-indicator-values { display: flex; flex-wrap: wrap; gap: 4px 12px; padding-top: 4px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .professional-indicator-values > span { margin-left: auto; color: var(--subtle); }
 .chart-keyboard-hint { margin: 5px 0; color: var(--subtle); font-size: 11px; }
+.chart-inspection-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; min-height: 30px; color: var(--muted); font-size: 11px; }
+.chart-inspection-actions button { padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--blue); cursor: pointer; font: inherit; }
+.professional-kline-compact .chart-tools { gap: 6px; font-size: 11px; }
+.professional-kline-compact .chart-value-strip { gap: 4px 10px; font-size: 11px; }
+.professional-kline-compact .chart-ma-values { gap: 4px 12px; }
+.professional-kline-compact .professional-chart-svg { min-width: 280px; }
+.professional-kline-compact .chart-navigation { flex-wrap: wrap; max-width: 100%; }
+.professional-kline-compact .chart-keyboard-hint { line-height: 1.5; }
 .stock-quote-sidebar { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); overflow: hidden; font-size: 12px; }
 .stock-quote-sidebar > header { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid var(--line-soft); }
 .stock-quote-sidebar > header strong { font-size: 13px; }

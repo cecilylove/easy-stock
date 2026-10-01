@@ -331,12 +331,26 @@ export type KLine = {
   low: number;
   close: number;
   previous_close?: number;
+  average_price?: number;
   volume: number;
   amount: number;
   turnover_rate?: number;
   change_percent?: number;
   meta: SourceMeta;
 };
+
+export type HistoricalIntradayData = {
+  symbol: string;
+  trade_date: string;
+  lines: KLine[];
+  available_dates: string[];
+  availability: 'available' | 'partial' | 'unavailable';
+  meta: SourceMeta;
+  previous_close?: number;
+  message?: string;
+};
+
+export type HistoricalIntradayResponse = { data: HistoricalIntradayData };
 
 export type MarketIndexSnapshot = {
 	id: string;

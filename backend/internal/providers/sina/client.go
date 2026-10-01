@@ -24,6 +24,7 @@ type Client struct {
 	moneyFlowBaseURL       string
 	sectorMoneyFlowBaseURL string
 	stockCatalogBaseURL    string
+	intradayHistoryBaseURL string
 	httpClient             *http.Client
 }
 
@@ -33,6 +34,10 @@ func WithBaseURL(baseURL string) Option {
 	return func(c *Client) {
 		c.baseURL = strings.TrimRight(baseURL, "/")
 	}
+}
+
+func WithIntradayHistoryBaseURL(baseURL string) Option {
+	return func(c *Client) { c.intradayHistoryBaseURL = strings.TrimRight(baseURL, "/") }
 }
 
 func WithHTTPClient(httpClient *http.Client) Option {
@@ -72,6 +77,7 @@ func NewClient(opts ...Option) *Client {
 		moneyFlowBaseURL:       "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_ssggzj",
 		sectorMoneyFlowBaseURL: "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk",
 		stockCatalogBaseURL:    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData",
+		intradayHistoryBaseURL: "https://finance.sina.com.cn/realstock/company",
 		httpClient:             &http.Client{Timeout: 10 * time.Second},
 	}
 	for _, opt := range opts {

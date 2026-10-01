@@ -70,6 +70,11 @@ beforeEach(() => {
 			if (nextChart) { const handler = nextChart; nextChart = null; return handler(call); }
 			return Promise.resolve({ data: lines(url.searchParams.get('symbol')!) });
 		}
+		if (url.pathname.endsWith('/intraday')) {
+			const symbol = url.searchParams.get('symbol')!, date = url.searchParams.get('date')!;
+			return Promise.resolve({ data: { symbol, trade_date: date, availability: 'available', available_dates: ['2026-09-30', '2026-09-28'],
+				lines: lines(symbol).map(line => ({ ...line, time: line.time.replace('2026-09-30', date), meta: meta('sina:historical-intraday') })), meta: meta('sina:historical-intraday') } });
+		}
 		throw new Error(`Unexpected request: ${route}`);
 	});
 });
@@ -278,6 +283,40 @@ describe('stock detail refresh preserves the rendered chart', () => {
 		const input = host.querySelector('input[aria-label="搜索股票名称或代码"]')!;
 		await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', bubbles: true, cancelable: true })));
 		expect(panel().querySelector('h3')?.textContent).toContain('5日');
+	});
+
+	it('opens the selected daily candle date and preserves the daily chart selection when history closes', async () => {
+		nextChart = () => Promise.resolve({ data: lines().map((line, index) => ({ ...line, time: `${index === 0 ? '2026-09-28' : '2026-09-30'}T00:00:00+08:00` })) });
+		await render();
+		const region = panel().querySelector<HTMLElement>('[role="region"]')!;
+		await act(async () => region.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true })));
+		const svg = chartSVG(); expect(region.textContent).toContain('日期已锁定');
+		const open = [...region.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '查看当日分时')!;
+		open.focus(); await act(async () => open.click());
+		const historical = calls.filter(call => call.url.pathname.endsWith('/intraday'));
+		expect(historical).toHaveLength(1); expect(historical[0].url.searchParams.get('date')).toBe('2026-09-28');
+		const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+		expect(dialog.textContent).toContain(`${firstSymbol} · 2026-09-28`); expect(dialog.textContent).toContain('原始成交价格');
+		await act(async () => dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', bubbles: true, cancelable: true })));
+		expect(panel().querySelector('h3')?.textContent).toContain('日K');
+		await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+		expect(host.querySelector('[role="dialog"]')).toBeNull(); expect(chartSVG()).toBe(svg); expect(region.textContent).toContain('日期已锁定'); expect(document.activeElement).toBe(open);
+	});
+
+	it('closes and aborts historical requests when the stock changes', async () => {
+		await render();
+		const normalRequest = request.getMockImplementation()!;
+		const pending = deferred<unknown>();
+		let signal: AbortSignal | undefined;
+		request.mockImplementation((backend: BackendConfig, route: string, options?: RequestInit) => {
+			if (route.includes('/quotes/intraday')) { signal = options?.signal || undefined; return pending.promise; }
+			return normalRequest(backend, route, options);
+		});
+		const open = [...panel().querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '查看当日分时')!;
+		await act(async () => open.click()); expect(host.querySelector('[role="dialog"]')).not.toBeNull();
+		await render(secondSymbol); expect(signal?.aborted).toBe(true); expect(host.querySelector('[role="dialog"]')).toBeNull();
+		await act(async () => pending.resolve({ data: { symbol: firstSymbol, trade_date: '2026-09-30', availability: 'available', available_dates: [], lines: lines(), meta: meta() } }));
+		expect(host.querySelector('[role="dialog"]')).toBeNull(); expect(panel().querySelector('h3')?.textContent).toContain('贵州茅台');
 	});
 
 	it('ignores a late response from the previously selected stock', async () => {

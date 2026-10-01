@@ -29,6 +29,10 @@ type KLineProvider interface {
 	KLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error)
 }
 
+type HistoryIntradayProvider interface {
+	HistoryIntraday(context.Context, string, string) (foundation.StockIntradayHistory, error)
+}
+
 // AdjustedKLineProvider promises only its own supplier's adjustment convention.
 type AdjustedKLineProvider interface {
 	KLineAdjusted(context.Context, string, string, int, string) ([]foundation.KLine, error)
@@ -120,6 +124,8 @@ type Config struct {
 	KLinePrimary         KLineProvider
 	KLineFallback        KLineProvider
 	KLineStrictTencent   AdjustedKLineProvider
+	Intraday             KLineProvider // Direct recent minute samples, without latest-day filtering.
+	HistoryIntraday      HistoryIntradayProvider
 	News                 NewsProvider
 	SectorMap            SectorMapProvider
 	ThemeOverview        ThemeOverviewProvider

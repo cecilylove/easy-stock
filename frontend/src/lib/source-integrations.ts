@@ -4,7 +4,7 @@ export type SourceIntegration = { id: string; name: string; mode: 'public'; kind
 export const sourceIntegrations: SourceIntegration[] = [
 	{ id: 'duanxianxia', name: '短线侠 / 开盘啦', mode: 'public', kinds: ['market'], usage: '题材榜、龙头和涨停池', configuration: '内置公共接口，自动使用；至少 5 分钟刷新一次，无需填写凭据。' },
 	{ id: 'eastmoney', name: '东方财富', mode: 'public', kinds: ['market', 'information'], usage: '集合竞价、目录与概念归属、资金补充、涨跌停与连板梯队、基本面、融资、龙虎榜、公告和研报、人气榜及期指持仓历史；已停用个股K、复权和指数取数', configuration: '仅剩余能力自动调用，无需填写 Cookie 或 Token；手动检测使用新客户端读取目录，不检测已停用价格接口。代表接口成功/失败都不代表所有行情与资讯功能。' },
-	{ id: 'sina', name: '新浪财经', mode: 'public', kinds: ['market'], usage: '个股详情报价、分时与来源默认 K 线优先，行情总览资金榜', configuration: '进入相应功能后自动调用公共接口；K 线采用来源默认口径，不充当严格前 / 后复权备用。无需填写凭据。' },
+	{ id: 'sina', name: '新浪财经', mode: 'public', kinds: ['market'], usage: '个股详情报价、分时、按日期历史分时与来源默认 K 线优先，行情总览资金榜', configuration: '进入相应功能后自动调用公共接口；历史分时读取官网月档案，档案缺失时仅可回退同日近期样本并说明覆盖；K 线采用来源默认口径，不充当严格前 / 后复权备用。无需填写凭据。' },
 	{ id: 'tencent', name: '腾讯财经', mode: 'public', kinds: ['market'], usage: '指数同标的优先、沪深股票日周月K与明确来源复权、行业强度及成分股、美股行业 ETF', configuration: '股票明确复权与指数取数不再回退东方财富；行业仍可按有效字段降级，具体以功能规则为准，无需填写凭据。' },
 	{ id: 'cls', name: '财联社', mode: 'public', kinds: ['information'], usage: '市场快讯', configuration: '内置公开资讯接口，自动使用；无需填写凭据。' },
 	{ id: 'ths', name: '同花顺', mode: 'public', kinds: ['market'], usage: '个股研究人气榜', configuration: '请求人气榜时自动调用公共接口；该榜不等价于其它平台人气排名，无需填写 Cookie 或 Token。' },

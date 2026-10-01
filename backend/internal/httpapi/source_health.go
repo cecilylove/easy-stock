@@ -225,7 +225,7 @@ func (t *sourceHealthTracker) snapshot(now time.Time) []foundation.SourceHealth 
 	catalog := []foundation.SourceHealth{
 		{ID: "duanxianxia", Name: "短线侠 / 开盘啦", Category: "theme,leaders,limit-up,concept"},
 		{ID: "eastmoney", Name: "东方财富", Category: "auction,stock-directory,concept,business,fundamentals,sector,money-flow,limit-up,market-pools,margin,billboard,announcement,report,hot-ranks,futures"},
-		{ID: "sina", Name: "新浪财经", Category: "quote,kline,money-flow,stock-directory"},
+		{ID: "sina", Name: "新浪财经", Category: "quote,kline,historical-intraday,money-flow,stock-directory"},
 		{ID: "tencent", Name: "腾讯财经", Category: "index,kline,sector,sector-stocks,us-sector"},
 		{ID: "cls", Name: "财联社", Category: "news"},
 		{ID: "ths", Name: "同花顺", Category: "hot-ranks"},

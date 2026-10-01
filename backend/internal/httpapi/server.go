@@ -43,6 +43,12 @@ type Server struct {
 	realtimeProvider        RealtimeProvider
 	detailQuotes            *detailPollCache[[]foundation.Quote]
 	detailKLines            *detailPollCache[[]foundation.KLine]
+	stockIntraday           *detailPollCache[stockIntradayData]
+	intradayProvider        KLineProvider
+	historyIntradayProvider HistoryIntradayProvider
+	intradaySourceID        string
+	intradayContext         context.Context
+	intradayCancel          context.CancelFunc
 	detailAuctions          *detailPollCache[foundation.AuctionTrace]
 	auctionProvider         AuctionProvider
 	auctionSourceID         string
@@ -108,12 +114,21 @@ type Server struct {
 
 func NewServer(config any) *Server {
 	cfg := normalizeConfig(config)
+	intradayContext, intradayCancel := context.WithCancel(context.Background())
 	tokenUsage := newTokenUsageStore(cfg.SettingsPath)
 	if cfg.Logger == nil {
 		cfg.Logger = log.Default()
 	}
 	var startupErrors []error
 	sinaClient := sina.NewClient()
+	if cfg.Intraday == nil && cfg.HistoryIntraday == nil {
+		cfg.HistoryIntraday = sina.NewHistoryIntradayClient(sinaClient)
+	}
+	intradaySourceID := ""
+	if cfg.Intraday == nil {
+		cfg.Intraday = sinaClient
+		intradaySourceID = "sina"
+	}
 	eastMoneyClient := eastmoney.NewClient()
 	tencentClient := tencent.NewClient()
 	clsClient := cls.NewClient()
@@ -340,6 +355,12 @@ func NewServer(config any) *Server {
 		realtimeProvider:        cfg.Realtime,
 		detailQuotes:            newDetailPollCache[[]foundation.Quote](),
 		detailKLines:            newDetailPollCache[[]foundation.KLine](),
+		stockIntraday:           newDetailPollCache[stockIntradayData](),
+		intradayProvider:        cfg.Intraday,
+		historyIntradayProvider: cfg.HistoryIntraday,
+		intradaySourceID:        intradaySourceID,
+		intradayContext:         intradayContext,
+		intradayCancel:          intradayCancel,
 		detailAuctions:          newDetailPollCache[foundation.AuctionTrace](),
 		auctionProvider:         cfg.Auction,
 		auctionSourceID:         auctionSourceID,
@@ -454,6 +475,7 @@ func (s *Server) Close() error {
 	if s.sourceProbes != nil {
 		s.sourceProbes.close()
 	}
+	s.closeStockIntraday()
 	if s.limitUpProgress != nil {
 		s.limitUpProgress.close()
 	}
@@ -578,6 +600,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/quotes/realtime", s.realtime)
 	s.mux.HandleFunc("GET /api/v1/quotes/auction", s.auctionTrace)
 	s.mux.HandleFunc("GET /api/v1/quotes/kline", s.kline)
+	s.mux.HandleFunc("GET /api/v1/quotes/intraday", s.intraday)
 	s.mux.HandleFunc("GET /api/v1/quotes/kline/batch", s.klineBatch)
 	s.mux.HandleFunc("GET /api/v1/market/news", s.news)
 	s.mux.HandleFunc("GET /api/v1/market/indexes", s.marketIndexesHandler)

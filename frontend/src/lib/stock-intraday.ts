@@ -1,4 +1,5 @@
 import type { KLine } from './backend';
+import { sourceFieldAvailable } from './source-fields';
 
 const morningStart = 9 * 60 + 30;
 const morningEnd = 11 * 60 + 30;
@@ -26,8 +27,28 @@ export function auctionFraction(minute: number): number | null {
 
 export function tradingSessionForDay(lines: KLine[], day: string) {
 	return lines.map(line => ({ line, instant: shanghaiDayAndMinute(line.time) }))
-		.filter((item): item is { line: KLine; instant: { day: string; minute: number } } => Boolean(item.instant) && item.instant?.day === day && tradingFraction(item.instant.minute) != null && Number.isFinite(item.line.close) && item.line.close > 0 && Number.isFinite(item.line.volume) && item.line.volume >= 0)
+		.filter((item): item is { line: KLine; instant: { day: string; minute: number } } => Boolean(item.instant) && item.instant?.day === day && tradingFraction(item.instant.minute) != null && sourceFieldAvailable(item.line.meta, 'close') && Number.isFinite(item.line.close) && item.line.close > 0 && Number.isFinite(item.line.volume) && item.line.volume >= 0)
 		.sort((a, b) => a.instant.minute - b.instant.minute);
+}
+
+export function minuteText(minute: number) {
+	return `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+}
+
+// Coverage is relative to the last observed minute, never to a fabricated close.
+// Completed bars may begin at 09:31 / 13:01. Sina's closing auction is represented
+// by a single 15:00 bar after 14:57; the two omitted labels do not imply a gap.
+export function intradaySampleCoverage(minutes: number[]) {
+	const observed = [...new Set(minutes)].sort((a, b) => a - b);
+	const first = observed[0];
+	const startsAtOpen = first === morningStart || first === morningStart + 1;
+	const hasGaps = observed.some((minute, index) => {
+		if (!index || minute - observed[index - 1] <= 1) return false;
+		const previous = observed[index - 1];
+		return !(previous === morningEnd && (minute === afternoonStart || minute === afternoonStart + 1))
+			&& !(previous === afternoonEnd - 3 && minute === afternoonEnd);
+	});
+	return { startsAtOpen, hasGaps, first, last: observed.at(-1), count: observed.length };
 }
 
 export function latestTradingSession(lines: KLine[]) {
