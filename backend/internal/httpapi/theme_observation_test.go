@@ -37,7 +37,7 @@ func TestPlainThemeRouteRecordsComponentOutcomesDespiteFusedMetadata(t *testing.
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	items := s.sourceHealth.snapshot(time.Now())
-	if sourceByID(t, items, "tencent").Status != "available" || sourceByID(t, items, "duanxianxia").Status != "degraded" || sourceByID(t, items, "eastmoney").Status != "unknown" {
+	if sourceByID(t, items, "tencent").Status != "available" || sourceByID(t, items, "duanxianxia").Status != "degraded" || sourceByID(t, items, "cffex").Status != "unknown" {
 		t.Fatalf("component outcomes lost or invented: %+v", items)
 	}
 }

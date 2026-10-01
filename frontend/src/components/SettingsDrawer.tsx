@@ -26,7 +26,9 @@ import { AppSettings, BackendConfig, BrowserAuthStatus, LLMConnectionTestResult,
 import { llmProviderDefinition, llmProviders } from '../lib/llm-providers';
 import { AppUpdatePanel } from './AppUpdatePanel';
 import { HermesAgentSettingsPanel } from './HermesAgentSettingsPanel';
-import { SourceIntegrationCatalog } from './SourceIntegrationCatalog';
+import { SourceHealthPanel } from './SourceHealthPanel';
+import type { SourceHealth, SourceProbeResult } from '../lib/backend';
+import { expireSourceHealth, parseSourceRecords } from '../lib/source-health';
 import { useModalDialog } from '../lib/use-modal-dialog';
 
 type Props = {
@@ -38,22 +40,13 @@ type Props = {
 	fallbackFocusRef?: RefObject<HTMLElement | null>;
 };
 
-type SecretKey = 'llm_api_key' | 'tushare_token' | 'ths_cookie' | 'xueqiu_cookie' | 'eastmoney_cookie' | 'wechat_api_token';
+type SecretKey = 'llm_api_key';
 type ReviewSource = 'wechat' | 'xueqiu' | 'taoguba';
 type ReviewProfileDraft = Omit<ReviewAutomationProfile, 'credential'> & { credential: SecretSettingStatus; credential_value: string; clear_credential: boolean };
 type ModelListState = 'idle' | 'loading' | 'success' | 'error';
 
 const manualModelOption = '__manual_model_input__';
 const defaultResponseTimeoutSeconds = 300;
-
-const emptySecrets = (): Record<SecretKey, string> => ({
-	llm_api_key: '',
-	tushare_token: '',
-	ths_cookie: '',
-	xueqiu_cookie: '',
-	eastmoney_cookie: '',
-	wechat_api_token: '',
-});
 
 export function SettingsDrawer({ config, open, onClose, onSaved, initialSection, fallbackFocusRef }: Props) {
 	const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -69,8 +62,6 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 	const [responseTimeoutSeconds, setResponseTimeoutSeconds] = useState(defaultResponseTimeoutSeconds);
 	const [reviewSource, setReviewSource] = useState<ReviewSource>('xueqiu');
 	const [reviewProfiles, setReviewProfiles] = useState<ReviewProfileDraft[]>([]);
-	const [secrets, setSecrets] = useState<Record<SecretKey, string>>(emptySecrets);
-	const [clearSecrets, setClearSecrets] = useState<Set<SecretKey>>(new Set());
 	const [state, setState] = useState<'idle' | 'loading' | 'saving' | 'saved' | 'error'>('idle');
 	const [message, setMessage] = useState('');
 	const [testState, setTestState] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -90,7 +81,80 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 	const dataSourcesRef = useRef<HTMLElement | null>(null);
 	const sourceSectionFocused = useRef(false);
 	const dialogRef = useRef<HTMLElement>(null);
+	const sourceKey = JSON.stringify([config?.backendUrl, config?.token]);
+	const sourceKeyRef = useRef(sourceKey);
+	sourceKeyRef.current = sourceKey;
+	const [sourceRecords, setSourceRecords] = useState<{ key: string; sources: SourceHealth[]; probes: SourceProbeResult[]; readAt: string } | null>(null);
+	const [sourceReadState, setSourceReadState] = useState<{ key: string; loading: boolean; error: string }>({ key: '', loading: false, error: '' });
+	const [sourceCheckState, setSourceCheckState] = useState<{ key: string; checking: boolean; error: string }>({ key: '', checking: false, error: '' });
+	const sourceSessionRef = useRef<object | null>(null);
+	const sourceProbeRef = useRef<AbortController | null>(null);
+	const sourceRevisionRef = useRef(0);
+	const [sourceClock, setSourceClock] = useState(Date.now);
+	const visibleSourceRecords = sourceRecords?.key === sourceKey ? sourceRecords : null;
+	const visibleSourceState = sourceReadState.key === sourceKey ? sourceReadState : { loading: false, error: '' };
+	const visibleSourceCheck = sourceCheckState.key === sourceKey ? sourceCheckState : { checking: false, error: '' };
 	useModalDialog(open, dialogRef, onClose, fallbackFocusRef);
+	useEffect(() => {
+		if (!open || !config) return;
+		const session = {};
+		sourceSessionRef.current = session;
+		setSourceCheckState({ key: sourceKey, checking: false, error: '' });
+		let disposed = false;
+		let pending = false;
+		let controller: AbortController | null = null;
+		const requestConfig = { backendUrl: config.backendUrl, token: config.token };
+		const refresh = async () => {
+			setSourceClock(Date.now());
+			if (document.visibilityState === 'hidden' || pending || sourceProbeRef.current) return;
+			const revision = sourceRevisionRef.current;
+			pending = true;
+			controller = new AbortController();
+			setSourceReadState({ key: sourceKey, loading: true, error: '' });
+			try {
+				const payload = await requestJSON<unknown>(requestConfig, '/api/v1/sources', { signal: controller.signal });
+				if (disposed || sourceKeyRef.current !== sourceKey || revision !== sourceRevisionRef.current) return;
+				setSourceRecords({ key: sourceKey, ...parseSourceRecords(payload), readAt: new Date().toISOString() });
+				setSourceReadState({ key: sourceKey, loading: false, error: '' });
+			} catch (error) {
+				if (disposed || sourceKeyRef.current !== sourceKey || revision !== sourceRevisionRef.current) return;
+				setSourceReadState({ key: sourceKey, loading: false, error: error instanceof Error ? error.message : '读取失败' });
+			} finally {
+				pending = false;
+			}
+		};
+		void refresh();
+		const timer = window.setInterval(() => void refresh(), 30_000);
+		const onVisibility = () => { if (document.visibilityState !== 'hidden') void refresh(); };
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => {
+			disposed = true; controller?.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisibility);
+			if (sourceSessionRef.current === session) { sourceSessionRef.current = null; sourceProbeRef.current?.abort(); sourceProbeRef.current = null; }
+		};
+	}, [open, sourceKey]);
+	const checkSources = async () => {
+		const session = sourceSessionRef.current;
+		if (!open || !config || !session || sourceProbeRef.current) return;
+		const controller = new AbortController();
+		sourceProbeRef.current = controller;
+		sourceRevisionRef.current += 1;
+		setSourceClock(Date.now());
+		setSourceCheckState({ key: sourceKey, checking: true, error: '' });
+		setSourceReadState({ key: sourceKey, loading: false, error: '' });
+		const current = () => sourceSessionRef.current === session && sourceKeyRef.current === sourceKey;
+		try {
+			const payload = await requestJSON<unknown>(config, '/api/v1/sources/check', { method: 'POST', signal: controller.signal });
+			if (!current()) return;
+			setSourceRecords({ key: sourceKey, ...parseSourceRecords(payload, true), readAt: new Date().toISOString() });
+			setSourceClock(Date.now());
+			setSourceCheckState({ key: sourceKey, checking: false, error: '' });
+		} catch (error) {
+			if (!current()) return;
+			setSourceCheckState({ key: sourceKey, checking: false, error: error instanceof Error ? error.message : '检测请求失败' });
+		} finally {
+			if (sourceProbeRef.current === controller) sourceProbeRef.current = null;
+		}
+	};
 	useEffect(() => {
 		if (!open || state === 'loading') { sourceSectionFocused.current = false; return; }
 		if (initialSection === 'data-sources' && settings && !sourceSectionFocused.current && dataSourcesRef.current) {
@@ -127,8 +191,6 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 				const profiles = toProfileDrafts(payload.data.review_automation?.profiles || []);
 				setReviewProfiles(profiles);
 				void refreshBrowserAuthStatuses(profiles);
-				setSecrets(emptySecrets());
-				setClearSecrets(new Set());
 				setState('idle');
 			})
 			.catch((error) => {
@@ -175,9 +237,8 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 
 	const configuredCount = useMemo(() => {
 		if (!settings) return 0;
-		const sharedCredentials = Object.entries(settings.credentials).filter(([key]) => key !== 'xueqiu_cookie' && key !== 'wechat_api_token').map(([, value]) => value);
 		const browserSessions = Object.values(browserAuthStatuses).filter((item) => item.configured).length;
-		return [...settings.llm_profiles.map((profile) => profile.api_key), ...sharedCredentials].filter((item) => item.configured).length + browserSessions + (wechatServiceStatus.authenticated ? 1 : 0);
+		return settings.llm_profiles.filter((profile) => profile.api_key.configured).length + browserSessions + (wechatServiceStatus.authenticated ? 1 : 0);
 	}, [browserAuthStatuses, settings, wechatServiceStatus.authenticated]);
 
 	const selectedModelCapability = modelOptions.find((option) => option.id === model)?.reasoning;
@@ -260,14 +321,6 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 			setClearProfileKeys((current) => { const next = new Set(current); if (value) next.delete(activeLLMProfileID); return next; });
 			resetModelList(); setTestState('idle'); setTestResult(null); return;
 		}
-		setSecrets((current) => ({ ...current, [key]: value }));
-		if (value) {
-			setClearSecrets((current) => {
-				const next = new Set(current);
-				next.delete(key);
-				return next;
-			});
-		}
 	};
 
 	const toggleClear = (key: SecretKey) => {
@@ -276,13 +329,6 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 			setProfileKeyValues((current) => ({ ...current, [activeLLMProfileID]: '' }));
 			resetModelList(); return;
 		}
-		setClearSecrets((current) => {
-			const next = new Set(current);
-			if (next.has(key)) next.delete(key);
-			else next.add(key);
-			return next;
-		});
-		setSecrets((current) => ({ ...current, [key]: '' }));
 	};
 
 	const updateModel = (nextModel: string) => {
@@ -392,10 +438,6 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 
 	const persistSettings = async () => {
 		if (!config) throw new Error('后端尚未连接');
-		const credentials: Record<string, string> = {};
-		for (const key of ['tushare_token', 'ths_cookie', 'xueqiu_cookie', 'eastmoney_cookie'] as SecretKey[]) {
-			if (secrets[key].trim()) credentials[key] = secrets[key].trim();
-		}
 		const modelProfiles = llmProfiles.map((profile) => {
 			const current = profile.id === activeLLMProfileID ? { ...profile, name: profileName.trim(), provider, base_url: baseURL.trim(), model: model.trim(), api_mode: apiMode } : profile;
 			return { id: current.id, name: current.name.trim(), provider: current.provider, base_url: current.base_url.trim(), model: current.model.trim(), api_mode: current.api_mode, api_key: (profileKeyValues[current.id] || '').trim() || undefined, clear_api_key: clearProfileKeys.has(current.id) };
@@ -403,7 +445,7 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 		const payload = await requestJSON<{ data: AppSettings }>(config, '/api/v1/settings', {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ llm: { response_timeout_seconds: responseTimeoutSeconds }, llm_profiles: modelProfiles, active_llm_profile_id: activeLLMProfileID, credentials, review_automation: { profiles: reviewProfiles.map((profile) => ({ id: profile.id, source: profile.source, name: profile.name.trim(), base_url: profile.source === 'wechat' ? '' : profile.base_url.trim(), credential: profile.source === 'wechat' ? undefined : profile.credential_value.trim() || undefined, clear_credential: profile.source === 'wechat' || profile.clear_credential, sync_hour: profile.sync_hour, auto_analyze: profile.auto_analyze, enabled: profile.enabled })) }, clear_secrets: [...clearSecrets].filter((key) => key !== 'llm_api_key').concat('wechat_api_token') }),
+			body: JSON.stringify({ llm: { response_timeout_seconds: responseTimeoutSeconds }, llm_profiles: modelProfiles, active_llm_profile_id: activeLLMProfileID, review_automation: { profiles: reviewProfiles.map((profile) => ({ id: profile.id, source: profile.source, name: profile.name.trim(), base_url: profile.source === 'wechat' ? '' : profile.base_url.trim(), credential: profile.source === 'wechat' ? undefined : profile.credential_value.trim() || undefined, clear_credential: profile.source === 'wechat' || profile.clear_credential, sync_hour: profile.sync_hour, auto_analyze: profile.auto_analyze, enabled: profile.enabled })) }, clear_secrets: ['wechat_api_token'] }),
 		});
 		setSettings(payload.data);
 		const savedProfiles = normalizeLLMProfiles(payload.data);
@@ -416,8 +458,6 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 		const savedReviewProfiles = toProfileDrafts(payload.data.review_automation?.profiles || []);
 		setReviewProfiles(savedReviewProfiles);
 		void refreshBrowserAuthStatuses(savedReviewProfiles);
-		setSecrets(emptySecrets());
-		setClearSecrets(new Set());
 		return payload.data;
 	};
 
@@ -477,7 +517,7 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 		<div className="settings-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
 			<aside ref={dialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-label="系统设置" tabIndex={-1}>
 				<header className="settings-header">
-					<div><span>HERMES LOCAL RUNTIME</span><h2>系统设置</h2><p>管理 Hermes 模型运行时与外部数据源凭据</p></div>
+					<div><span>HERMES LOCAL RUNTIME</span><h2>系统设置</h2><p>管理模型配置、复盘登录与数据源说明</p></div>
 					<button type="button" onClick={onClose} aria-label="关闭设置"><X size={20} /></button>
 				</header>
 
@@ -538,11 +578,8 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 						</section>
 
 						<section className="settings-section" ref={dataSourcesRef} tabIndex={-1} aria-label="行情与内容数据源">
-							<div className="settings-section-title"><Database size={18} /><div><h3>行情与内容数据源</h3><p>查看全部来源的接入方式；凭据配置与数据服务实现分开管理。</p></div></div>
-							<SourceIntegrationCatalog />
-							<SecretField label="Tushare Pro Token（预留，未启用）" secretKey="tushare_token" status={settings?.credentials.tushare_token} value={secrets.tushare_token} clearing={clearSecrets.has('tushare_token')} onChange={updateSecret} onClear={toggleClear} hint="仅保存凭据；当前未实现 Tushare 取数和失败回退，填写后不会自动接入。" />
-							<SecretField label="同花顺 Cookie / Token（预留，未启用）" secretKey="ths_cookie" status={settings?.credentials.ths_cookie} value={secrets.ths_cookie} clearing={clearSecrets.has('ths_cookie')} onChange={updateSecret} onClear={toggleClear} hint="仅保存凭据；当前未实现同花顺取数，填写后不会参与题材聚合。" />
-							<SecretField label="东方财富 Cookie（增强接口预留）" secretKey="eastmoney_cookie" status={settings?.credentials.eastmoney_cookie} value={secrets.eastmoney_cookie} clearing={clearSecrets.has('eastmoney_cookie')} onChange={updateSecret} onClear={toggleClear} hint="现有公共行情无需 Cookie；此字段不会改变公共接口的可用性和回退逻辑。" />
+							<div className="settings-section-title"><Database size={18} /><div><h3>行情与内容数据源</h3><p>来源用途与实际请求观测集中展示；悬停或聚焦问号查看调用说明。</p></div></div>
+							<SourceHealthPanel id="settings-source-observations" sources={expireSourceHealth(visibleSourceRecords?.sources || [], sourceClock)} probes={visibleSourceRecords?.probes || []} now={sourceClock} loading={visibleSourceState.loading} checking={visibleSourceCheck.checking} checkError={visibleSourceCheck.error} error={visibleSourceState.error} readAt={visibleSourceRecords?.readAt} onRefresh={() => void checkSources()} />
 						</section>
 
 						<AppUpdatePanel />

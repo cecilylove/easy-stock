@@ -9,9 +9,15 @@ describe('quote book boundaries', () => {
 		expect(html).toContain('卖五'); expect(html).toContain('买一'); expect(html).toContain('33.33%');
 		expect(html).toContain('旧快照 · 非实时'); expect(html).toContain('委托量（手）');
 		expect(html).toContain('未接入逐笔数据');
+		expect(html).toContain('https://quote.eastmoney.com/sz000002.html');
+		expect(html).toContain('在东方财富查看原始行情');
 	});
 	it('does not fabricate orders when quote source lacks depth', () => {
 		const html = renderToStaticMarkup(<StockQuoteSidebar quote={{ ...quote, bids: undefined, asks: undefined }} stale={false} symbol={quote.symbol} />);
 		expect(html).toContain('当前来源没有可用五档'); expect(html).not.toContain('33.33%');
+	});
+	it('does not invent an EastMoney external quote URL for Beijing listings', () => {
+		const html = renderToStaticMarkup(<StockQuoteSidebar quote={null} stale={false} symbol="920001.BJ" />);
+		expect(html).not.toContain('quote.eastmoney.com'); expect(html).not.toContain('在东方财富查看原始行情');
 	});
 });

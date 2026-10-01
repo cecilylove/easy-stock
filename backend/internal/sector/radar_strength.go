@@ -107,7 +107,7 @@ func (p *RadarProvider) strengthChangeLookup(
 ) map[string]stockStrengthChange {
 	result := make(map[string]stockStrengthChange, len(symbols))
 	for symbol, quote := range p.realtimeStrengthQuoteLookup(ctx, symbols) {
-		if quote.Price <= 0 && quote.PreviousClose <= 0 && quote.ChangePercent == 0 {
+		if !foundation.FieldAvailable(quote.Meta, "change_percent") || math.IsNaN(quote.ChangePercent) || math.IsInf(quote.ChangePercent, 0) || (quote.Price <= 0 && quote.PreviousClose <= 0 && quote.ChangePercent == 0) {
 			continue
 		}
 		result[symbol] = stockStrengthChange{daily: quote.ChangePercent, dailyValid: true}
@@ -118,11 +118,15 @@ func (p *RadarProvider) strengthChangeLookup(
 	for _, stocks := range pools {
 		for _, stock := range stocks {
 			change := result[stock.Symbol]
-			if !change.dailyValid && (stock.Price > 0 || stock.ChangePercent != 0) {
+			if !change.dailyValid && foundation.FieldAvailable(stock.Meta, "change_percent") && (stock.Price > 0 || stock.ChangePercent != 0) && !math.IsNaN(stock.ChangePercent) && !math.IsInf(stock.ChangePercent, 0) {
 				change.daily = stock.ChangePercent
 				change.dailyValid = true
 			}
-			if stock.Price > 0 || stock.FiveDayChangePercent != 0 {
+			// Price presence says nothing about a rolling return. Legacy rows
+			// without a mask only prove a nonzero historical value; known masks
+			// also preserve a genuinely supplied zero-percent return.
+			fiveDayKnown := stock.Meta.FieldsKnown || len(stock.Meta.AvailableFields) > 0
+			if foundation.FieldAvailable(stock.Meta, "five_day_change_percent") && (fiveDayKnown || stock.FiveDayChangePercent != 0) && !math.IsNaN(stock.FiveDayChangePercent) && !math.IsInf(stock.FiveDayChangePercent, 0) {
 				change.fiveDay = stock.FiveDayChangePercent
 				change.fiveDayValid = true
 			}

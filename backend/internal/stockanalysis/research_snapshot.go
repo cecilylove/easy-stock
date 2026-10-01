@@ -62,11 +62,12 @@ func BuildResearchSnapshot(input Input, analysis Analysis, cutoff time.Time) Res
 	if cutoff.IsZero() {
 		cutoff = time.Now().UTC()
 	}
+	lines := normalizeKLines(input.KLines)
 	snapshot := ResearchSnapshot{
 		ID: NewResearchID(), Version: 1, Symbol: analysis.Symbol, Name: analysis.Name,
 		CapturedAt: time.Now().UTC(), CutoffAt: cutoff, Quote: analysis.Quote,
 		Sources: []ResearchSource{}, Anchors: []PriceAnchor{}, Baseline: analysis.Scorecard,
-		DailyBars:   compactDailyBars(normalizeKLines(input.KLines), 300),
+		DailyBars:   compactDailyBars(lines, 300),
 		Limitations: append([]string{}, input.CollectionGaps...),
 	}
 	addMetric := func(id, title string, value any, date string) {
@@ -78,26 +79,20 @@ func BuildResearchSnapshot(input Input, analysis Analysis, cutoff time.Time) Res
 	if len(snapshot.DailyBars) > 0 {
 		lastDate = snapshot.DailyBars[len(snapshot.DailyBars)-1].Date
 	}
-	priceBasis := "数据源未明确标注复权口径，不能认定为统一前复权序列"
-	lineMeta := foundation.SourceMeta{}
-	if len(input.KLines) > 0 {
-		lineMeta = input.KLines[len(input.KLines)-1].Meta
-		if parsed, err := url.Parse(lineMeta.SourceURL); err == nil && parsed.Query().Get("fqt") == "1" {
-			priceBasis = "前复权日线；跨除权时点不可直接比较原阈值"
-		}
-	}
+	lineMeta := latestKLineMeta(lines)
+	priceBasis := researchPriceBasis(lineMeta)
 	missing := []string{}
-	for _, bar := range snapshot.DailyBars[max(0, len(snapshot.DailyBars)-20):] {
-		if bar.Amount <= 0 {
-			missing = append(missing, "部分日线未提供成交额，amount=0表示缺失，不能据此判断流动性枯竭")
-			break
+	for _, quality := range historicalFieldQuality(lines, 20) {
+		if quality.Status == "limited" {
+			missing = append(missing, quality.Message)
 		}
 	}
 	snapshot.Limitations = append(snapshot.Limitations, missing...)
 	addMetric("m-price", "日线量价统计（收益为百分比，价格为元，成交额为元）", map[string]any{
-		"summary": summarizeDailyKLines(analysis.dailyBars), "recent_bars": compactDailyBars(normalizeKLines(input.KLines), 20),
+		"summary": summarizeDailyKLines(analysis.dailyBars), "recent_bars": compactDailyBars(lines, 20),
 		"source": lineMeta, "price_basis": priceBasis, "missing_fields": missing,
-		"volume_unit": "沿用数据源原始单位，仅用于同源相对量比，禁止当作跨源统一股数", "intraday_caution": "当日收盘前的日线可能尚未完成，不能作为已完成收盘确认",
+		"volume_unit":    firstNonEmpty(lineMeta.VolumeUnit, "unknown"),
+		"volume_caution": "仅按来源明确标注的单位使用；unknown/provider_index_volume不可冒充股数或与股票量跨源比较", "intraday_caution": "当日收盘前的日线可能尚未完成，不能作为已完成收盘确认",
 	}, lastDate)
 	addMetric("m-quote", "行情快照（不等于收盘价）", analysis.Quote, analysis.Quote.TradeTime.Format(time.RFC3339))
 	if input.Fundamentals != nil && input.Fundamentals.ReportDate != "" {
@@ -113,8 +108,13 @@ func BuildResearchSnapshot(input Input, analysis Analysis, cutoff time.Time) Res
 			Content: truncateText(input.Business+"\n"+input.BusinessDetail, 1800), Provider: input.BusinessSource, CapturedAt: snapshot.CapturedAt, TimeStatus: "publication_unknown"})
 	}
 	if len(input.BenchmarkKLines) > 0 && analysis.Relative.Available {
+		benchmarkLines := normalizeKLines(input.BenchmarkKLines)
+		benchmarkMeta := latestKLineMeta(benchmarkLines)
 		addMetric("m-relative", "对照基准统计（不是行业龙头认定）", map[string]any{
-			"symbol": input.BenchmarkSymbol, "name": input.BenchmarkName, "bars": compactDailyBars(normalizeKLines(input.BenchmarkKLines), 20),
+			"symbol": input.BenchmarkSymbol, "name": input.BenchmarkName, "bars": compactDailyBars(benchmarkLines, 20),
+			"source": benchmarkMeta, "price_basis": researchPriceBasis(benchmarkMeta),
+			"volume_unit":    firstNonEmpty(benchmarkMeta.VolumeUnit, "unknown"),
+			"volume_caution": "指数成交量单位仅沿用来源标注，不推断为股票股数",
 		}, lastDate)
 	}
 	var stockEvents []foundation.LimitUpEvent
@@ -188,6 +188,38 @@ func BuildResearchSnapshot(input Input, analysis Analysis, cutoff time.Time) Res
 	snapshot.Version = 1
 	snapshot.Limitations = uniqueStrings(snapshot.Limitations, 24)
 	return snapshot
+}
+
+func latestKLineMeta(lines []foundation.KLine) foundation.SourceMeta {
+	if len(lines) == 0 {
+		return foundation.SourceMeta{}
+	}
+	return lines[len(lines)-1].Meta
+}
+
+func researchPriceBasis(meta foundation.SourceMeta) string {
+	label := "数据源未明确标注有效复权口径，不能认定为统一前复权序列"
+	switch meta.EffectiveAdjustment {
+	case "none":
+		label = "数据源明确标注不复权日线"
+	case "qfq":
+		label = "数据源明确标注前复权日线；跨除权时点不可直接比较原阈值"
+	case "hfq":
+		label = "数据源明确标注后复权日线；不可直接与实时未复权报价比较"
+	case "":
+	default:
+		label = "数据源标注有效口径=" + meta.EffectiveAdjustment + "；不能认定为统一前复权序列"
+	}
+	if meta.RequestedAdjustment != "" {
+		label += "；请求口径=" + meta.RequestedAdjustment + "（请求不等于实际响应）"
+	}
+	if meta.AdjustmentConvention != "" {
+		label += "；来源约定=" + meta.AdjustmentConvention
+	}
+	if meta.BasisID != "" {
+		label += "；基准身份=" + meta.BasisID
+	}
+	return label + "；不同供应商同名复权不保证等价，不能仅凭请求URL认定有效口径"
 }
 
 func ResearchItemSource(item foundation.MarketResearchItem, kind string, captured time.Time) ResearchSource {

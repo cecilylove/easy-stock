@@ -36,15 +36,13 @@ import type {
 	MarketFuturesConsensus,
 	MarketResearchItem,
 	NewsItem,
-	SourceHealth,
 	SourceMeta,
 	ThemeOverview,
 } from '../lib/backend';
 import { requestJSON } from '../lib/backend';
 import { formatFuturesOpeningHands } from '../lib/futures-position';
-import { sourceHealthCounts } from '../lib/source-health';
-import { SourceHealthPanel } from './SourceHealthPanel';
 import { LatestRequest } from '../lib/latest-request';
+import { sourceName } from '../lib/source-integrations';
 import {
 	type MarketOverviewView,
 	buildMarketBillboardPrompt,
@@ -64,6 +62,7 @@ import {
 	FuturesPositionView,
 	ModuleState,
 	ResearchView,
+	SourceNotice,
 } from './market/MarketDataViews';
 
 type Props = {
@@ -94,9 +93,6 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 	const [news, setNews] = useState<NewsItem[]>([]);
 	const [themes, setThemes] = useState<ThemeOverview[]>([]);
 	const [themeMeta, setThemeMeta] = useState<SourceMeta | null>(null);
-	const [sources, setSources] = useState<SourceHealth[]>([]);
-	const [sourcesError, setSourcesError] = useState('');
-	const [sourcesRetryKey, setSourcesRetryKey] = useState(0);
 	const [pulseState, setPulseState] = useState<LoadState>('idle');
 	const [pulseError, setPulseError] = useState('');
 	const [moduleState, setModuleState] = useState<LoadState>('idle');
@@ -146,9 +142,6 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 			requestJSON<{ data: ThemeOverview[]; meta: SourceMeta }>(config, '/api/v1/themes/overview', { signal: generation.signal }),
 		]);
 		if (!requests.current.isCurrent(generation, currentQuery.current)) return;
-		// Read passive observations after the market requests, not before them.
-		const [sourceResult] = await Promise.allSettled([requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources', { signal: generation.signal })]);
-		if (!requests.current.isCurrent(generation, currentQuery.current)) return;
 
 		let successes = 0;
 		const errors: string[] = [];
@@ -161,15 +154,6 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 			setThemeMeta(themeResult.value.meta);
 			successes += 1;
 		} else errors.push(errorMessage(themeResult.reason, '题材快照加载失败'));
-		if (sourceResult.status === 'fulfilled') {
-			setSources(sourceResult.value.sources);
-			setSourcesError('');
-			successes += 1;
-		} else {
-			const sourceError = errorMessage(sourceResult.reason, '数据源状态加载失败');
-			setSourcesError(sourceError);
-			errors.push(sourceError);
-		}
 		setLastUpdated(new Date().toISOString());
 		setPulseError(errors.join('；'));
 		setPulseState(successes > 0 ? 'ready' : 'error');
@@ -294,25 +278,6 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 	}, [activeView, loadModule, loadPulse, refreshKey]);
 
 	useEffect(() => {
-		if (!config || activeView !== 'pulse') return;
-		const abort = new AbortController();
-		let pending = false;
-		const refreshSources = () => {
-			if (pending) return;
-			pending = true;
-			void requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources', { signal: abort.signal })
-				.then(payload => { if (!abort.signal.aborted) { setSources(payload.sources); setSourcesError(''); } })
-				.catch(() => { if (!abort.signal.aborted) setSourcesError('数据源观测记录读取失败'); })
-				.finally(() => { pending = false; });
-		};
-		refreshSources();
-		const timer = window.setInterval(() => {
-			if (document.visibilityState === 'visible') refreshSources();
-		}, 30_000);
-		return () => { window.clearInterval(timer); abort.abort(); };
-	}, [activeView, config, sourcesRetryKey]);
-
-	useEffect(() => {
 		if (!config || activeView !== 'core-indexes' || !selectedIndexID) return;
 		let cancelled = false;
 		setSeriesLoading(true);
@@ -427,7 +392,8 @@ export function MarketOverviewWorkspace({ config, refreshKey, onAskAI, onOpenSou
 				<div><button type="button" className="market-ai-button" onClick={() => void askAI()} disabled={!hasEvidence || aiPreparing}>{aiPreparing ? <LoaderCircle className="spin" size={16} /> : <Bot size={16} />}{aiPreparing ? '正在聚合席位与连板证据' : '交给 AI 解读'}</button><button type="button" className="market-refresh-button" onClick={refresh} disabled={(activeView === 'pulse' ? pulseState : moduleState) === 'loading'}>{(activeView === 'pulse' ? pulseState : moduleState) === 'loading' ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新</button></div>
 			</header>
 
-			{activeView === 'pulse' ? <PulseView news={currentData ? news : []} themes={currentData ? themes : []} themeMeta={currentData ? themeMeta : null} sources={sources} sourcesError={sourcesError} onRefreshSources={() => setSourcesRetryKey(key => key + 1)} onOpenSourceSettings={onOpenSourceSettings} state={currentData ? pulseState : 'loading'} error={currentData ? pulseError : ''} lastUpdated={currentData ? lastUpdated : ''} /> : <ModuleState state={currentData ? moduleState : 'loading'} error={currentData ? moduleError : ''}>
+			<button type="button" className="market-source-toggle" onClick={onOpenSourceSettings}><Database size={16} />数据源设置</button>
+			{activeView === 'pulse' ? <PulseView news={currentData ? news : []} themes={currentData ? themes : []} themeMeta={currentData ? themeMeta : null} state={currentData ? pulseState : 'loading'} error={currentData ? pulseError : ''} lastUpdated={currentData ? lastUpdated : ''} /> : <ModuleState state={currentData ? moduleState : 'loading'} error={currentData ? moduleError : ''}>
 				{activeView === 'core-indexes' && <CoreIndexView indexes={indexes} selectedID={selectedIndexID} onSelect={setSelectedIndexID} series={indexSeries} seriesLoading={seriesLoading} meta={moduleMeta} />}
 				{activeView === 'industry-momentum' && <IndustryMomentumView items={industries} meta={moduleMeta} />}
 				{isFlowView(activeView) && <FundFlowView key={activeView} items={flows} dimension={flowDimension(activeView)} meta={moduleMeta} />}
@@ -453,24 +419,22 @@ function uniqueBillboardItems(items: MarketBillboardItem[], limit: number) {
 	}).slice(0, limit);
 }
 
-function PulseView({ news, themes, themeMeta, sources, sourcesError, onRefreshSources, onOpenSourceSettings, state, error, lastUpdated }: { news: NewsItem[]; themes: ThemeOverview[]; themeMeta: SourceMeta | null; sources: SourceHealth[]; sourcesError: string; onRefreshSources: () => void; onOpenSourceSettings: () => void; state: LoadState; error: string; lastUpdated: string }) {
-	const sourceCounts = sourceHealthCounts(sources);
-	const [sourceDetailsOpen, setSourceDetailsOpen] = useState(false);
+function PulseView({ news, themes, themeMeta, state, error, lastUpdated }: { news: NewsItem[]; themes: ThemeOverview[]; themeMeta: SourceMeta | null; state: LoadState; error: string; lastUpdated: string }) {
 	return <div className="market-pulse-view">
 		<section className="market-pulse-metrics">
 			<Metric icon={<Newspaper size={17} />} label="快讯样本" value={state === 'loading' ? '--' : String(news.length)} detail="财联社最新快讯" />
 			<Metric icon={<TrendingUp size={17} />} label="题材快照" value={state === 'loading' ? '--' : String(themes.length)} detail={themeMeta?.trade_date || '等待交易日'} />
-			<Metric icon={<Database size={17} />} label="数据源" value={sources.length ? `${sourceCounts.available}/${sources.length}` : '--'} detail={`${sourceCounts.degraded} 失败或降级 · ${sourceCounts.unknown} 未检测或过期 · ${sourceCounts.unconfigured} 未接入 · ${sourceDetailsOpen ? '收起详情' : '查看详情'}`} onClick={() => setSourceDetailsOpen(open => !open)} expanded={sourceDetailsOpen} />
 			<Metric icon={<Clock3 size={17} />} label="最近刷新" value={lastUpdated ? formatTime(lastUpdated) : '--'} detail={themeMeta?.stale ? '题材数据已标记陈旧' : '本机聚合时间'} />
 		</section>
-		{sourceDetailsOpen && <SourceHealthPanel id="market-source-details" sources={sources} context="market" error={sourcesError} onRefresh={onRefreshSources} onOpenSettings={onOpenSourceSettings} meta={themeMeta} />}
+		<SourceNotice meta={themeMeta} />
+		<SourceNotice meta={news[0]?.meta || null} />
 		{error && <div className="market-partial-warning"><AlertTriangle size={15} /><span>{error}。已展示其余可用数据。</span></div>}
 		<div className="market-pulse-grid">
-			<section className="market-pulse-panel market-news-panel"><header><div><span>LIVE FEED</span><h3>盘面快讯</h3></div><em>{news[0]?.meta?.source || 'CLS'}</em></header><div className="market-news-feed">{news.map((item, index) => {
+			<section className="market-pulse-panel market-news-panel"><header><div><span>LIVE FEED</span><h3>盘面快讯</h3></div><em>{sourceName(news[0]?.meta?.source || 'cls')}</em></header><div className="market-news-feed">{news.map((item, index) => {
 				const content = <><time>{formatTime(item.published_at)}</time><span><strong>{item.title}</strong>{item.content && item.content !== item.title && <small>{item.content}</small>}</span><ChevronRight size={14} /></>;
 				return item.url ? <a href={item.url} target="_blank" rel="noreferrer" key={item.id || `${item.title}-${index}`}>{content}</a> : <article key={item.id || `${item.title}-${index}`}>{content}</article>;
 			})}{state === 'loading' && <LoadingRows />}{state !== 'loading' && !news.length && <EmptyPanel title="暂无市场快讯" detail="刷新后重试，或检查财联社数据源状态。" />}</div></section>
-			<section className="market-pulse-panel market-theme-panel"><header><div><span>THEME SIGNALS</span><h3>题材强度</h3></div><em>{themeMeta?.source || '等待来源'}</em></header><div className="market-theme-ranking">{themes.slice(0, 12).map((theme, index) => <article key={theme.theme}><span>{String(index + 1).padStart(2, '0')}</span><div><strong>{theme.name}</strong><small>{theme.leaders?.slice(0, 2).join(' · ') || theme.top_node || '等待核心标的'}</small></div><em className={toneClass(theme.change_percent)}>{formatPercent(theme.change_percent)}</em></article>)}{state === 'loading' && <LoadingRows compact />}{state !== 'loading' && !themes.length && <EmptyPanel title="暂无题材快照" detail="当前仍可查看市场快讯，题材数据恢复后会自动补齐。" />}</div></section>
+			<section className="market-pulse-panel market-theme-panel"><header><div><span>THEME SIGNALS</span><h3>题材强度</h3></div><em>{sourceName(themeMeta?.source || '等待来源')}</em></header><div className="market-theme-ranking">{themes.slice(0, 12).map((theme, index) => <article key={theme.theme}><span>{String(index + 1).padStart(2, '0')}</span><div><strong>{theme.name}</strong><small>{theme.leaders?.slice(0, 2).join(' · ') || theme.top_node || '等待核心标的'}</small></div><em className={toneClass(theme.change_percent)}>{formatPercent(theme.change_percent)}</em></article>)}{state === 'loading' && <LoadingRows compact />}{state !== 'loading' && !themes.length && <EmptyPanel title="暂无题材快照" detail="当前仍可查看市场快讯，题材数据恢复后会自动补齐。" />}</div></section>
 		</div>
 	</div>;
 }

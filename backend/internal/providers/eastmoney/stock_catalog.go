@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -82,6 +83,33 @@ func (names *conceptNames) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type catalogNumber struct {
+	Value float64
+	Valid bool
+}
+
+func (value *catalogNumber) UnmarshalJSON(data []byte) error {
+	text := strings.TrimSpace(string(bytes.TrimSpace(data)))
+	if text == "null" || text == "" {
+		return nil
+	}
+	if strings.HasPrefix(text, "\"") {
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+		text = strings.TrimSpace(text)
+	}
+	if text == "" || text == "-" || text == "--" {
+		return nil
+	}
+	number, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+		return nil
+	}
+	value.Value, value.Valid = number, true
+	return nil
+}
+
 type stockCatalogPayload struct {
 	Code    int    `json:"code"`
 	Success bool   `json:"success"`
@@ -94,11 +122,11 @@ type stockCatalogPayload struct {
 			Symbol        string        `json:"SECUCODE"`
 			Code          string        `json:"SECURITY_CODE"`
 			Name          string        `json:"SECURITY_NAME_ABBR"`
-			Price         flexibleFloat `json:"NEW_PRICE"`
-			ChangePercent flexibleFloat `json:"CHANGE_RATE"`
-			FiveDay       flexibleFloat `json:"CHANGERATE_5DAYS"`
-			Volume        flexibleFloat `json:"VOLUME"`
-			Amount        flexibleFloat `json:"DEAL_AMOUNT"`
+			Price         catalogNumber `json:"NEW_PRICE"`
+			ChangePercent catalogNumber `json:"CHANGE_RATE"`
+			FiveDay       catalogNumber `json:"CHANGERATE_5DAYS"`
+			Volume        catalogNumber `json:"VOLUME"`
+			Amount        catalogNumber `json:"DEAL_AMOUNT"`
 			Industry      string        `json:"INDUSTRY"`
 			Concepts      conceptNames  `json:"CONCEPT"`
 		} `json:"data"`
@@ -118,6 +146,8 @@ func (c *Client) StockCatalog(ctx context.Context) ([]foundation.StockCatalogEnt
 
 	start := time.Now()
 	entries := make([]foundation.StockCatalogEntry, 0, 6000)
+	seen := make(map[string]bool)
+	exhausted := false
 	requestURLs := make([]string, 0, 2)
 	for page := 1; page <= 5; page++ {
 		requestURL := c.stockCatalogURL(page)
@@ -130,28 +160,51 @@ func (c *Client) StockCatalog(ctx context.Context) ([]foundation.StockCatalogEnt
 			return nil, fmt.Errorf("eastmoney stock catalog code=%d: %s", payload.Code, payload.Message)
 		}
 
+		newRows := 0
 		for _, raw := range payload.Result.Data {
 			symbol, err := normalizeEastMoneyStockCode(firstNonEmpty(raw.Symbol, raw.Code))
 			if err != nil {
 				continue
 			}
+			if seen[symbol] {
+				continue
+			}
+			seen[symbol] = true
+			newRows++
+			fields := []string{}
+			for _, entry := range []struct {
+				name   string
+				number catalogNumber
+			}{{"price", raw.Price}, {"change_percent", raw.ChangePercent}, {"five_day_change_percent", raw.FiveDay}, {"volume", raw.Volume}, {"amount", raw.Amount}} {
+				if entry.number.Valid {
+					fields = append(fields, entry.name)
+				}
+			}
 			entries = append(entries, foundation.StockCatalogEntry{
 				BoardStock: foundation.BoardStock{
 					Symbol:               symbol,
 					Name:                 raw.Name,
-					Price:                float64(raw.Price),
-					ChangePercent:        float64(raw.ChangePercent),
-					FiveDayChangePercent: float64(raw.FiveDay),
-					Volume:               float64(raw.Volume),
-					Amount:               float64(raw.Amount),
+					Price:                raw.Price.Value,
+					ChangePercent:        raw.ChangePercent.Value,
+					FiveDayChangePercent: raw.FiveDay.Value,
+					Volume:               raw.Volume.Value,
+					Amount:               raw.Amount.Value,
+					Meta:                 foundation.SourceMeta{FieldsKnown: true, AvailableFields: fields},
 				},
 				Industry: strings.TrimSpace(raw.Industry),
 				Concepts: append([]string(nil), raw.Concepts...),
 			})
 		}
-		if !payload.Result.NextPage || len(payload.Result.Data) == 0 {
+		if !payload.Result.NextPage {
+			exhausted = true
 			break
 		}
+		if newRows == 0 {
+			return nil, fmt.Errorf("eastmoney stock catalog pagination made no progress")
+		}
+	}
+	if !exhausted {
+		return nil, fmt.Errorf("eastmoney stock catalog exceeds validated pagination limit")
 	}
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("eastmoney stock catalog returned no stocks")
@@ -164,7 +217,10 @@ func (c *Client) StockCatalog(ctx context.Context) ([]foundation.StockCatalogEnt
 		LatencyMS: time.Since(start).Milliseconds(),
 	}
 	for i := range entries {
-		entries[i].Meta = meta
+		rowMeta := meta
+		rowMeta.FieldsKnown = true
+		rowMeta.AvailableFields = entries[i].Meta.AvailableFields
+		entries[i].Meta = rowMeta
 	}
 	c.catalogCacheMu.Lock()
 	c.catalog = cloneStockCatalog(entries)

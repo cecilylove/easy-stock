@@ -122,15 +122,17 @@ type themeScreenPagination struct {
 }
 
 type themeScreenData struct {
-	Order            []string              `json:"order"`
-	Complete         bool                  `json:"complete"`
-	Coverage         string                `json:"coverage"`
-	SourceSnapshotID string                `json:"source_snapshot_id,omitempty"`
-	MapRevision      string                `json:"map_revision"`
-	Map              foundation.SectorMap  `json:"map"`
-	Pagination       themeScreenPagination `json:"pagination"`
-	SnapshotID       string                `json:"snapshot_id"`
-	Sort             string                `json:"sort"`
+	Order              []string              `json:"order"`
+	Complete           bool                  `json:"complete"`
+	Coverage           string                `json:"coverage"`
+	MembershipComplete bool                  `json:"membership_complete"`
+	MembershipScope    string                `json:"membership_scope"`
+	SourceSnapshotID   string                `json:"source_snapshot_id,omitempty"`
+	MapRevision        string                `json:"map_revision"`
+	Map                foundation.SectorMap  `json:"map"`
+	Pagination         themeScreenPagination `json:"pagination"`
+	SnapshotID         string                `json:"snapshot_id"`
+	Sort               string                `json:"sort"`
 }
 
 type themeCandidate struct {
@@ -232,15 +234,59 @@ func (s *Server) themeScreenHandler(w http.ResponseWriter, r *http.Request) {
 	for _, candidate := range pageCandidates {
 		order = append(order, candidate.Stock.Symbol)
 	}
+	membershipComplete, membershipScope := themeMembershipCoverage(snapshot.sectorMap)
 	data := themeScreenData{
 		Order:    order,
 		Complete: phase != "leaders", Coverage: coverage, SourceSnapshotID: snapshot.sectorMap.Meta.SnapshotID, MapRevision: snapshot.id,
+		MembershipComplete: membershipComplete, MembershipScope: membershipScope,
 		Map:        trimSectorMap(snapshot.sectorMap, allCandidates, pageCandidates),
 		Pagination: themeScreenPagination{Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages, HasMore: end < total},
 		SnapshotID: snapshot.id,
 		Sort:       sortBy,
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": data})
+}
+
+func themeMembershipCoverage(value foundation.SectorMap) (bool, string) {
+	count := 0
+	kind := ""
+	identity := ""
+	complete := true
+	for _, group := range value.Groups {
+		for _, node := range group.Nodes {
+			if node.MemberSet == nil {
+				return false, "unknown"
+			}
+			count++
+			set := node.MemberSet
+			if kind != "" && kind != set.Kind {
+				return false, "mixed"
+			}
+			kind = set.Kind
+			ref := set.BoardRef.Provider + ":" + set.BoardRef.NativeCode + ":" + set.BoardRef.Dimension
+			if identity != "" && identity != ref {
+				return false, "mixed"
+			}
+			identity = ref
+			complete = complete && set.Complete
+		}
+	}
+	if count == 0 {
+		return false, "unknown"
+	}
+	if kind == "native" && identity != "::" {
+		if complete {
+			return true, "native_complete"
+		}
+		return false, "native_partial"
+	}
+	if kind == "candidate" || kind == "exact_catalog" {
+		return false, "candidate"
+	}
+	if kind == "leader" {
+		return false, "leader"
+	}
+	return false, "unknown"
 }
 
 func positiveIntQuery(r *http.Request, name string, fallback int, maximum int) (int, error) {

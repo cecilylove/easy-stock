@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -76,17 +78,19 @@ type indexDefinition struct {
 }
 
 var indexCatalog = []indexDefinition{
-	{ID: "sse", QuoteKey: "s_sh000001", KLineKey: "sh000001", Code: "000001", Name: "上证指数", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
-	{ID: "szse", QuoteKey: "s_sz399001", KLineKey: "sz399001", Code: "399001", Name: "深证成指", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
-	{ID: "chinext", QuoteKey: "s_sz399006", KLineKey: "sz399006", Code: "399006", Name: "创业板指", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
-	{ID: "csi300", QuoteKey: "s_sh000300", KLineKey: "sh000300", Code: "000300", Name: "沪深300", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
-	{ID: "sse50", QuoteKey: "s_sh000016", KLineKey: "sh000016", Code: "000016", Name: "上证50", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
-	{ID: "csi1000", QuoteKey: "s_sh000852", KLineKey: "sh000852", Code: "000852", Name: "中证1000", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
-	{ID: "star50", QuoteKey: "s_sh000688", KLineKey: "sh000688", Code: "000688", Name: "科创50", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
+	{ID: "sse", QuoteKey: "sh000001", KLineKey: "sh000001", Code: "000001", Name: "上证指数", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
+	{ID: "szse", QuoteKey: "sz399001", KLineKey: "sz399001", Code: "399001", Name: "深证成指", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
+	{ID: "chinext", QuoteKey: "sz399006", KLineKey: "sz399006", Code: "399006", Name: "创业板指", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
+	{ID: "csi300", QuoteKey: "sh000300", KLineKey: "sh000300", Code: "000300", Name: "沪深300", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
+	{ID: "sse50", QuoteKey: "sh000016", KLineKey: "sh000016", Code: "000016", Name: "上证50", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
+	{ID: "csi1000", QuoteKey: "sh000852", KLineKey: "sh000852", Code: "000852", Name: "中证1000", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
+	{ID: "star50", QuoteKey: "sh000688", KLineKey: "sh000688", Code: "000688", Name: "科创50", Region: "中国", Market: "CN", Currency: "CNY", Core: true},
 	{ID: "hsi", QuoteKey: "r_hkHSI", KLineKey: "hkHSI", Code: "HSI", Name: "恒生指数", Region: "中国香港", Market: "HK", Currency: "HKD", Core: true},
 	{ID: "dow", QuoteKey: "usDJI", KLineKey: "usDJI", Code: ".DJI", Name: "道琼斯", Region: "美洲", Market: "US", Currency: "USD", Core: true},
 	{ID: "sp500", QuoteKey: "usINX", KLineKey: "usINX", Code: ".INX", Name: "标普500", Region: "美洲", Market: "US", Currency: "USD", Core: true},
-	{ID: "nasdaq", QuoteKey: "usIXIC", KLineKey: "usIXIC", Code: ".IXIC", Name: "纳斯达克", Region: "美洲", Market: "US", Currency: "USD", Core: true},
+	// Both identities were verified directly; legacy nasdaq always aliases NDX.
+	{ID: "nasdaq100", QuoteKey: "usNDX", KLineKey: "usNDX", Code: ".NDX", Name: "纳斯达克100", Region: "美洲", Market: "US", Currency: "USD", Core: true},
+	{ID: "nasdaq_composite", QuoteKey: "usIXIC", KLineKey: "usIXIC", Code: ".IXIC", Name: "纳斯达克综合", Region: "美洲", Market: "US", Currency: "USD", Core: true},
 	{ID: "ftse", QuoteKey: "ukUKX", KLineKey: "ukUKX", Code: "UKX", Name: "英国富时100", Region: "欧洲", Market: "UK", Currency: "GBP"},
 }
 
@@ -113,21 +117,38 @@ func (c *Client) MarketIndexes(ctx context.Context, scope string) ([]foundation.
 	items := make([]foundation.MarketIndexSnapshot, 0, len(definitions))
 	for _, definition := range definitions {
 		fields := byKey[definition.QuoteKey]
-		if len(fields) < 6 {
+		if len(fields) < 33 || !validIndexNumber(fieldAt(fields, 3), true) || fieldAt(fields, 2) != definition.Code {
 			continue
 		}
-		tradeTime := parseTencentTradeTime(fieldAt(fields, 30))
-		change, changePercent := tencentChange(fields, strings.HasPrefix(definition.QuoteKey, "s_"))
+		itemMeta := meta
+		itemMeta.Provider, itemMeta.NativeCode, itemMeta.InstrumentID = "tencent", definition.QuoteKey, definition.ID
+		itemMeta.TimeZone = "unknown"
+		tradeTime := time.Time{}
+		if definition.Market == "CN" || definition.Market == "HK" {
+			tradeTime = parseTencentTradeTime(fieldAt(fields, 30))
+			itemMeta.TimeZone = "Asia/Shanghai"
+		}
+		// Foreign wall clocks have no offset in the feed. Do not assume New York
+		// (or the host timezone); preserve their raw timestamp for inspection.
+		itemMeta.NativeTimestamp = fieldAt(fields, 30)
+		change, changePercent := tencentChange(fields, false)
 		items = append(items, foundation.MarketIndexSnapshot{
 			ID: definition.ID, SecID: definition.QuoteKey, Code: firstString(fieldAt(fields, 2), definition.Code), Name: firstString(fieldAt(fields, 1), definition.Name),
 			Region: definition.Region, Market: definition.Market, Currency: definition.Currency, Price: parseFloat(fieldAt(fields, 3)), Change: change, ChangePercent: changePercent,
-			TradeTime: tradeTime, Status: tencentMarketStatus(definition.Market, tradeTime, time.Now()), Meta: meta,
+			TradeTime: tradeTime, Status: tencentMarketStatus(definition.Market, tradeTime, time.Now()), Meta: itemMeta,
 		})
 	}
 	if len(items) == 0 {
 		return nil, foundation.SourceMeta{}, fmt.Errorf("tencent returned no index snapshots")
 	}
 	return items, meta, nil
+}
+
+// SupportsIndexSeries separates unsupported input from an attempted upstream request.
+func SupportsIndexSeries(id, period string) bool {
+	_, ok := findIndex(id)
+	period = strings.ToLower(strings.TrimSpace(period))
+	return ok && (period == "" || period == "daily" || period == "day" || period == "week" || period == "month")
 }
 
 func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string, limit int) (foundation.MarketIndexSeries, error) {
@@ -146,7 +167,7 @@ func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string
 		limit = 120
 	}
 	values := url.Values{}
-	values.Set("param", fmt.Sprintf("%s,%s,,,%d,qfq", definition.KLineKey, period, limit))
+	values.Set("param", fmt.Sprintf("%s,%s,,,%d,", definition.KLineKey, period, min(limit, 500)))
 	requestURL := c.klineBaseURL + "?" + values.Encode()
 	start := time.Now()
 	var payload struct {
@@ -162,7 +183,7 @@ func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string
 		return foundation.MarketIndexSeries{}, err
 	}
 	if payload.Code != 0 {
-		return foundation.MarketIndexSeries{}, fmt.Errorf("tencent index kline code=%d", payload.Code)
+		return foundation.MarketIndexSeries{}, fmt.Errorf("%w: tencent index kline code=%d", foundation.ErrInvalidPriceData, payload.Code)
 	}
 	raw := payload.Data[definition.KLineKey]
 	rawLines := raw.Day
@@ -170,33 +191,55 @@ func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string
 		rawLines = raw.Week
 	} else if period == "month" {
 		rawLines = raw.Month
-	} else if len(rawLines) == 0 {
-		rawLines = raw.QFQDay
 	}
-	meta := foundation.SourceMeta{Source: "tencent:index-kline", SourceURL: requestURL, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds()}
+	if len(rawLines) == 0 {
+		return foundation.MarketIndexSeries{}, fmt.Errorf("%w: requested Tencent index series is empty", foundation.ErrPriceNoData)
+	}
+	meta := foundation.SourceMeta{Source: "tencent:index-kline", SourceURL: requestURL, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds(), Provider: "tencent", NativeCode: definition.KLineKey, InstrumentID: definition.ID, Period: period, TimeZone: "UTC", EffectiveAdjustment: "none", VolumeUnit: "provider_index_volume", FieldsKnown: true, AvailableFields: []string{"open", "close", "high", "low", "volume"}}
+	// Index volume is provider-native aggregate volume, not a stock lot count.
+	// Date-only bars are trading-session labels (UTC midnight), not instants.
 	lines := make([]foundation.KLine, 0, len(rawLines))
-	previousClose := 0.0
 	for _, values := range rawLines {
 		if len(values) < 6 {
 			continue
 		}
-		day, parseErr := time.ParseInLocation("2006-01-02", anyString(values[0]), time.Local)
+		valid := true
+		for i := 1; i <= 5; i++ {
+			if !validIndexNumber(anyString(values[i]), i < 5) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			continue
+		}
+		day, parseErr := time.ParseInLocation("2006-01-02", anyString(values[0]), time.UTC)
 		if parseErr != nil {
 			continue
 		}
 		closePrice := parseFloat(anyString(values[2]))
-		changePercent := 0.0
-		if previousClose > 0 {
-			changePercent = (closePrice/previousClose - 1) * 100
+		open, high, low := parseFloat(anyString(values[1])), parseFloat(anyString(values[3])), parseFloat(anyString(values[4]))
+		if high < math.Max(open, closePrice) || low > math.Min(open, closePrice) || low > high {
+			continue
 		}
-		lines = append(lines, foundation.KLine{Symbol: definition.ID, Time: day, Open: parseFloat(anyString(values[1])), Close: closePrice, High: parseFloat(anyString(values[3])), Low: parseFloat(anyString(values[4])), Volume: parseFloat(anyString(values[5])), ChangePercent: changePercent, Meta: meta})
-		previousClose = closePrice
+		lines = append(lines, foundation.KLine{Symbol: definition.ID, Time: day, Open: open, Close: closePrice, High: high, Low: low, Volume: parseFloat(anyString(values[5])), Meta: meta})
 	}
 	if len(lines) == 0 {
-		return foundation.MarketIndexSeries{}, fmt.Errorf("tencent returned no index bars")
+		return foundation.MarketIndexSeries{}, fmt.Errorf("%w: tencent returned no valid index bars", foundation.ErrInvalidPriceData)
+	}
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].Time.Before(lines[j].Time) })
+	for i := range lines {
+		lines[i].ChangePercent = 0
+		if i > 0 {
+			if !lines[i].Time.After(lines[i-1].Time) {
+				return foundation.MarketIndexSeries{}, fmt.Errorf("%w: tencent duplicate index bar", foundation.ErrInvalidPriceData)
+			}
+			lines[i].ChangePercent = (lines[i].Close/lines[i-1].Close - 1) * 100
+			lines[i].Meta.AvailableFields = append(append([]string(nil), meta.AvailableFields...), "change_percent")
+		}
 	}
 	latest := lines[len(lines)-1]
-	index := foundation.MarketIndexSnapshot{ID: definition.ID, SecID: definition.QuoteKey, Code: definition.Code, Name: definition.Name, Region: definition.Region, Market: definition.Market, Currency: definition.Currency, Price: latest.Close, ChangePercent: latest.ChangePercent, TradeTime: latest.Time, Status: "closed", Meta: meta}
+	index := foundation.MarketIndexSnapshot{ID: definition.ID, SecID: definition.QuoteKey, Code: definition.Code, Name: definition.Name, Region: definition.Region, Market: definition.Market, Currency: definition.Currency, Price: latest.Close, ChangePercent: latest.ChangePercent, TradeTime: latest.Time, Status: "closed", Meta: latest.Meta}
 	return foundation.MarketIndexSeries{Index: index, Lines: lines, Meta: meta}, nil
 }
 
@@ -239,9 +282,13 @@ func (c *Client) getJSON(ctx context.Context, requestURL string, target any) err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("tencent http status %d", resp.StatusCode)
+		return &foundation.PriceHTTPStatusError{Provider: "tencent", StatusCode: resp.StatusCode}
 	}
-	return json.NewDecoder(resp.Body).Decode(target)
+	err = json.NewDecoder(resp.Body).Decode(target)
+	if err == io.EOF {
+		return fmt.Errorf("%w: Tencent price response has no JSON payload", foundation.ErrPriceNoData)
+	}
+	return err
 }
 
 func parseTencentQuoteLines(body string) map[string][]string {
@@ -269,6 +316,9 @@ func tencentChange(fields []string, simple bool) (float64, float64) {
 }
 
 func tencentMarketStatus(_ string, tradeTime time.Time, now time.Time) string {
+	if tradeTime.IsZero() {
+		return "unknown"
+	}
 	if !tradeTime.IsZero() && now.Sub(tradeTime) >= 0 && now.Sub(tradeTime) <= 20*time.Minute {
 		return "open"
 	}
@@ -276,6 +326,13 @@ func tencentMarketStatus(_ string, tradeTime time.Time, now time.Time) string {
 }
 
 func findIndex(id string) (indexDefinition, bool) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	switch id {
+	case "nasdaq", "ndx":
+		id = "nasdaq100"
+	case "ixic":
+		id = "nasdaq_composite"
+	}
 	for _, item := range indexCatalog {
 		if item.ID == strings.ToLower(strings.TrimSpace(id)) {
 			return item, true
@@ -298,11 +355,16 @@ func parseFloat(value string) float64 {
 
 func parseTencentTradeTime(value string) time.Time {
 	for _, layout := range []string{"2006/01/02 15:04:05", "2006-01-02 15:04:05", "20060102150405"} {
-		if parsed, err := time.ParseInLocation(layout, strings.TrimSpace(value), time.Local); err == nil {
+		if parsed, err := time.ParseInLocation(layout, strings.TrimSpace(value), time.FixedZone("Asia/Shanghai", 8*60*60)); err == nil {
 			return parsed
 		}
 	}
 	return time.Time{}
+}
+
+func validIndexNumber(value string, positive bool) bool {
+	n, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) && ((!positive && n >= 0) || (positive && n > 0))
 }
 
 func anyString(value any) string {

@@ -13,6 +13,7 @@ import { readAuctionTrace, saveAuctionTrace } from '../lib/stock-auction-cache';
 import { searchStockDirectory } from '../lib/stock-analysis';
 import { loadCachedStockDirectory, saveCachedStockDirectory } from '../lib/stock-directory-cache';
 import { resolveStockDetailSymbol, stockDetailPeriods, type StockDetailPeriod } from '../lib/stock-detail';
+import { sourceName } from '../lib/source-integrations';
 
 const chartCacheTTL = 60_000;
 type SavedChart = { key: string; lines: KLine[]; loadedAt: string };
@@ -34,7 +35,7 @@ function dateTime(value?: string) {
 
 function sourceNotice(meta: { source: string; fetched_at: string; stale: boolean; fallback_reason?: string } | undefined) {
 	if (!meta) return '来源待确认';
-	return `来源 ${meta.source || '待确认'} · 抓取 ${dateTime(meta.fetched_at)}${meta.stale ? ' · 缓存/陈旧' : ''}${meta.fallback_reason ? ` · ${meta.fallback_reason}` : ''}`;
+	return `来源 ${sourceName(meta.source) || '待确认'} · 抓取 ${dateTime(meta.fetched_at)}${meta.stale ? ' · 缓存/陈旧' : ''}${meta.fallback_reason ? ` · ${meta.fallback_reason}` : ''}`;
 }
 
 export function StockDetailWorkspace({ config: suppliedConfig, symbol, onSelectSymbol, onOpenAnalysis, refreshKey }: Props) {
@@ -49,6 +50,8 @@ export function StockDetailWorkspace({ config: suppliedConfig, symbol, onSelectS
 	const [searchError, setSearchError] = useState('');
 	const [periodKey, setPeriodKey] = useState<StockDetailPeriod>('day');
 	const [adjustment, setAdjustment] = useState('source');
+	const [chartProvider, setChartProvider] = useState('source');
+	const activeChartProvider = useRef(chartProvider); activeChartProvider.current = chartProvider;
 	const activeAdjustment = useRef(adjustment); activeAdjustment.current = adjustment;
 	const [showAuction, setShowAuction] = useState(false);
 	const [focusChart, setFocusChart] = useState(false);
@@ -81,7 +84,7 @@ export function StockDetailWorkspace({ config: suppliedConfig, symbol, onSelectS
 	const quoteRequestKey = useRef('');
 	const chartRequestKey = useRef('');
 	const period = stockDetailPeriods.find(item => item.key === periodKey) || stockDetailPeriods[2];
-	const selectionKey = JSON.stringify([config?.backendUrl, config?.token, symbol, periodKey, ['day', 'week', 'month', 'year'].includes(period.key) ? adjustment : 'source']);
+	const selectionKey = JSON.stringify([config?.backendUrl, config?.token, symbol, periodKey, ['day', 'week', 'month', 'year'].includes(period.key) ? adjustment : 'source', ['day', 'week', 'month', 'year'].includes(period.key) ? chartProvider : 'source']);
 	const quoteSelectionKey = JSON.stringify([config?.backendUrl, config?.token, symbol]);
 	const chartForSelection = chart?.key === selectionKey ? chart : null;
 	const today = currentDay;
@@ -216,9 +219,9 @@ export function StockDetailWorkspace({ config: suppliedConfig, symbol, onSelectS
 			if (chartRequestKey.current !== key) { setChartError(''); setChartState('loading'); }
 		}
 		chartRequestKey.current = key;
-		void requestJSON<{ data: KLine[] }>(config, `/api/v1/quotes/kline?symbol=${encodeURIComponent(symbol)}&period=${period.apiPeriod}&limit=${period.limit}${period.key === 'intraday' ? '&detail=1' : ''}${['day', 'week', 'month', 'year'].includes(period.key) && adjustment !== 'source' ? `&adjust=${adjustment}` : ''}`, { signal: abort.signal })
+		void requestJSON<{ data: KLine[] }>(config, `/api/v1/quotes/kline?symbol=${encodeURIComponent(symbol)}&period=${period.apiPeriod}&limit=${period.limit}${period.key === 'intraday' ? '&detail=1' : ''}${['day', 'week', 'month', 'year'].includes(period.key) && adjustment !== 'source' ? `&adjust=${adjustment}` : ''}${['day', 'week', 'month', 'year'].includes(period.key) && chartProvider !== 'source' ? `&provider=${chartProvider}` : ''}`, { signal: abort.signal })
 			.then(({ data }) => {
-				if (abort.signal.aborted || activeSymbol.current !== symbol || activePeriod.current !== period.key || (period.mode === 'daily' && activeAdjustment.current !== adjustment)) return;
+				if (abort.signal.aborted || activeSymbol.current !== symbol || activePeriod.current !== period.key || (period.mode === 'daily' && (activeAdjustment.current !== adjustment || activeChartProvider.current !== chartProvider))) return;
 				const lines = period.key === 'intraday' ? latestTradingDayKLines(data || []) : data || [];
 				if (!lines.length) throw new Error(`${period.label}暂未返回数据`);
 				const stale = Boolean(lines.at(-1)?.meta.stale);
@@ -239,7 +242,7 @@ export function StockDetailWorkspace({ config: suppliedConfig, symbol, onSelectS
 			.catch(error => { if (!abort.signal.aborted) { setChartState('error'); setChartError(error instanceof Error ? error.message : `${period.label}暂不可用`); } })
 			.finally(() => { if (pendingRequest.current[kind] === abort) { pendingRequest.current[kind] = null; setChartRefreshing(false); } });
 		return () => { abort.abort(); if (pendingRequest.current[kind] === abort) pendingRequest.current[kind] = null; };
-	}, [symbol, period.key, period.apiPeriod, period.limit, config, reload, refreshKey, chartPollKey, adjustment]);
+	}, [symbol, period.key, period.apiPeriod, period.limit, config, reload, refreshKey, chartPollKey, adjustment, chartProvider]);
 
 	const submit = (event: FormEvent) => {
 		event.preventDefault();
@@ -287,13 +290,13 @@ export function StockDetailWorkspace({ config: suppliedConfig, symbol, onSelectS
 			<div className="stock-terminal-grid">
 			<section className="stock-detail-chart-panel">
 				<div className="stock-detail-chart-header"><div><span>价格走势</span><h3>{stockName} · {period.label}</h3></div><div className="stock-detail-periods" role="group" aria-label="K线周期">{stockDetailPeriods.map(item => <button type="button" aria-pressed={periodKey === item.key} className={periodKey === item.key ? 'active' : ''} key={item.key} onClick={() => setPeriodKey(item.key)}>{item.label}</button>)}</div><button type="button" className="stock-chart-focus" aria-pressed={focusChart} onClick={() => setFocusChart(value => !value)}>{focusChart ? '显示盘口' : '专注图表'}</button></div>
-				{['day', 'week', 'month', 'year'].includes(period.key) && <label className="stock-adjustment-control">复权口径 <select aria-label="复权口径" value={adjustment} onChange={event => setAdjustment(event.target.value)}><option value="source">来源默认（允许备用）</option><option value="qfq">前复权 · 东方财富</option><option value="hfq">后复权 · 东方财富</option><option value="none">不复权 · 东方财富</option></select><small>指定复权失败时不混用备用口径</small></label>}
+				{['day', 'week', 'month', 'year'].includes(period.key) && <label className="stock-adjustment-control">行情来源 <select aria-label="K线来源" value={chartProvider} onChange={event => setChartProvider(event.target.value)}><option value="source">自动（默认优先新浪）</option><option value="tencent">腾讯 · 明确来源口径</option></select>复权口径 <select aria-label="复权口径" value={adjustment} onChange={event => setAdjustment(event.target.value)}><option value="source">{chartProvider === 'source' ? '来源默认（新浪→腾讯）' : '腾讯默认（不复权，无备用）'}</option><option value="qfq">前复权 · 所选来源</option><option value="hfq">后复权 · 所选来源</option><option value="none">不复权 · 所选来源</option></select><small>{adjustment !== 'source' ? '指定复权统一腾讯口径；切换口径整图重载' : chartProvider === 'tencent' ? '腾讯默认为不复权；失败不切其他口径' : '自动默认新浪→腾讯；分钟线目前只有新浪'}</small></label>}
 				{periodKey === 'intraday' && <label className="stock-detail-auction-toggle"><input type="checkbox" checked={showAuction} onChange={event => setShowAuction(event.target.checked)} />显示集合竞价参考轨迹</label>}
-				{periodKey === 'intraday' && (chartForSelection?.lines.length || auctionForSelection?.points.length) ? <StockIntradayChart lines={showAuction ? todayIntraday : chartForSelection?.lines || []} auction={auctionForSelection} showAuction={showAuction} symbol={symbol} tradeDay={displayedDay} previousClose={previousClose} /> : period.mode === 'daily' ? <ProfessionalKLineChart key={`${symbol}:${period.key}:${adjustment}`} symbol={symbol} lines={chartForSelection?.lines || []} state={chartForSelection ? 'ready' : chartState} periodLabel={period.label} /> : <KLineChart key={`${symbol}:${period.key}`} fluid symbol={symbol} lines={chartForSelection?.lines || []} state={chartForSelection ? 'ready' : chartState} mode={period.mode} periodLabel={period.label} />}
+				{periodKey === 'intraday' && (chartForSelection?.lines.length || auctionForSelection?.points.length) ? <StockIntradayChart lines={showAuction ? todayIntraday : chartForSelection?.lines || []} auction={auctionForSelection} showAuction={showAuction} symbol={symbol} tradeDay={displayedDay} previousClose={previousClose} /> : period.mode === 'daily' ? <ProfessionalKLineChart key={`${symbol}:${period.key}:${adjustment}:${chartProvider}:${chartForSelection?.lines.at(-1)?.meta.basis_id || chartForSelection?.lines.at(-1)?.meta.source || ''}`} symbol={symbol} lines={chartForSelection?.lines || []} state={chartForSelection ? 'ready' : chartState} periodLabel={period.label} /> : <KLineChart key={`${symbol}:${period.key}`} fluid symbol={symbol} lines={chartForSelection?.lines || []} state={chartForSelection ? 'ready' : chartState} mode={period.mode} periodLabel={period.label} />}
 				<div className="stock-detail-refresh-status" role="status">{chartState === 'error' ? <><span className="stock-detail-warning" title={chartError}>{chartForSelection ? '更新失败，保留旧图：' : '数据暂不可用：'}{chartError}</span><button type="button" disabled={chartRefreshing} onClick={() => setReload(current => current + 1)}>重试</button></> : periodKey === 'intraday' && chartForSelection?.lines.at(-1)?.meta.stale ? <span title={sourceNotice(chartForSelection.lines.at(-1)?.meta)}>{historicalChart ? '当前来源只有上一交易日分时，尚无当日分钟线。' : '分时来源暂时无法刷新，当前显示旧快照，非实时。'}来源时间 {dateTime(chartForSelection.lines.at(-1)?.meta.fetched_at)}。</span> : null}</div>
 				{periodKey === 'intraday' && showAuction && <div className={`stock-detail-refresh-status ${auctionState === 'error' || auctionState === 'stale' ? 'stock-detail-error' : 'stock-detail-hint'}`} role="status"><span title={auctionError}>{auctionState === 'loading' && !auctionForSelection ? '正在获取竞价参考点…' : auctionState === 'error' || auctionState === 'stale' ? (auctionForSelection ? `竞价来源暂不可用（${auctionError}）；当前显示当日旧参考点，非实时。` : `竞价来源暂不可用（${auctionError}）；没有可验证的当日参考点。`) : auctionForSelection ? `${sourceNotice(auctionForSelection.meta)} · 竞价参考点 ${auctionForSelection.points.length} 个` : '当日竞价参考点尚未返回，暂不显示'}</span>{(auctionState === 'error' || auctionState === 'stale') && <button type="button" onClick={() => { if (!pendingRequest.current.auction) { auctionRetryAfter.current = 0; setAuctionPollKey(key => key + 1); } }}>重试竞价</button>}</div>}
 				<p className="stock-detail-hint">{autoRefresh} · 行情、分时、竞价约每 5 秒，5日及日/周/月/年K约每 60 秒后台更新；服务端同股请求合并，失败会退避，返回数据可能延迟，以各自时间为准。</p>
-				<div className="stock-detail-chart-meta">{showAuction && periodKey === 'intraday' && chartDay && chartDay !== today ? `连续交易数据仅到 ${chartDay}，没有拼接到今日竞价；` : ''}{chartForSelection?.lines.length ? `${sourceNotice(chartForSelection.lines.at(-1)?.meta)} · 本页加载 ${dateTime(chartForSelection.loadedAt)}${chartState === 'error' ? ' · 更新失败' : ''}` : '此周期尚无可用数据'} · {period.key === 'five-day' ? '5分钟采样' : period.label} · 数据仅供研究参考</div>
+				<div className="stock-detail-chart-meta">{showAuction && periodKey === 'intraday' && chartDay && chartDay !== today ? `连续交易数据仅到 ${chartDay}，没有拼接到今日竞价；` : ''}{chartForSelection?.lines.length ? `${sourceNotice(chartForSelection.lines.at(-1)?.meta)} · 实际口径 ${chartForSelection.lines.at(-1)?.meta.effective_adjustment || '来源默认未统一'}${chartForSelection.lines.at(-1)?.meta.adjustment_convention ? `（${chartForSelection.lines.at(-1)?.meta.adjustment_convention}）` : ''} · 本页加载 ${dateTime(chartForSelection.loadedAt)}${chartState === 'error' ? ' · 更新失败' : ''}` : '此周期尚无可用数据'} · {period.key === 'five-day' ? '5分钟采样' : period.label} · 数据仅供研究参考</div>
 			</section>
 			<StockQuoteSidebar quote={shownQuote} stale={quoteState !== 'ready' || Boolean(shownQuote?.meta.stale)} symbol={symbol} />
 			</div>

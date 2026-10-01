@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,12 +32,13 @@ type sourceObservation struct {
 }
 
 type sourceHealthTracker struct {
-	mu    sync.RWMutex
-	items map[string]sourceObservation
+	mu           sync.RWMutex
+	items        map[string]sourceObservation
+	capabilities map[string]map[string]sourceObservation
 }
 
 func newSourceHealthTracker() *sourceHealthTracker {
-	return &sourceHealthTracker{items: make(map[string]sourceObservation)}
+	return &sourceHealthTracker{items: make(map[string]sourceObservation), capabilities: make(map[string]map[string]sourceObservation)}
 }
 
 func (t *sourceHealthTracker) success(meta foundation.SourceMeta) {
@@ -44,6 +46,9 @@ func (t *sourceHealthTracker) success(meta foundation.SourceMeta) {
 		return
 	}
 	id := sourceID(meta.Source)
+	if meta.Capability != "" {
+		t.recordCapability(id, meta.Capability, meta.FetchedAt, false)
+	}
 	if id == "" {
 		return
 	}
@@ -63,12 +68,87 @@ func (t *sourceHealthTracker) success(meta foundation.SourceMeta) {
 }
 
 func (t *sourceHealthTracker) observe(event foundation.SourceObservation) {
+	capability := event.Capability
+	if capability == "" {
+		capability = event.Meta.Capability
+	}
+	id := event.SourceID
+	if id == "" {
+		id = sourceID(event.Meta.Source)
+	}
+	at := event.AttemptAt
+	if !event.Failed && !event.Meta.FetchedAt.IsZero() {
+		at = event.Meta.FetchedAt
+	}
+	if !event.Meta.Stale {
+		t.recordCapability(id, capability, at, event.Failed)
+	}
 	if event.Failed {
-		t.markFailureAt(event.SourceID, "最近一次请求失败，请查看对应功能或运行日志", event.AttemptAt)
+		// A completed empty/malformed result concerns one instrument, not the
+		// whole supplier. Keep its scoped evidence without degrading the market.
+		if strings.Contains(capability, ":symbol:") {
+			return
+		}
+		t.markFailureAt(id, "最近一次请求失败，请查看对应功能或运行日志", event.AttemptAt)
 		return
 	}
-	t.fallback(event.Meta)
+	if capability == "" {
+		t.fallback(event.Meta)
+	} // Legacy events have no structured capability.
 	t.success(event.Meta)
+}
+
+func (t *sourceHealthTracker) recordCapability(id, capability string, at time.Time, failed bool) {
+	if t == nil || sourceID(id) == "" || capability == "" || at.IsZero() {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.capabilities == nil {
+		t.capabilities = make(map[string]map[string]sourceObservation)
+	}
+	if t.capabilities[id] == nil {
+		t.capabilities[id] = make(map[string]sourceObservation)
+	}
+	entry := t.capabilities[id][capability]
+	if !at.After(entry.checkedAt) {
+		return
+	}
+	if strings.Contains(capability, ":symbol:") {
+		// Instrument keys are user-selectable. Bound their retained observations
+		// independently so they cannot displace market capability evidence.
+		const symbolObservationLimit = 128
+		count, oldestKey := 0, ""
+		var oldest time.Time
+		for key, observation := range t.capabilities[id] {
+			if !strings.Contains(key, ":symbol:") {
+				continue
+			}
+			if at.Sub(observation.checkedAt) > sourceObservationTTL {
+				delete(t.capabilities[id], key)
+				continue
+			}
+			count++
+			if oldestKey == "" || observation.checkedAt.Before(oldest) || (observation.checkedAt.Equal(oldest) && key < oldestKey) {
+				oldestKey, oldest = key, observation.checkedAt
+			}
+		}
+		if _, exists := t.capabilities[id][capability]; !exists && count >= symbolObservationLimit {
+			delete(t.capabilities[id], oldestKey)
+		}
+	}
+	entry.checkedAt, entry.failed = at, failed
+	if failed {
+		entry.lastFailure = at
+		entry.message = "本能力最近请求失败，不代表该来源其他接口不可用"
+		if strings.Contains(capability, ":symbol:") {
+			entry.message = "该标的本次没有有效价格数据，不代表来源整体或同市场其他股票不可用"
+		}
+	} else {
+		entry.lastSuccess = at
+		entry.message = "本能力最近请求返回有效数据"
+	}
+	t.capabilities[id][capability] = entry
 }
 
 func (t *sourceHealthTracker) cacheFailure(meta foundation.SourceMeta, source string) {
@@ -134,7 +214,7 @@ func (t *sourceHealthTracker) fallback(meta foundation.SourceMeta) {
 func sourceID(value string) string {
 	id, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(value)), ":")
 	switch id {
-	case "duanxianxia", "eastmoney", "sina", "tencent", "cls", "tradingview", "tushare":
+	case "duanxianxia", "eastmoney", "sina", "tencent", "cls", "ths", "cffex":
 		return id
 	default:
 		return ""
@@ -144,12 +224,16 @@ func sourceID(value string) string {
 func (t *sourceHealthTracker) snapshot(now time.Time) []foundation.SourceHealth {
 	catalog := []foundation.SourceHealth{
 		{ID: "duanxianxia", Name: "短线侠 / 开盘啦", Category: "theme,leaders,limit-up,concept"},
-		{ID: "eastmoney", Name: "东方财富", Category: "quote,kline,f10,report"},
-		{ID: "sina", Name: "新浪财经", Category: "quote,kline,money-flow"},
-		{ID: "tencent", Name: "腾讯财经", Category: "quote,index,hk"},
-		{ID: "cls", Name: "财联社", Category: "news,calendar"},
-		{ID: "tradingview", Name: "TradingView", Category: "news", Status: "unconfigured", Message: "当前未接入数据服务"},
-		{ID: "tushare", Name: "Tushare", Category: "basic,daily,index", Status: "unconfigured", Message: "当前未接入数据服务"},
+		{ID: "eastmoney", Name: "东方财富", Category: "auction,stock-directory,concept,business,fundamentals,sector,money-flow,limit-up,market-pools,margin,billboard,announcement,report,hot-ranks,futures"},
+		{ID: "sina", Name: "新浪财经", Category: "quote,kline,money-flow,stock-directory"},
+		{ID: "tencent", Name: "腾讯财经", Category: "index,kline,sector,sector-stocks,us-sector"},
+		{ID: "cls", Name: "财联社", Category: "news"},
+		{ID: "ths", Name: "同花顺", Category: "hot-ranks"},
+		{ID: "cffex", Name: "中国金融期货交易所", Category: "futures,futures-members,futures-consensus"},
+	}
+	for i := range catalog {
+		catalog[i].Status = "unknown"
+		catalog[i].Message = "尚未观测到实际请求"
 	}
 	if t == nil {
 		return catalog
@@ -158,11 +242,25 @@ func (t *sourceHealthTracker) snapshot(now time.Time) []foundation.SourceHealth 
 	defer t.mu.RUnlock()
 	for i := range catalog {
 		item := &catalog[i]
-		if item.Status == "unconfigured" {
-			continue
+		for capability, observation := range t.capabilities[item.ID] {
+			status := "available"
+			if now.Sub(observation.checkedAt) > sourceObservationTTL {
+				status = "unknown"
+			} else if observation.failed {
+				status = "degraded"
+			}
+			row := foundation.SourceCapabilityHealth{Capability: capability, Status: status, CheckedAt: observation.checkedAt, Message: observation.message}
+			if !observation.lastSuccess.IsZero() {
+				value := observation.lastSuccess
+				row.LastSuccess = &value
+			}
+			if !observation.lastFailure.IsZero() {
+				value := observation.lastFailure
+				row.LastFailure = &value
+			}
+			item.Capabilities = append(item.Capabilities, row)
 		}
-		item.Status = "unknown"
-		item.Message = "尚未观测到实际请求"
+		sort.Slice(item.Capabilities, func(i, j int) bool { return item.Capabilities[i].Capability < item.Capabilities[j].Capability })
 		entry, exists := t.items[item.ID]
 		if !exists {
 			continue

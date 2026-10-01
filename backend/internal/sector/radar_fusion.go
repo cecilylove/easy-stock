@@ -88,10 +88,10 @@ func buildIndustryRadarOverviews(items []foundation.MarketIndustryMomentum, meta
 	})
 	breadth := industryMetricPercentiles(items, func(item foundation.MarketIndustryMomentum) (float64, bool) {
 		total := item.RisingCount + item.FallingCount
-		return float64(item.RisingCount-item.FallingCount) / float64(max(total, 1)), total > 0
+		return float64(item.RisingCount-item.FallingCount) / float64(max(total, 1)), total > 0 && industryFieldAvailable(item.Meta, "rising_count") && industryFieldAvailable(item.Meta, "falling_count")
 	})
 	leader := industryMetricPercentiles(items, func(item foundation.MarketIndustryMomentum) (float64, bool) {
-		return item.LeaderChangePercent, strings.TrimSpace(item.LeaderName) != ""
+		return item.LeaderChangePercent, strings.TrimSpace(item.LeaderName) != "" && industryFieldAvailable(item.Meta, "leader_change_percent")
 	})
 
 	result := make([]foundation.ThemeOverview, 0, len(items))
@@ -110,12 +110,19 @@ func buildIndustryRadarOverviews(items []foundation.MarketIndustryMomentum, meta
 			radarMetric{breadth[index], breadth[index] >= 0, .10},
 			radarMetric{leader[index], leader[index] >= 0, .05},
 		)
+		providerScoreOK := industryFieldAvailable(item.Meta, "score")
+		if !dailyOK && !fiveDayOK && !providerScoreOK {
+			continue
+		}
 		dailyScore := blendProviderAndComposite(item.Score, dailyComposite, dailyOK)
 		fiveDayScore := blendProviderAndComposite(item.Score, fiveDayComposite, fiveDayOK)
+		if !providerScoreOK {
+			dailyScore, fiveDayScore = roundedRadarScore(dailyComposite), roundedRadarScore(fiveDayComposite)
+		}
 		tradeDate := firstNonEmptyRadar(item.Meta.TradeDate, meta.TradeDate, shanghaiDate(now))
 		matched := item.RisingCount + item.FallingCount
 		result = append(result, foundation.ThemeOverview{
-			Theme:                radarIndustryThemeID(item.Code, item.Name),
+			Theme:                radarIndustryRefID(radarIndustryRefFromMomentum(item)),
 			LeaderStocks:         industryLeaderStocks(item),
 			Name:                 item.Name,
 			ChangePercent:        item.ChangePercent,
@@ -287,22 +294,27 @@ func percentileRanks(values []float64, valid []bool) []float64 {
 }
 
 func industryFieldAvailable(meta foundation.SourceMeta, field string) bool {
-	if len(meta.AvailableFields) == 0 {
-		return true
-	}
-	for _, available := range meta.AvailableFields {
-		if available == field {
-			return true
+	return foundation.FieldAvailable(meta, field)
+}
+
+func radarIndustryRefFromMomentum(item foundation.MarketIndustryMomentum) radarIndustryThemeRef {
+	provider := item.Meta.Provider
+	if provider == "" {
+		if strings.HasPrefix(item.Meta.Source, "tencent") {
+			provider = "tencent"
+		}
+		if strings.HasPrefix(item.Meta.Source, "eastmoney") {
+			provider = "eastmoney"
 		}
 	}
-	return false
+	return normalizeRadarIndustryRef(radarIndustryThemeRef{Code: firstNonEmptyRadar(item.Meta.NativeCode, item.Code), Name: item.Name, Provider: provider, Dimension: "industry"})
 }
 
 func uniqueIndustryOverviews(items []foundation.ThemeOverview) []foundation.ThemeOverview {
 	result := make([]foundation.ThemeOverview, 0, len(items))
 	byName := map[string]int{}
 	for _, item := range items {
-		key := normalizeThemeName(item.Name)
+		key := item.Theme
 		if key == "" {
 			continue
 		}

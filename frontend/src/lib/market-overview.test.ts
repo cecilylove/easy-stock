@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { MarketFundFlow, MarketIndustryMomentum, MarketIndexSnapshot, SourceMeta } from './backend';
 import { buildMarketBillboardPrompt, buildMarketModulePrompt, buildMarketPulsePrompt, marketOverviewGroups, resolveMarketOverviewView } from './market-overview';
 
 describe('market overview navigation', () => {
@@ -60,6 +61,49 @@ describe('market module AI prompt', () => {
 		expect(prompt).toContain('eastmoney:fund-flow');
 		expect(prompt).toContain('使用最近快照');
 		expect(prompt).toContain('不得补造');
+	});
+});
+
+describe('market AI source masks', () => {
+	const known = (fields: string[]): SourceMeta => ({ source: 'row-source', fetched_at: '', latency_ms: 0, stale: false, fields_known: true, available_fields: fields });
+	it('uses the same unknown foreign clock contract as the UI', () => {
+		const item = { id: 'x', name: '海外指数', region: 'US', market: 'US', price: 123, change_percent: 0, status: 'unknown', trade_time: '0001-01-01T00:00:00Z', meta: { ...known(['price']), time_zone: 'unknown', native_timestamp: '20261001093000' } } as MarketIndexSnapshot;
+		const prompt = buildMarketModulePrompt('core-indexes', { indexes: [item] }, '测试时刻');
+		expect(prompt).toContain('行情时间 未知（来源时间 20261001093000；时区偏移未确认）');
+		expect(prompt).not.toContain('0001-01-01');
+	});
+	it('does not describe missing global index fields as a flat price fact', () => {
+		const item = { id: 'x', name: '缺失指数', region: 'US', market: 'US', price: 123, change_percent: 0, status: 'unavailable', meta: known([]) } as MarketIndexSnapshot;
+		const prompt = buildMarketModulePrompt('core-indexes', { indexes: [item], meta: known(['price', 'change_percent']) }, '测试时刻');
+		expect(prompt).toContain('价格 未提供，涨跌 未提供');
+		expect(prompt).not.toContain('0.00%');
+	});
+	it('respects industry row masks over the list and does not invent score or five-day zero', () => {
+		const item: MarketIndustryMomentum = { code: 'x', name: '缺字段行业', change_percent: 0, five_day_change_percent: 0, twenty_day_change_percent: 0, turnover_rate: 0, rising_count: 0, falling_count: 0, main_net_inflow: 0, leader_change_percent: 0, score: 50, meta: known(['change_percent']) };
+		const prompt = buildMarketModulePrompt('industry-momentum', { industries: [item], meta: known(['score', 'change_percent', 'five_day_change_percent', 'main_net_inflow']) }, '测试时刻');
+		expect(prompt).toContain('动能 未提供');
+		expect(prompt).toContain('当日 0.00%');
+		expect(prompt).toContain('5日 未提供');
+		expect(prompt).toContain('上涨/下跌 未提供/未提供');
+		expect(prompt).not.toContain('50.0');
+	});
+	it('checks every money/ratio/leader field independently and honors known-empty masks', () => {
+		const item = { dimension: 'industry', code: 'x', name: '资金样本', net_inflow: 990_000_000, net_inflow_ratio: 12.3, main_net_inflow: 120_000_000, main_net_inflow_ratio: 0, outflow: 123, leader_name: '隐藏领涨', meta: known(['main_net_inflow']) } as MarketFundFlow;
+		const prompt = buildMarketModulePrompt('industry-flow', { flows: [item], meta: known(['net_inflow', 'main_net_inflow', 'main_net_inflow_ratio', 'leader_name']) }, '测试时刻');
+		expect(prompt).toContain('总净流入 未提供');
+		expect(prompt).toContain('主力净流入 1.20亿（主力净流入率 未提供）');
+		expect(prompt).toContain('流出 未提供');
+		expect(prompt).toContain('领涨 未提供');
+		expect(prompt).not.toContain('9.90亿');
+		expect(prompt).not.toContain('隐藏领涨');
+		item.meta = known([]);
+		expect(buildMarketModulePrompt('industry-flow', { flows: [item], meta: known(['main_net_inflow']) }, '测试时刻')).not.toContain('1.20亿');
+	});
+	it('uses list schema for legacy unmasked rows without treating a masked zero as absent', () => {
+		const item = { dimension: 'industry', code: 'x', name: '零值样本', net_inflow: 0, main_net_inflow: 99, meta: { source: 'legacy', fetched_at: '', stale: false, latency_ms: 0 } } as MarketFundFlow;
+		const prompt = buildMarketModulePrompt('industry-flow', { flows: [item], meta: known(['net_inflow']) }, '测试时刻');
+		expect(prompt).toContain('总净流入 0');
+		expect(prompt).toContain('主力净流入 未提供');
 	});
 });
 

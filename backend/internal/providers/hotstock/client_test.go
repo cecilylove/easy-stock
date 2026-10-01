@@ -5,8 +5,27 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
+
+func TestTHSOnlyClientDoesNotRequestEastMoney(t *testing.T) {
+	var eastMoneyRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ths" {
+			eastMoneyRequests.Add(1)
+			http.Error(w, "unexpected EastMoney request", 500)
+			return
+		}
+		fmt.Fprint(w, `{"status_code":0,"data":{"stock_list":[{"order":1,"code":"600519","name":"贵州茅台"}]}}`)
+	}))
+	defer server.Close()
+	client := NewTHSClient(WithHTTPClient(server.Client()), WithSourceURLs(server.URL+"/ths", server.URL+"/eastmoney"))
+	lists := client.HotStockRanks(context.Background(), 100)
+	if eastMoneyRequests.Load() != 0 || len(lists) != 1 || lists[0].Source != "ths" || len(lists[0].Items) != 1 {
+		t.Fatalf("calls=%d lists=%+v", eastMoneyRequests.Load(), lists)
+	}
+}
 
 func TestHotStockRanksLoadsBothSourcesAndNormalizesSymbols(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

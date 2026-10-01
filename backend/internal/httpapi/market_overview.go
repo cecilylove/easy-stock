@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"easy-stock/backend/internal/foundation"
+	"easy-stock/backend/internal/providers/marketoverview"
 )
 
 type marketOverviewSnapshot struct {
@@ -56,10 +57,15 @@ func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, 
 		}
 	}
 	value, meta, err := loader(ctx)
+	if shouldObserveFailure(ctx) {
+		for _, observation := range meta.Observations {
+			health.observe(observation)
+		}
+	}
 	if err == nil {
 		// Only the loader ran an actual request. A cache hit must not renew a
 		// previous fallback failure or make a stale snapshot look fresh.
-		if shouldObserveFailure(ctx) {
+		if shouldObserveFailure(ctx) && len(meta.Observations) == 0 {
 			health.fallback(meta)
 			health.success(meta)
 		}
@@ -70,13 +76,13 @@ func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, 
 		if stale, typeOK := cached.value.(T); typeOK {
 			cached.meta.Stale = true
 			cached.meta.FallbackReason = "实时数据刷新失败，已返回最近一次成功快照：" + err.Error()
-			if shouldObserveFailure(ctx) && len(failureSource) > 0 {
+			if shouldObserveFailure(ctx) && len(meta.Observations) == 0 && len(failureSource) > 0 {
 				health.cacheFailure(cached.meta, failureSource[0])
 			}
 			return stale, cached.meta, nil
 		}
 	}
-	if shouldObserveFailure(ctx) && len(failureSource) > 0 {
+	if shouldObserveFailure(ctx) && len(meta.Observations) == 0 && len(failureSource) > 0 {
 		health.failure(failureSource[0], err)
 	}
 	return zero, foundation.SourceMeta{}, err
@@ -90,7 +96,7 @@ func (s *Server) marketIndexesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	marketOverviewList(s, w, r, "indexes:"+scope, func(ctx context.Context) ([]foundation.MarketIndexSnapshot, foundation.SourceMeta, error) {
 		return s.marketOverview.MarketIndexes(ctx, scope)
-	})
+	}, s.marketIndexSourceID)
 }
 
 func (s *Server) marketIndexSeriesHandler(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +105,12 @@ func (s *Server) marketIndexSeriesHandler(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	period := firstNonEmpty(strings.TrimSpace(r.URL.Query().Get("period")), "day")
+	id = marketoverview.CanonicalIndexID(id)
+	period := marketoverview.CanonicalIndexPeriod(r.URL.Query().Get("period"))
+	if (s.marketIndexSourceID == "tencent" || s.marketIndexSourceID == "eastmoney") && !marketoverview.SupportsIndexSeries(id, period) {
+		writeError(w, http.StatusBadRequest, "腾讯指数不支持该标的或周期；仅提供目录内日、周、月 K，不提供指数分钟 K")
+		return
+	}
 	limit, err := marketLimitQuery(r, 120, 500)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -111,13 +122,28 @@ func (s *Server) marketIndexSeriesHandler(w http.ResponseWriter, r *http.Request
 	series, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketIndexSeries, foundation.SourceMeta, error) {
 		value, loadErr := s.marketOverview.MarketIndexSeries(loadCtx, id, period, limit)
 		return value, value.Meta, loadErr
-	})
+	}, s.marketIndexSourceID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	series.Meta = meta
-	series.Index.Meta = meta
+	if series.Index.Meta.Source == "" {
+		series.Index.Meta = meta
+	} else {
+		series.Index.Meta.Stale = meta.Stale
+		series.Index.Meta.FallbackReason = meta.FallbackReason
+	}
+	if meta.Stale {
+		// Cache reads copy the series struct, not its Lines backing array. Keep
+		// per-request stale annotations off the shared immutable snapshot so
+		// concurrent failed refreshes cannot mutate or race on cached bars.
+		series.Lines = append([]foundation.KLine(nil), series.Lines...)
+		for i := range series.Lines {
+			series.Lines[i].Meta.Stale = true
+			series.Lines[i].Meta.FallbackReason = meta.FallbackReason
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": series, "meta": meta})
 }
 
@@ -129,7 +155,7 @@ func (s *Server) marketIndustriesHandler(w http.ResponseWriter, r *http.Request)
 	}
 	marketOverviewList(s, w, r, fmt.Sprintf("industries:%d", limit), func(ctx context.Context) ([]foundation.MarketIndustryMomentum, foundation.SourceMeta, error) {
 		return s.marketOverview.IndustryMomentum(ctx, limit)
-	})
+	}, s.marketIndustrySourceID)
 }
 
 func (s *Server) marketFlowsHandler(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +176,7 @@ func (s *Server) marketFlowsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	marketOverviewList(s, w, r, fmt.Sprintf("flows:%s:%s:%d", dimension, sortKey, limit), func(ctx context.Context) ([]foundation.MarketFundFlow, foundation.SourceMeta, error) {
 		return s.marketOverview.MarketFundFlows(ctx, dimension, sortKey, limit)
-	})
+	}, s.marketFlowSourceID)
 }
 
 func (s *Server) marketMarginBalanceHandler(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +255,7 @@ func (s *Server) marketFuturesPositionHandler(w http.ResponseWriter, r *http.Req
 	series, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesPositionSeries, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Trend(loadCtx, variety, limit)
 		return value, value.Meta, loadErr
-	})
+	}, s.futuresSourceID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -259,7 +285,7 @@ func (s *Server) marketFuturesMembersHandler(w http.ResponseWriter, r *http.Requ
 	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesMembers, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Members(loadCtx, contract, tradeDate)
 		return value, value.Meta, loadErr
-	})
+	}, s.futuresExchangeSourceID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -286,7 +312,7 @@ func (s *Server) marketFuturesConsensusHandler(w http.ResponseWriter, r *http.Re
 	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesConsensus, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Consensus(loadCtx, tradeDate)
 		return value, value.Meta, loadErr
-	})
+	}, s.futuresExchangeSourceID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

@@ -76,6 +76,10 @@ func mappedFallbackGroups(kaipanlaName string, fallbackMap foundation.SectorMap)
 		for nodeIndex, node := range group.Nodes {
 			outNode := node
 			outNode.ID = fmt.Sprintf("fallback_%d_%d_%s", groupIndex, nodeIndex, node.ID)
+			outNode.MemberSet = &foundation.MemberSetMeta{Kind: "candidate", Returned: len(outNode.Stocks), Scope: "related_candidates", Method: "cross_provider_theme_mapping"}
+			if outNode.BoardRef != nil {
+				outNode.MemberSet.BoardRef = *outNode.BoardRef
+			}
 			outNode.Description = strings.TrimSpace("开盘啦“" + kaipanlaName + "”映射至东财题材“" + fallbackMap.Name + "”。 " + node.Description)
 			outNode.MatchedBy = append(outNode.MatchedBy, "theme-map:"+kaipanlaName+"→"+fallbackMap.Name)
 			if outNode.StockSource == "" {

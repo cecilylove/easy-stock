@@ -51,6 +51,21 @@ func TestAuctionTraceAuthAndRequestValidation(t *testing.T) {
 	}
 }
 
+func TestAuctionFailureExplicitlyUnavailableWithoutFakeTrajectory(t *testing.T) {
+	s := NewServer(Config{Auction: fakeAuctionProvider{err: errors.New("offline")}})
+	defer s.Close()
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/quotes/auction?symbol=600519.SH", nil))
+	var response struct {
+		Status string                  `json:"status"`
+		Data   foundation.AuctionTrace `json:"data"`
+		Error  string                  `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusBadGateway || response.Status != "unavailable" || len(response.Data.Points) != 0 || !strings.Contains(response.Error, "暂无经验证") {
+		t.Fatalf("response=%+v status=%d err=%v", response, rec.Code, err)
+	}
+}
+
 func TestInjectedAuctionFailureDoesNotBlameEastMoney(t *testing.T) {
 	s := NewServer(Config{Auction: fakeAuctionProvider{err: errors.New("mock upstream failed")}})
 	defer s.Close()
@@ -59,8 +74,10 @@ func TestInjectedAuctionFailureDoesNotBlameEastMoney(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d", rec.Code)
 	}
-	if source := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "eastmoney"); source.Status != "unknown" {
-		t.Fatalf("mock failure misattributed to EastMoney: %+v", source)
+	for _, source := range s.sourceHealth.snapshot(time.Now()) {
+		if source.Status != "unknown" {
+			t.Fatalf("mock failure misattributed to a default source: %+v", source)
+		}
 	}
 }
 
@@ -78,8 +95,10 @@ func TestAuctionDetailHistoricalIsNotSourceFailure(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("no-current response=%d %s", rec.Code, rec.Body.String())
 	}
-	if source := sourceByID(t, s.sourceHealth.snapshot(time.Now()), "eastmoney"); source.Status == "degraded" {
-		t.Fatalf("historical response misattributed as source outage: %+v", source)
+	for _, source := range s.sourceHealth.snapshot(time.Now()) {
+		if source.Status == "degraded" {
+			t.Fatalf("historical response misattributed as source outage: %+v", source)
+		}
 	}
 }
 

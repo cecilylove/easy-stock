@@ -252,12 +252,45 @@ export type SourceHealth = {
   checked_at?: string;
   last_success?: string;
   last_failure?: string;
+  capabilities?: { capability: string; status: 'available' | 'degraded' | 'unknown'; checked_at: string; last_success?: string; last_failure?: string; message?: string }[];
 };
+
+export type SourceProbeResult = {
+  id: string;
+  status: 'available' | 'unavailable';
+  checked_at: string;
+  scope: string;
+  message: string;
+  latency_ms: number;
+};
+
+export type BoardRef = { provider: string; native_code: string; dimension: string; name: string; classification_version?: string };
+export type MemberSetMeta = { kind: 'native' | 'exact_catalog' | 'candidate' | 'leader'; complete: boolean; total: number; returned: number; has_more: boolean; scope?: string; method?: string; board_ref: BoardRef };
 
 export type SourceMeta = {
   source: string;
   source_url?: string;
   available_fields?: string[];
+  fields_known?: boolean;
+  provider?: string;
+  native_code?: string;
+  instrument_id?: string;
+  period?: string;
+  requested_adjustment?: string;
+  effective_adjustment?: string;
+  adjustment_convention?: string;
+  basis_id?: string;
+  as_of?: string;
+  time_zone?: string;
+  native_timestamp?: string;
+  volume_unit?: string;
+  amount_currency?: string;
+  partial?: boolean;
+  missing_ids?: string[];
+  requested_sort?: string;
+  effective_sort?: string;
+  capability?: string;
+  member_set?: MemberSetMeta;
   fetched_at: string;
   latency_ms: number;
   stale: boolean;
@@ -1254,6 +1287,8 @@ export type SectorMapNode = {
 	board_code?: string;
 	board_name?: string;
 	board_source?: string;
+	board_ref?: BoardRef;
+	member_set?: MemberSetMeta;
 	change_percent: number;
 	main_net_inflow: number;
 	stocks: BoardStock[];
@@ -1338,6 +1373,8 @@ export type ThemeScreenData = {
 	order?: string[];
 	complete?: boolean;
 	coverage?: string;
+	membership_complete?: boolean;
+	membership_scope?: 'unknown' | 'native_partial' | 'native_complete' | 'candidate' | 'leader' | 'mixed';
 	source_snapshot_id?: string;
 	map_revision?: string;
 	map: SectorMap;

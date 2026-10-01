@@ -173,7 +173,7 @@ func observedListingVolatility(lines []foundation.KLine) float64 {
 func averageListingTurnover(lines []foundation.KLine) float64 {
 	values := make([]float64, 0, len(lines))
 	for _, line := range lines {
-		if line.TurnoverRate > 0 {
+		if validKLineField(line.Meta, "turnover_rate", line.TurnoverRate) {
 			values = append(values, line.TurnoverRate)
 		}
 	}
@@ -291,11 +291,19 @@ func buildNewListingSignals(trend TrendAnalysis, short ShortTermAnalysis, theme 
 	turnoverScore := int(clamp(40+trend.AverageTurnover*3, 25, 80))
 	signals := []Signal{
 		{Key: "listing_period", Label: "价格发现", Tone: scoreTone(listingScore), Strength: listingScore, Detail: fmt.Sprintf("上市%d日，上市期收益%+.1f%%，区间位置%.0f%%", trend.HistoryDays, trend.ListingReturn, trend.ListingRangePosition)},
-		{Key: "liquidity", Label: "上市期流动性", Tone: scoreTone(liquidityScore), Strength: liquidityScore, Detail: fmt.Sprintf("平均成交额%.1f亿元", trend.AverageAmount/100_000_000)},
-		{Key: "turnover", Label: "换手与波动", Tone: scoreTone(turnoverScore), Strength: turnoverScore, Detail: fmt.Sprintf("平均换手%.1f%%，观测波动%.1f%%", trend.AverageTurnover, trend.ObservedVolatility)},
-		{Key: "risk", Label: "新股风险", Tone: scoreTone(100 - risk.Score), Strength: 100 - risk.Score, Detail: fmt.Sprintf("高风险 · 观察仓上限%d%%", risk.SuggestedPositionMax)},
-		{Key: "short_term", Label: "短线状态", Tone: "neutral", Strength: 45, Detail: short.State},
 	}
+	// Missing historical fields do not contribute fabricated neutral/weak scores.
+	// Keep the existing thresholds unchanged for actual positive samples.
+	if trend.AverageAmount > 0 {
+		signals = append(signals, Signal{Key: "liquidity", Label: "上市期流动性", Tone: scoreTone(liquidityScore), Strength: liquidityScore, Detail: fmt.Sprintf("有效样本平均成交额%.1f亿元", trend.AverageAmount/100_000_000)})
+	}
+	if trend.AverageTurnover > 0 {
+		signals = append(signals, Signal{Key: "turnover", Label: "换手与波动", Tone: scoreTone(turnoverScore), Strength: turnoverScore, Detail: fmt.Sprintf("有效样本平均换手%.1f%%，观测波动%.1f%%", trend.AverageTurnover, trend.ObservedVolatility)})
+	}
+	signals = append(signals,
+		Signal{Key: "risk", Label: "新股风险", Tone: scoreTone(100 - risk.Score), Strength: 100 - risk.Score, Detail: fmt.Sprintf("高风险 · 观察仓上限%d%%", risk.SuggestedPositionMax)},
+		Signal{Key: "short_term", Label: "短线状态", Tone: "neutral", Strength: 45, Detail: short.State},
+	)
 	if theme.Resonance.Available {
 		signals = append(signals, Signal{Key: "theme", Label: "题材事实", Tone: scoreTone(theme.Resonance.Score), Strength: theme.Resonance.Score, Detail: theme.Resonance.Detail})
 	}
@@ -371,10 +379,17 @@ func buildNewListingRisks(trend TrendAnalysis, theme ThemeAnalysis, market *Mark
 
 func buildNewListingEvidence(input Input, trend TrendAnalysis, short ShortTermAnalysis, theme ThemeAnalysis, market *MarketContext, risk RiskControl, lines []foundation.KLine, fundamental *FundamentalAnalysis, research *ResearchAnalysis, stockNews *NewsAnalysis, themeNews *NewsAnalysis) []Evidence {
 	latest := lines[len(lines)-1]
+	amountLabel, turnoverLabel := "历史成交额未知", "历史换手率未知"
+	if trend.AverageAmount > 0 {
+		amountLabel = fmt.Sprintf("有效样本平均成交额%.1f亿元", trend.AverageAmount/100_000_000)
+	}
+	if trend.AverageTurnover > 0 {
+		turnoverLabel = fmt.Sprintf("有效样本平均换手%.1f%%", trend.AverageTurnover)
+	}
 	evidence := []Evidence{
 		{Category: "上市样本", Title: fmt.Sprintf("上市%d个交易日 · 受限模型", trend.HistoryDays), Detail: "本次不计算成熟均线、ATR和长周期收益", Source: latest.Meta.Source, AsOf: latest.Time.Format("2006-01-02")},
 		{Category: "价格发现", Title: fmt.Sprintf("上市期%+.1f%% · 区间位置%.0f%%", trend.ListingReturn, trend.ListingRangePosition), Detail: strings.Join(trend.Reasons, "；"), Source: latest.Meta.Source, AsOf: latest.Time.Format("2006-01-02")},
-		{Category: "流动性", Title: fmt.Sprintf("平均成交额%.1f亿元 · 换手%.1f%%", trend.AverageAmount/100_000_000, trend.AverageTurnover), Detail: fmt.Sprintf("可观测波动约%.1f%%", trend.ObservedVolatility), Source: latest.Meta.Source, AsOf: latest.Time.Format("2006-01-02")},
+		{Category: "流动性", Title: amountLabel + " · " + turnoverLabel, Detail: fmt.Sprintf("可观测波动约%.1f%%；未知字段不按有效0评分", trend.ObservedVolatility), Source: latest.Meta.Source, AsOf: latest.Time.Format("2006-01-02")},
 		{Category: "短线", Title: short.State, Detail: strings.Join(short.Reasons, "；"), Source: limitUpSource(input.LimitUps), AsOf: latestLimitUpDate(input.Symbol, input.LimitUps)},
 	}
 	if theme.Primary != "" {
@@ -401,6 +416,7 @@ func buildNewListingEvidence(input Input, trend TrendAnalysis, short ShortTermAn
 
 func buildNewListingDataQuality(input Input, profile Profile, lines []foundation.KLine, short ShortTermAnalysis, theme ThemeAnalysis, market *MarketContext, relative RelativeStrength, fundamental *FundamentalAnalysis, research *ResearchAnalysis, stockNews *NewsAnalysis, themeNews *NewsAnalysis) []DataQuality {
 	quality := []DataQuality{{Key: "kline", Status: "limited", Message: fmt.Sprintf("上市初期仅有%d个交易日；采用新股价格发现模型", len(lines))}, {Key: "technical_window", Status: "limited", Message: fmt.Sprintf("还需%d个交易日形成20日窗口；MA20/60/120与ATR14未参与评分", max(20-len(lines), 1))}}
+	quality = append(quality, historicalFieldQuality(lines, len(lines))...)
 	if input.Quote.Price > 0 {
 		quality = append(quality, DataQuality{Key: "quote", Status: "ready", Message: "实时行情已接入"})
 	} else {

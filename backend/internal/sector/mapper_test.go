@@ -181,8 +181,8 @@ func TestMapperUsesStockCatalogWhenBoardStocksFail(t *testing.T) {
 	if node.ChangePercent != 1.24 {
 		t.Fatalf("expected stock catalog to backfill node change percent: %+v", node)
 	}
-	if len(node.Warnings) != 0 {
-		t.Fatalf("stock-catalog fallback should not add noisy warnings: %+v", node)
+	if node.MemberSet == nil || node.MemberSet.Kind != "candidate" || node.MemberSet.Complete || len(node.Warnings) == 0 {
+		t.Fatalf("stock-catalog fallback must disclose candidate-only membership: %+v", node)
 	}
 	if node.Stocks[0].Symbol != "300576.SZ" || node.Stocks[0].Price != 48.8 {
 		t.Fatalf("unexpected stock-catalog fallback stock: %+v", node.Stocks[0])

@@ -36,10 +36,19 @@ type Client struct {
 	http              *http.Client
 	dataURL, cffexURL string
 	now               func() time.Time
+	exchangeOnly      bool
 }
 
 func NewClient() *Client {
 	return &Client{http: &http.Client{Timeout: 8 * time.Second}, dataURL: "https://datacenter-web.eastmoney.com", cffexURL: "http://www.cffex.com.cn", now: time.Now}
+}
+
+// NewExchangeClient requests CFFEX directly for independent source probes.
+func NewExchangeClient() *Client {
+	client := NewClient()
+	client.dataURL = ""
+	client.exchangeOnly = true
+	return client
 }
 
 func (c *Client) Trend(ctx context.Context, variety string, limit int) (foundation.MarketFuturesPositionSeries, error) {
@@ -52,7 +61,13 @@ func (c *Client) Trend(ctx context.Context, variety string, limit int) (foundati
 	// Reserve time for the independent exchange fallback; never guess a contract
 	// from the calendar month (rollover can already have happened).
 	primaryCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
-	contracts, _, err := c.report(primaryCtx, "RPT_FUTU_POSITIONCODE", fmt.Sprintf(`(TRADE_CODE="%s")(IS_MAINCODE="1")`, variety), 5)
+	var contracts []map[string]json.RawMessage
+	var err error
+	if c.exchangeOnly {
+		err = fmt.Errorf("当前仅提供交易所单日快照")
+	} else {
+		contracts, _, err = c.report(primaryCtx, "RPT_FUTU_POSITIONCODE", fmt.Sprintf(`(TRADE_CODE="%s")(IS_MAINCODE="1")`, variety), 5)
+	}
 	if err == nil {
 		for _, row := range contracts {
 			code := rawString(row["SECURITY_CODE"])
@@ -82,6 +97,9 @@ func (c *Client) Trend(ctx context.Context, variety string, limit int) (foundati
 		// full history. Rank changes use the exchange's published values.
 		members, fallbackErr := c.latestMembers(ctx, variety, series.ContractCode)
 		if fallbackErr != nil {
+			if c.exchangeOnly {
+				return series, fmt.Errorf("中金所最近交易日持仓数据不可用：%w", fallbackErr)
+			}
 			return series, fmt.Errorf("东方财富期指持仓不可用：%v；中金所备用数据不可用：%w", err, fallbackErr)
 		}
 		series.ContractCode = members.ContractCode
@@ -112,6 +130,9 @@ func (c *Client) Trend(ctx context.Context, variety string, limit int) (foundati
 		series.Rows = []foundation.MarketFuturesPositionRow{point}
 		series.Meta = members.Meta
 		series.Meta.FallbackReason = "东方财富期指数据不可用，降级为中金所最近交易日快照；仅提供单日持仓，不提供历史走势、指数或基差"
+		if c.exchangeOnly {
+			series.Meta.FallbackReason = "中金所最近交易日快照；仅提供单日持仓，不提供历史走势、指数或基差"
+		}
 	}
 	series.Meta.TradeDate = series.Rows[len(series.Rows)-1].TradeDate
 	series.Meta.FetchedAt = c.now()

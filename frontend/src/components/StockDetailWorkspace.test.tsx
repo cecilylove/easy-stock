@@ -94,10 +94,24 @@ describe('stock detail refresh preserves the rendered chart', () => {
 		expect(panel().textContent).toContain('auction fixture failure');
 		const retryButton = [...panel().querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '重试竞价')!;
 		await act(async () => retryButton.click());
-		expect(attempts).toBe(2);
-		expect(panel().textContent).toContain('auction fixture failure');
+		expect(attempts).toBe(2); expect(panel().textContent).toContain('auction fixture failure');
 		expect(panel().textContent).not.toContain('正在获取竞价参考点');
 		await act(async () => retry.reject(new Error('auction fixture failure')));
+	});
+	it('polls the enabled auction representative points at five seconds during pre-open', async () => {
+		vi.setSystemTime(new Date('2026-09-30T09:20:00+08:00'));
+		const normalRequest = request.getMockImplementation()!;
+		let attempts = 0;
+		request.mockImplementation((backend: BackendConfig, route: string, options?: RequestInit) => {
+			if (route.includes('/quotes/auction')) { attempts += 1; return Promise.resolve({ status: 'ready', data: { symbol: firstSymbol, trade_date: '2026-09-30', points: [{ time: '2026-09-30T09:19:00+08:00', price: 10 }], meta: meta('eastmoney:pre-open') } }); }
+			return normalRequest(backend, route, options);
+		});
+		await render(); await selectPeriod('分时');
+		await act(async () => host.querySelector<HTMLInputElement>('.stock-detail-auction-toggle input')!.click());
+		expect(attempts).toBe(1); expect(panel().textContent).toContain('东方财富'); expect(panel().textContent).toContain('竞价参考点 1 个');
+		await advance(5000); expect(attempts).toBe(2);
+		await act(async () => host.querySelector<HTMLInputElement>('.stock-detail-auction-toggle input')!.click());
+		await advance(5000); expect(attempts).toBe(2);
 	});
 
 	it('loads the first chart and keeps the exact SVG during and after a 5-second intraday refresh', async () => {
@@ -228,6 +242,30 @@ describe('stock detail refresh preserves the rendered chart', () => {
 		expect(chartSVG()).toBeNull(); expect(panel().textContent).toContain('指定复权来源暂不可用');
 		await act(async () => { select.value = 'source'; select.dispatchEvent(new Event('change', { bubbles: true })); });
 		expect(chartSVG()).not.toBeNull();
+	});
+
+	it('does not offer retired EastMoney prices and states explicit Tencent default correctly', async () => {
+		await render();
+		const provider=host.querySelector<HTMLSelectElement>('[aria-label="K线来源"]')!;
+		expect([...provider.options].map(option=>option.value)).toEqual(['source','tencent']);
+		await act(async()=>{provider.value='tencent';provider.dispatchEvent(new Event('change',{bubbles:true}));});
+		expect(panel().textContent).toContain('腾讯默认（不复权，无备用）');
+		expect(panel().textContent).toContain('失败不切其他口径');
+		expect(panel().textContent).not.toContain('自动＋指定复权仍走东方财富');
+	});
+
+	it('selects Tencent strict prices independently and isolates cached provider bases', async () => {
+		await render();
+		const provider = host.querySelector<HTMLSelectElement>('[aria-label="K线来源"]')!;
+		const pending = deferred<{ data: KLine[] }>(); nextChart = () => pending.promise;
+		await act(async () => {provider.value='tencent';provider.dispatchEvent(new Event('change',{bubbles:true}));});
+		expect(chartRequests('day').at(-1)?.url.searchParams.get('provider')).toBe('tencent');
+		expect(chartSVG()).toBeNull();
+		const data = lines().map(line=>({...line,meta:{...line.meta,source:'tencent:stock-kline',basis_id:'tencent:none',volume_unit:'shares',effective_adjustment:'none'}}));
+		await act(async()=>pending.resolve({data}));
+		expect(chartSVG()).not.toBeNull();expect(panel().textContent).toContain('实际口径 none');
+		await act(async()=>{provider.value='source';provider.dispatchEvent(new Event('change',{bubbles:true}));});
+		expect(panel().textContent).not.toContain('实际口径 none');
 	});
 
 	it('supports focused F5/F8 chart shortcuts without intercepting search input', async () => {

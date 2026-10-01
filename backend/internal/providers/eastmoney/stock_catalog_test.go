@@ -2,6 +2,7 @@ package eastmoney
 
 import (
 	"context"
+	"easy-stock/backend/internal/foundation"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -55,6 +56,9 @@ func TestClientStockCatalogParsesPagesAndCachesSnapshot(t *testing.T) {
 	}
 	if stocks[1].Price != 0 || stocks[1].ChangePercent != 0 || stocks[1].Amount != 0 {
 		t.Fatalf("dash-valued quote fields should parse as zero: %+v", stocks[1])
+	}
+	if !stocks[0].Meta.FieldsKnown || !foundation.FieldAvailable(stocks[0].Meta, "five_day_change_percent") || foundation.FieldAvailable(stocks[1].Meta, "price") || foundation.FieldAvailable(stocks[2].Meta, "five_day_change_percent") {
+		t.Fatalf("catalog field validity lost: %+v", stocks)
 	}
 	if stocks[2].Symbol != "301520.SZ" || len(stocks[2].Concepts) != 1 || stocks[2].Concepts[0] != "CRO" {
 		t.Fatalf("unexpected 万邦医药 catalog row: %+v", stocks[2])

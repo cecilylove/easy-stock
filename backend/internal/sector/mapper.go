@@ -267,6 +267,7 @@ func (m *Mapper) buildNode(
 		out.BoardCode = board.Code
 		out.BoardName = board.Name
 		out.BoardSource = board.Meta.Source
+		out.BoardRef = &foundation.BoardRef{Provider: "eastmoney", NativeCode: board.Code, Dimension: "unknown", Name: board.Name}
 		out.ChangePercent = board.ChangePercent
 		out.MainNetInflow = board.MainNetInflow
 		out.MatchStatus = "matched"
@@ -320,6 +321,17 @@ func (m *Mapper) buildNode(
 		} else {
 			out.Warnings = append(out.Warnings, "未获取到股票行情")
 		}
+	}
+	kind, scope, method := "candidate", "related_candidates", "catalog_or_narrative_match"
+	if out.StockSource == "eastmoney:board-constituents" {
+		kind, scope, method = "native", "returned_page", "native_board_code"
+	}
+	out.MemberSet = &foundation.MemberSetMeta{Kind: kind, Returned: len(out.Stocks), Scope: scope, Method: method}
+	if out.BoardRef != nil {
+		out.MemberSet.BoardRef = *out.BoardRef
+	}
+	if kind == "candidate" && len(out.Stocks) > 0 {
+		out.Warnings = append(out.Warnings, "目录或题材关联候选不代表板块完整成分。")
 	}
 	return out
 }

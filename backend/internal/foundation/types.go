@@ -3,17 +3,71 @@ package foundation
 import "time"
 
 type SourceMeta struct {
-	Source          string     `json:"source"`
-	SourceURL       string     `json:"source_url,omitempty"`
-	AvailableFields []string   `json:"available_fields,omitempty"`
-	FetchedAt       time.Time  `json:"fetched_at"`
-	LatencyMS       int64      `json:"latency_ms"`
-	Stale           bool       `json:"stale"`
-	TradeDate       string     `json:"trade_date,omitempty"`
-	SnapshotID      string     `json:"snapshot_id,omitempty"`
-	NextRefreshAt   *time.Time `json:"next_refresh_at,omitempty"`
-	FallbackReason  string     `json:"fallback_reason,omitempty"`
-	CarryForward    bool       `json:"carry_forward,omitempty"`
+	Source               string              `json:"source"`
+	SourceURL            string              `json:"source_url,omitempty"`
+	AvailableFields      []string            `json:"available_fields,omitempty"`
+	FieldsKnown          bool                `json:"fields_known,omitempty"`
+	Provider             string              `json:"provider,omitempty"`
+	NativeCode           string              `json:"native_code,omitempty"`
+	InstrumentID         string              `json:"instrument_id,omitempty"`
+	Period               string              `json:"period,omitempty"`
+	RequestedAdjustment  string              `json:"requested_adjustment,omitempty"`
+	EffectiveAdjustment  string              `json:"effective_adjustment,omitempty"`
+	AdjustmentConvention string              `json:"adjustment_convention,omitempty"`
+	BasisID              string              `json:"basis_id,omitempty"`
+	AsOf                 string              `json:"as_of,omitempty"`
+	TimeZone             string              `json:"time_zone,omitempty"`
+	NativeTimestamp      string              `json:"native_timestamp,omitempty"`
+	VolumeUnit           string              `json:"volume_unit,omitempty"`
+	AmountCurrency       string              `json:"amount_currency,omitempty"`
+	Partial              bool                `json:"partial,omitempty"`
+	MissingIDs           []string            `json:"missing_ids,omitempty"`
+	RequestedSort        string              `json:"requested_sort,omitempty"`
+	EffectiveSort        string              `json:"effective_sort,omitempty"`
+	MemberSet            *MemberSetMeta      `json:"member_set,omitempty"`
+	Capability           string              `json:"capability,omitempty"`
+	Observations         []SourceObservation `json:"-"`
+	FetchedAt            time.Time           `json:"fetched_at"`
+	LatencyMS            int64               `json:"latency_ms"`
+	Stale                bool                `json:"stale"`
+	TradeDate            string              `json:"trade_date,omitempty"`
+	SnapshotID           string              `json:"snapshot_id,omitempty"`
+	NextRefreshAt        *time.Time          `json:"next_refresh_at,omitempty"`
+	FallbackReason       string              `json:"fallback_reason,omitempty"`
+	CarryForward         bool                `json:"carry_forward,omitempty"`
+}
+
+// BoardRef preserves native classification identity; codes are not portable across sources.
+type BoardRef struct {
+	Provider              string `json:"provider"`
+	NativeCode            string `json:"native_code"`
+	Dimension             string `json:"dimension"`
+	Name                  string `json:"name"`
+	ClassificationVersion string `json:"classification_version,omitempty"`
+}
+
+type MemberSetMeta struct {
+	Kind     string   `json:"kind"`
+	Complete bool     `json:"complete"`
+	Total    int      `json:"total"`
+	Returned int      `json:"returned"`
+	HasMore  bool     `json:"has_more"`
+	Scope    string   `json:"scope,omitempty"`
+	Method   string   `json:"method,omitempty"`
+	BoardRef BoardRef `json:"board_ref"`
+}
+
+// FieldAvailable treats explicit known-empty masks as no data, not all fields.
+func FieldAvailable(meta SourceMeta, field string) bool {
+	if !meta.FieldsKnown && len(meta.AvailableFields) == 0 {
+		return true
+	}
+	for _, name := range meta.AvailableFields {
+		if name == field {
+			return true
+		}
+	}
+	return false
 }
 
 type QuoteLevel struct {
@@ -81,15 +135,25 @@ type NewsItem struct {
 }
 
 type SourceHealth struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Category    string     `json:"category"`
-	OK          bool       `json:"ok"`
+	ID           string                   `json:"id"`
+	Name         string                   `json:"name"`
+	Category     string                   `json:"category"`
+	OK           bool                     `json:"ok"`
+	Status       string                   `json:"status"`
+	Message      string                   `json:"message,omitempty"`
+	CheckedAt    *time.Time               `json:"checked_at,omitempty"`
+	LastSuccess  *time.Time               `json:"last_success,omitempty"`
+	LastFailure  *time.Time               `json:"last_failure,omitempty"`
+	Capabilities []SourceCapabilityHealth `json:"capabilities,omitempty"`
+}
+
+type SourceCapabilityHealth struct {
+	Capability  string     `json:"capability"`
 	Status      string     `json:"status"`
-	Message     string     `json:"message,omitempty"`
-	CheckedAt   *time.Time `json:"checked_at,omitempty"`
+	CheckedAt   time.Time  `json:"checked_at"`
 	LastSuccess *time.Time `json:"last_success,omitempty"`
 	LastFailure *time.Time `json:"last_failure,omitempty"`
+	Message     string     `json:"message,omitempty"`
 }
 
 type Board struct {
@@ -286,18 +350,20 @@ type SectorMapGroup struct {
 }
 
 type SectorMapNode struct {
-	ID             string       `json:"id"`
-	Name           string       `json:"name"`
-	Description    string       `json:"description,omitempty"`
-	BoardCode      string       `json:"board_code,omitempty"`
-	BoardName      string       `json:"board_name,omitempty"`
-	BoardSource    string       `json:"board_source,omitempty"`
-	ChangePercent  float64      `json:"change_percent"`
-	MainNetInflow  float64      `json:"main_net_inflow"`
-	Stocks         []BoardStock `json:"stocks"`
-	StockSource    string       `json:"stock_source,omitempty"`
-	MatchStatus    string       `json:"match_status"`
-	MatchedBy      []string     `json:"matched_by,omitempty"`
-	Warnings       []string     `json:"warnings,omitempty"`
-	CandidateCount int          `json:"candidate_count,omitempty"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description,omitempty"`
+	BoardCode      string         `json:"board_code,omitempty"`
+	BoardName      string         `json:"board_name,omitempty"`
+	BoardSource    string         `json:"board_source,omitempty"`
+	BoardRef       *BoardRef      `json:"board_ref,omitempty"`
+	MemberSet      *MemberSetMeta `json:"member_set,omitempty"`
+	ChangePercent  float64        `json:"change_percent"`
+	MainNetInflow  float64        `json:"main_net_inflow"`
+	Stocks         []BoardStock   `json:"stocks"`
+	StockSource    string         `json:"stock_source,omitempty"`
+	MatchStatus    string         `json:"match_status"`
+	MatchedBy      []string       `json:"matched_by,omitempty"`
+	Warnings       []string       `json:"warnings,omitempty"`
+	CandidateCount int            `json:"candidate_count,omitempty"`
 }

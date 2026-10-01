@@ -189,6 +189,7 @@ func (p *RadarProvider) BuildLeaders(ctx context.Context, themeID, snapshotID st
 		leader := p.industryLeader(themeID)
 		if leader.Symbol != "" {
 			result.Groups[0].Nodes[0].Stocks = []foundation.BoardStock{{Symbol: leader.Symbol, Name: leader.Name, ChangePercent: leader.ChangePercent, RankRole: "行业领涨", RankScore: 100}}
+			result.Groups[0].Nodes[0].MemberSet = &foundation.MemberSetMeta{Kind: "leader", Returned: 1, Scope: "known_leaders", Method: "industry_rank_leader"}
 		}
 		return result, nil
 	}

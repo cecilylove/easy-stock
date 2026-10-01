@@ -112,7 +112,7 @@ Aggregates theme rankings, momentum strength, money flow, market breadth, and st
 
 #### One traceable map of indices, money flow, leaderboards, and research signals
 
-Core indices, news flashes, industry trend strength, sector money flow, themes, per-stock inflows/outflows, the Dragon-Tiger list, announcement radar, institutional views, and industry research — unified into a single research entry point. Every page keeps its data source and fetch time, and you can hand the current context straight to AI for interpretation, instead of hopping between quote terminals and news pages.
+This fork combines EastMoney, Sina, Tencent, CLS, Kaipanla, THS and CFFEX for market quotes, K-lines, themes, fund flows, futures positions, popularity rankings and research information. EastMoney supplies company fundamentals, financing balances, the Dragon-Tiger list, announcements and research reports, with fallbacks only where implemented. Settings consolidates source explanations, recent business observations and manual representative checks; pages keep their actual source, fetch time and degradation details. See [data-source behavior](./backend/docs/data-sources.md) for coverage and refresh rules.
 
 <p align="center">
   <img src="https://cdn.jsdelivr.net/gh/jundizhou/easy-stock@main/docs/assets/easy-stock-market-overview-indices.png" width="2560" height="1696" alt="easy-stock market overview with core indices and cross-market trend analysis" />

@@ -3,6 +3,7 @@ package eastmoney
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -37,7 +38,7 @@ var marketIndexCatalog = []marketIndexDefinition{
 	{ID: "taiwan", SecID: "100.TWII", Name: "台湾加权", Region: "亚太", Market: "TW", Currency: "TWD"},
 	{ID: "dow", SecID: "100.DJIA", Name: "道琼斯", Region: "美洲", Market: "US", Currency: "USD", Core: true},
 	{ID: "sp500", SecID: "100.SPX", Name: "标普500", Region: "美洲", Market: "US", Currency: "USD", Core: true},
-	{ID: "nasdaq", SecID: "100.NDX", Name: "纳斯达克", Region: "美洲", Market: "US", Currency: "USD", Core: true},
+	{ID: "nasdaq100", SecID: "100.NDX", Name: "纳斯达克100", Region: "美洲", Market: "US", Currency: "USD", Core: true},
 	{ID: "ftse", SecID: "100.FTSE", Name: "英国富时100", Region: "欧洲", Market: "UK", Currency: "GBP"},
 	{ID: "dax", SecID: "100.GDAXI", Name: "德国DAX", Region: "欧洲", Market: "DE", Currency: "EUR"},
 	{ID: "cac", SecID: "100.FCHI", Name: "法国CAC40", Region: "欧洲", Market: "FR", Currency: "EUR"},
@@ -45,7 +46,7 @@ var marketIndexCatalog = []marketIndexDefinition{
 
 var eastmoneyIndustryMomentumFields = []string{
 	"change_percent", "five_day_change_percent", "twenty_day_change_percent", "turnover_rate",
-	"rising_count", "falling_count", "main_net_inflow", "leader_name", "leader_change_percent",
+	"rising_count", "falling_count", "main_net_inflow", "leader_name", "leader_change_percent", "score",
 }
 
 var eastmoneyFundFlowFields = []string{
@@ -99,12 +100,21 @@ func (c *Client) MarketIndexes(ctx context.Context, scope string) ([]foundation.
 		if !ok {
 			continue
 		}
-		tradeTime := time.Unix(int64(asFloat(raw["f124"])), 0)
+		if asFloat(raw["f2"]) <= 0 {
+			continue
+		}
+		tradeTime := time.Time{}
+		if asFloat(raw["f124"]) > 0 {
+			tradeTime = time.Unix(int64(asFloat(raw["f124"])), 0)
+		}
+		itemMeta := meta
+		itemMeta.Provider, itemMeta.NativeCode, itemMeta.InstrumentID = "eastmoney", definition.SecID, definition.ID
+		itemMeta.TimeZone = "UTC"
 		items = append(items, foundation.MarketIndexSnapshot{
 			ID: definition.ID, SecID: definition.SecID, Code: asString(raw["f12"]), Name: firstString(asString(raw["f14"]), definition.Name),
 			Region: definition.Region, Market: definition.Market, Currency: definition.Currency,
 			Price: asFloat(raw["f2"]), ChangePercent: asFloat(raw["f3"]), Change: asFloat(raw["f4"]), TradeTime: tradeTime,
-			Status: indexStatus(tradeTime, time.Now()), Meta: meta,
+			Status: indexStatus(tradeTime, time.Now()), Meta: itemMeta,
 		})
 	}
 	order := map[string]int{}
@@ -116,6 +126,12 @@ func (c *Client) MarketIndexes(ctx context.Context, scope string) ([]foundation.
 		return nil, foundation.SourceMeta{}, fmt.Errorf("eastmoney returned no index snapshots")
 	}
 	return items, meta, nil
+}
+
+// SupportsIndexSeries identifies unsupported input before any upstream attempt.
+func SupportsIndexSeries(id, period string) bool {
+	_, ok := findMarketIndex(id)
+	return ok && eastMoneyPeriod(period) != ""
 }
 
 func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string, limit int) (foundation.MarketIndexSeries, error) {
@@ -136,7 +152,7 @@ func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string
 	params.Set("fields1", "f1,f2,f3,f4,f5,f6")
 	params.Set("fields2", "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61")
 	params.Set("klt", klt)
-	params.Set("fqt", "1")
+	params.Set("fqt", "0")
 	params.Set("end", "20500101")
 	params.Set("lmt", strconv.Itoa(limit))
 	requestURL := endpoint + "?" + params.Encode()
@@ -153,14 +169,54 @@ func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string
 	if payload.RC != 0 {
 		return foundation.MarketIndexSeries{}, fmt.Errorf("eastmoney index kline rc=%d", payload.RC)
 	}
-	meta := foundation.SourceMeta{Source: "eastmoney:index-kline", SourceURL: requestURL, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds()}
+	meta := foundation.SourceMeta{Source: "eastmoney:index-kline", SourceURL: requestURL, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds(), Provider: "eastmoney", NativeCode: definition.SecID, InstrumentID: definition.ID, Period: period, EffectiveAdjustment: "none", TimeZone: "UTC", VolumeUnit: "provider_index_volume", AmountCurrency: definition.Currency, FieldsKnown: true, AvailableFields: []string{"open", "close", "high", "low", "volume", "amount"}}
+	dateOnly := klt == "101" || klt == "102" || klt == "103"
+	if !dateOnly {
+		meta.TimeZone = "Asia/Shanghai"
+	}
 	lines := make([]foundation.KLine, 0, len(payload.Data.KLines))
 	for _, raw := range payload.Data.KLines {
+		fields := strings.Split(raw, ",")
+		valid := len(fields) >= 7
+		if valid {
+			for i := 1; i <= 6; i++ {
+				n, err := strconv.ParseFloat(fields[i], 64)
+				if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || n < 0 || (i <= 4 && n == 0) {
+					valid = false
+					break
+				}
+			}
+		}
+		if !valid {
+			continue
+		}
 		line, err := parseKLine(raw, definition.ID, meta)
-		if err != nil {
-			return foundation.MarketIndexSeries{}, err
+		if err != nil || line.Open <= 0 || line.Close <= 0 || line.High < max(line.Open, line.Close) || line.Low <= 0 || line.Low > min(line.Open, line.Close) {
+			continue
+		}
+		line.ChangePercent = 0
+		if len(fields) > 8 {
+			change, err := strconv.ParseFloat(fields[8], 64)
+			if err == nil && !math.IsNaN(change) && !math.IsInf(change, 0) {
+				line.ChangePercent = change
+				line.Meta.AvailableFields = append(append([]string(nil), meta.AvailableFields...), "change_percent")
+			}
+		}
+		if dateOnly {
+			// Date-only daily/weekly/monthly bars are session labels. Intraday
+			// bars remain actual Shanghai timestamps; never collapse their clock.
+			line.Time = time.Date(line.Time.Year(), line.Time.Month(), line.Time.Day(), 0, 0, 0, 0, time.UTC)
 		}
 		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return foundation.MarketIndexSeries{}, fmt.Errorf("eastmoney returned no valid index bars")
+	}
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].Time.Before(lines[j].Time) })
+	for i := 1; i < len(lines); i++ {
+		if !lines[i].Time.After(lines[i-1].Time) {
+			return foundation.MarketIndexSeries{}, fmt.Errorf("eastmoney duplicate index bar")
+		}
 	}
 	index := foundation.MarketIndexSnapshot{ID: definition.ID, SecID: definition.SecID, Name: definition.Name, Region: definition.Region, Market: definition.Market, Currency: definition.Currency, Meta: meta}
 	if len(lines) > 0 {
@@ -169,6 +225,7 @@ func (c *Client) MarketIndexSeries(ctx context.Context, id string, period string
 		index.Price = latest.Close
 		index.ChangePercent = latest.ChangePercent
 		index.TradeTime = latest.Time
+		index.Meta = latest.Meta
 	}
 	return foundation.MarketIndexSeries{Index: index, Lines: lines, Meta: meta}, nil
 }
@@ -191,9 +248,18 @@ func (c *Client) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 		} `json:"data"`
 	}
 	if err := c.getJSONWithRetry(ctx, requestURL, &payload); err != nil || payload.RC != 0 || len(payload.Data.Diff) == 0 {
-		boards, fallbackErr := c.boardsFromFundFlow(ctx, "", limit, firstError(err, fmt.Errorf("eastmoney industry momentum unavailable")))
+		fallbackMeta := foundation.SourceMeta{Source: "eastmoney:bkzj", FieldsKnown: true, AvailableFields: eastmoneyMainNetOnlyFields, FetchedAt: time.Now()}
+		boards, fallbackURL, fallbackErr := c.fetchMarketFundFlowBoards(ctx, "m:90+t:2+f:!50", fallbackMeta)
 		if fallbackErr != nil {
 			return nil, foundation.SourceMeta{}, fallbackErr
+		}
+		if len(boards) == 0 {
+			return nil, foundation.SourceMeta{}, fmt.Errorf("eastmoney industry bkzj returned no boards")
+		}
+		fallbackMeta.SourceURL = fallbackURL
+		sort.SliceStable(boards, func(i, j int) bool { return boards[i].MainNetInflow > boards[j].MainNetInflow })
+		for i := range boards {
+			boards[i].Meta = fallbackMeta
 		}
 		items := make([]foundation.MarketIndustryMomentum, 0, len(boards))
 		for _, board := range boards {
@@ -210,7 +276,7 @@ func (c *Client) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 		}
 		return items, meta, nil
 	}
-	meta := foundation.SourceMeta{Source: "eastmoney:industry-momentum", SourceURL: requestURL, AvailableFields: eastmoneyIndustryMomentumFields, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds()}
+	meta := foundation.SourceMeta{Source: "eastmoney:industry-momentum", SourceURL: requestURL, AvailableFields: eastmoneyIndustryMomentumFields, FieldsKnown: true, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds()}
 	items := make([]foundation.MarketIndustryMomentum, 0, len(payload.Data.Diff))
 	for _, raw := range payload.Data.Diff {
 		change := asFloat(raw["f3"])
@@ -219,11 +285,24 @@ func (c *Client) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 		rising := int(asFloat(raw["f104"]))
 		falling := int(asFloat(raw["f105"]))
 		flow := asFloat(raw["f62"])
+		itemMeta := meta
+		itemMeta.Provider, itemMeta.NativeCode = "eastmoney", asString(raw["f12"])
+		itemMeta.AvailableFields = marketNumericFields(raw, map[string]string{"f3": "change_percent", "f109": "five_day_change_percent", "f24": "twenty_day_change_percent", "f8": "turnover_rate", "f104": "rising_count", "f105": "falling_count", "f62": "main_net_inflow", "f136": "leader_change_percent"})
+		if asString(raw["f128"]) != "" {
+			itemMeta.AvailableFields = append(itemMeta.AvailableFields, "leader_name")
+		}
+		// A derived score is available only when every formula input is real.
+		// Valid zero inputs are still data, not missing or an invented neutral score.
+		score := 0.0
+		if industryScoreInputsAvailable(itemMeta) {
+			score = scoreMomentum(change, fiveDay, twentyDay, flow, rising, falling)
+			itemMeta.AvailableFields = append(itemMeta.AvailableFields, "score")
+		}
 		items = append(items, foundation.MarketIndustryMomentum{
 			Code: asString(raw["f12"]), Name: asString(raw["f14"]), ChangePercent: change, FiveDayChangePercent: fiveDay,
 			TwentyDayChange: twentyDay, TurnoverRate: asFloat(raw["f8"]), RisingCount: rising, FallingCount: falling,
 			MainNetInflow: flow, LeaderName: asString(raw["f128"]), LeaderChangePercent: asFloat(raw["f136"]),
-			Score: scoreMomentum(change, fiveDay, twentyDay, flow, rising, falling), Meta: meta,
+			Score: score, Meta: itemMeta,
 		})
 	}
 	return items, meta, nil
@@ -277,12 +356,16 @@ func (c *Client) MarketFundFlows(ctx context.Context, dimension string, sortKey 
 		if dimension == "theme" {
 			code = "m:90+t:3+f:!50"
 		}
-		meta := foundation.SourceMeta{Source: "eastmoney:bkzj", AvailableFields: eastmoneyMainNetOnlyFields, FetchedAt: time.Now(), FallbackReason: "详细分单资金不可用，使用板块净流入榜"}
-		boards, fallbackURL, fallbackErr := c.fetchFundFlowBoards(ctx, code, "", meta)
+		meta := foundation.SourceMeta{Source: "eastmoney:bkzj", AvailableFields: eastmoneyMainNetOnlyFields, FieldsKnown: true, FetchedAt: time.Now(), RequestedSort: sortKey, EffectiveSort: "net", FallbackReason: "详细分单资金不可用，仅提供主力净流入；实际按主力净流入排序"}
+		boards, fallbackURL, fallbackErr := c.fetchMarketFundFlowBoards(ctx, code, meta)
 		if fallbackErr != nil {
 			return nil, foundation.SourceMeta{}, fallbackErr
 		}
 		meta.SourceURL = fallbackURL
+		if len(boards) == 0 {
+			return nil, foundation.SourceMeta{}, fmt.Errorf("eastmoney bkzj returned no boards")
+		}
+		sort.SliceStable(boards, func(i, j int) bool { return boards[i].MainNetInflow > boards[j].MainNetInflow })
 		items := make([]foundation.MarketFundFlow, 0, min(limit, len(boards)))
 		for _, board := range boards {
 			if len(items) >= limit {
@@ -292,7 +375,7 @@ func (c *Client) MarketFundFlows(ctx context.Context, dimension string, sortKey 
 		}
 		return items, meta, nil
 	}
-	meta := foundation.SourceMeta{Source: "eastmoney:fund-flow", SourceURL: requestURL, AvailableFields: eastmoneyFundFlowFields, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds()}
+	meta := foundation.SourceMeta{Source: "eastmoney:fund-flow", SourceURL: requestURL, AvailableFields: eastmoneyFundFlowFields, FieldsKnown: true, RequestedSort: sortKey, EffectiveSort: sortKey, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds()}
 	items := make([]foundation.MarketFundFlow, 0, len(payload.Data.Diff))
 	for _, raw := range payload.Data.Diff {
 		code := asString(raw["f12"])
@@ -306,11 +389,14 @@ func (c *Client) MarketFundFlows(ctx context.Context, dimension string, sortKey 
 				symbol = normalized
 			}
 		}
+		itemMeta := meta
+		itemMeta.Provider, itemMeta.NativeCode = "eastmoney", code
+		itemMeta.AvailableFields = marketNumericFields(raw, map[string]string{"f2": "price", "f3": "change_percent", "f62": "main_net_inflow", "f184": "main_net_inflow_ratio", "f66": "super_large_net_inflow", "f69": "super_large_net_inflow_ratio", "f72": "large_net_inflow", "f75": "large_net_inflow_ratio", "f78": "medium_net_inflow", "f81": "medium_net_inflow_ratio", "f84": "small_net_inflow", "f87": "small_net_inflow_ratio"})
 		items = append(items, foundation.MarketFundFlow{
 			Dimension: dimension, Code: code, Symbol: symbol, Name: name, Price: asFloat(raw["f2"]), ChangePercent: asFloat(raw["f3"]),
 			MainNetInflow: asFloat(raw["f62"]), MainNetInflowRatio: asFloat(raw["f184"]), SuperLargeNet: asFloat(raw["f66"]), SuperLargeRatio: asFloat(raw["f69"]),
 			LargeNet: asFloat(raw["f72"]), LargeRatio: asFloat(raw["f75"]), MediumNet: asFloat(raw["f78"]), MediumRatio: asFloat(raw["f81"]),
-			SmallNet: asFloat(raw["f84"]), SmallRatio: asFloat(raw["f87"]), Meta: meta,
+			SmallNet: asFloat(raw["f84"]), SmallRatio: asFloat(raw["f87"]), Meta: itemMeta,
 		})
 	}
 	return items, meta, nil
@@ -798,6 +884,55 @@ func (c *Client) MarketReports(ctx context.Context, kind string, query string, s
 	return items, meta, nil
 }
 
+// bkzj exposes f62 main-net inflow only; missing or placeholder f62 is not a
+// valid zero. Do not consume another dimension or infer total-flow semantics.
+func (c *Client) fetchMarketFundFlowBoards(ctx context.Context, code string, meta foundation.SourceMeta) ([]foundation.Board, string, error) {
+	params := url.Values{"key": {"f62"}, "code": {code}}
+	requestURL := c.dataBaseURL + "/dataapi/bkzj/getbkzj?" + params.Encode()
+	var payload struct {
+		RC   int `json:"rc"`
+		Data struct {
+			Diff []map[string]any `json:"diff"`
+		} `json:"data"`
+	}
+	if err := c.getJSONWithRetry(ctx, requestURL, &payload); err != nil {
+		return nil, requestURL, err
+	}
+	if payload.RC != 0 {
+		return nil, requestURL, fmt.Errorf("eastmoney bkzj rc=%d", payload.RC)
+	}
+	boards := make([]foundation.Board, 0, len(payload.Data.Diff))
+	for _, raw := range payload.Data.Diff {
+		n, err := strconv.ParseFloat(asString(raw["f62"]), 64)
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) || asString(raw["f12"]) == "" {
+			continue
+		}
+		boards = append(boards, foundation.Board{Code: asString(raw["f12"]), Name: asString(raw["f14"]), MainNetInflow: n, Meta: meta})
+	}
+	return boards, requestURL, nil
+}
+
+func industryScoreInputsAvailable(meta foundation.SourceMeta) bool {
+	for _, field := range []string{"change_percent", "five_day_change_percent", "twenty_day_change_percent", "main_net_inflow", "rising_count", "falling_count"} {
+		if !foundation.FieldAvailable(meta, field) {
+			return false
+		}
+	}
+	return true
+}
+
+func marketNumericFields(raw map[string]any, fields map[string]string) []string {
+	result := make([]string, 0, len(fields))
+	for key, field := range fields {
+		n, err := strconv.ParseFloat(asString(raw[key]), 64)
+		if err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) {
+			result = append(result, field)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
 func standardListParams(limit int) url.Values {
 	params := url.Values{}
 	params.Set("pn", "1")
@@ -811,6 +946,10 @@ func standardListParams(limit int) url.Values {
 }
 
 func findMarketIndex(id string) (marketIndexDefinition, bool) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "nasdaq" || id == "ndx" {
+		id = "nasdaq100"
+	}
 	for _, item := range marketIndexCatalog {
 		if item.ID == strings.ToLower(strings.TrimSpace(id)) {
 			return item, true
@@ -856,6 +995,9 @@ func asFloat(value any) float64 {
 		return float64(typed)
 	case string:
 		parsed, _ := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+			return 0
+		}
 		return parsed
 	case fmt.Stringer:
 		parsed, _ := strconv.ParseFloat(typed.String(), 64)

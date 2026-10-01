@@ -430,7 +430,11 @@ func analyzeShortTerm(symbol string, lines []foundation.KLine, events []foundati
 	sort.SliceStable(matching, func(i, j int) bool { return matching[i].Date.Before(matching[j].Date) })
 	latestStreak := 0
 	latestOpenCount := 0
-	latestTurnover := lines[len(lines)-1].TurnoverRate
+	latestTurnover := 0.0
+	latestLine := lines[len(lines)-1]
+	if validKLineField(latestLine.Meta, "turnover_rate", latestLine.TurnoverRate) {
+		latestTurnover = latestLine.TurnoverRate
+	}
 	if len(matching) > 0 {
 		latest := matching[len(matching)-1]
 		latestStreak = latest.Streak
@@ -447,6 +451,8 @@ func analyzeShortTerm(symbol string, lines []foundation.KLine, events []foundati
 	avgAmount := averageKLineAmount(lines, 20)
 	tradability := "一般"
 	switch {
+	case avgAmount <= 0:
+		tradability = "流动性未确认"
 	case avgAmount >= 2_000_000_000 && latestTurnover >= 3:
 		tradability = "容量充足"
 	case avgAmount >= 500_000_000:
@@ -462,7 +468,9 @@ func analyzeShortTerm(symbol string, lines []foundation.KLine, events []foundati
 		reasons = append(reasons, fmt.Sprintf("最近一次涨停开板%d次，需观察回封承接", latestOpenCount))
 	}
 	if avgAmount >= 1_000_000_000 {
-		reasons = append(reasons, fmt.Sprintf("近20日平均成交额%.1f亿元", avgAmount/100_000_000))
+		reasons = append(reasons, fmt.Sprintf("近20日有效样本平均成交额%.1f亿元", avgAmount/100_000_000))
+	} else if avgAmount <= 0 {
+		reasons = append(reasons, "历史成交额未提供或无有效样本，流动性与容量未确认，不能按0成交额评价")
 	}
 
 	return ShortTermAnalysis{
@@ -991,9 +999,9 @@ func compactDailyBars(lines []foundation.KLine, limit int) []AIDailyBar {
 			High:          round2(line.High),
 			Low:           round2(line.Low),
 			Close:         round2(line.Close),
-			Volume:        line.Volume,
-			Amount:        line.Amount,
-			TurnoverRate:  round2(line.TurnoverRate),
+			Volume:        availableKLineValue(line.Meta, "volume", line.Volume),
+			Amount:        availableKLineValue(line.Meta, "amount", line.Amount),
+			TurnoverRate:  round2(availableKLineValue(line.Meta, "turnover_rate", line.TurnoverRate)),
 			ChangePercent: round2(line.ChangePercent),
 		})
 	}
@@ -1141,6 +1149,7 @@ func buildEvidence(input Input, profile Profile, trend TrendAnalysis, short Shor
 
 func buildDataQuality(input Input, profile Profile, lines []foundation.KLine, short ShortTermAnalysis, theme ThemeAnalysis, market *MarketContext, relative RelativeStrength, fundamental *FundamentalAnalysis, research *ResearchAnalysis, stockNews *NewsAnalysis, themeNews *NewsAnalysis) []DataQuality {
 	quality := []DataQuality{{Key: "kline", Status: "ready", Message: fmt.Sprintf("已读取%d个交易日K线", len(lines))}}
+	quality = append(quality, historicalFieldQuality(lines, 20)...)
 	if input.Quote.Price > 0 {
 		quality = append(quality, DataQuality{Key: "quote", Status: "ready", Message: "实时行情已接入"})
 	} else {
@@ -1424,11 +1433,56 @@ func averageKLineAmount(lines []foundation.KLine, window int) float64 {
 	start := max(len(lines)-window, 0)
 	values := make([]float64, 0, len(lines)-start)
 	for _, line := range lines[start:] {
-		if line.Amount > 0 {
+		if validKLineField(line.Meta, "amount", line.Amount) {
 			values = append(values, line.Amount)
 		}
 	}
 	return average(values)
+}
+
+// Legacy providers with no field mask may still supply real positive values.
+// Explicit masks always take precedence over a populated numeric placeholder.
+func validKLineField(meta foundation.SourceMeta, field string, value float64) bool {
+	return foundation.FieldAvailable(meta, field) && finite(value) && value > 0
+}
+
+func availableKLineValue(meta foundation.SourceMeta, field string, value float64) float64 {
+	if !foundation.FieldAvailable(meta, field) || !finite(value) {
+		return 0
+	}
+	return value
+}
+
+func historicalFieldQuality(lines []foundation.KLine, window int) []DataQuality {
+	lines = lines[max(0, len(lines)-window):]
+	quality := make([]DataQuality, 0, 2)
+	for _, field := range []struct{ key, label, caution string }{
+		{"amount", "成交额", "不能按0成交额评价流动性或容量；缺额时竞价与9:35成交额阈值不可用"},
+		{"turnover_rate", "换手率", "不能按0换手评价交易活跃度；涨停事件换手不替代历史日K换手"},
+	} {
+		count := 0
+		for _, line := range lines {
+			value := line.Amount
+			if field.key == "turnover_rate" {
+				value = line.TurnoverRate
+			}
+			if validKLineField(line.Meta, field.key, value) {
+				count++
+			}
+		}
+		key := "historical_amount"
+		if field.key == "turnover_rate" {
+			key = "historical_turnover"
+		}
+		status := "ready"
+		message := fmt.Sprintf("最近%d个交易日有%d个有效正值%s样本", len(lines), count, field.label)
+		if count < len(lines) || count == 0 {
+			status = "limited"
+			message += "，缺失/无有效值不是有效0；" + field.caution
+		}
+		quality = append(quality, DataQuality{Key: key, Status: status, Message: message})
+	}
+	return quality
 }
 
 func averageTail(values []float64, window int) float64 {

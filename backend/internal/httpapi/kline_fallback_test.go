@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -25,18 +26,16 @@ func fallbackTestServer(primary, fallback KLineProvider) *Server {
 }
 
 func fallbackTestBars() []foundation.KLine {
-	return []foundation.KLine{{Symbol: "000002.SZ", Time: time.Now(), Close: 4.26, Meta: foundation.SourceMeta{Source: "sina", FetchedAt: time.Now()}}}
+	return []foundation.KLine{{Symbol: "000002.SZ", Time: time.Now(), Open: 4.1, High: 4.3, Low: 4, Close: 4.26, Meta: foundation.SourceMeta{Source: "sina", FetchedAt: time.Now()}}}
 }
 
 func TestKLineEmptyPrimaryUsesHealthyFallback(t *testing.T) {
 	for _, body := range []string{`{"rc":0,"data":null}`, `{"rc":0,"data":{"klines":[]}}`} {
 		t.Run(body, func(t *testing.T) {
-			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(body))
-			}))
-			defer primary.Close()
 			calls := 0
-			server := fallbackTestServer(eastmoney.NewClient(eastmoney.WithBaseURL(primary.URL)), klineProviderFunc(func(context.Context, string, string, int) ([]foundation.KLine, error) {
+			server := fallbackTestServer(klineProviderFunc(func(context.Context, string, string, int) ([]foundation.KLine, error) {
+				return nil, fmt.Errorf("%w: empty primary", foundation.ErrPriceNoData)
+			}), klineProviderFunc(func(context.Context, string, string, int) ([]foundation.KLine, error) {
 				calls++
 				return fallbackTestBars(), nil
 			}))
@@ -45,8 +44,8 @@ func TestKLineEmptyPrimaryUsesHealthyFallback(t *testing.T) {
 				t.Fatalf("lines=%+v err=%v fallback calls=%d", lines, err, calls)
 			}
 			items := server.sourceHealth.snapshot(time.Now())
-			if sourceByID(t, items, "eastmoney").Status != "degraded" || sourceByID(t, items, "sina").Status != "available" {
-				t.Fatalf("actual empty-primary failure and fallback success not observed: %+v", items)
+			if sourceByID(t, items, "eastmoney").Status != "unknown" || sourceByID(t, items, "sina").Status != "available" {
+				t.Fatalf("symbol no-data poisoned market health or fallback success lost: %+v", items)
 			}
 		})
 	}

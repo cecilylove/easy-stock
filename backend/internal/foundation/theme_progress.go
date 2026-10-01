@@ -19,8 +19,9 @@ type ThemeProgress struct {
 // SourceObservation is an internal, per-refresh fact; it is not part of the
 // response or persisted snapshot. Polling a progress result must not renew it.
 type SourceObservation struct {
-	Meta      SourceMeta
-	SourceID  string
-	AttemptAt time.Time
-	Failed    bool
+	Meta       SourceMeta
+	SourceID   string
+	Capability string
+	AttemptAt  time.Time
+	Failed     bool
 }

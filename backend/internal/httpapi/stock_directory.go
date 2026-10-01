@@ -49,7 +49,7 @@ func newStockDirectoryCache(ttl time.Duration) *stockDirectoryCache {
 	return &stockDirectoryCache{ttl: ttl}
 }
 
-func (c *stockDirectoryCache) load(ctx context.Context, provider StockDirectoryProvider) (stockDirectoryData, error) {
+func (c *stockDirectoryCache) load(ctx context.Context, provider StockDirectoryProvider, observers ...func([]foundation.StockCatalogEntry, error)) (stockDirectoryData, error) {
 	now := time.Now()
 	c.mu.Lock()
 	if !c.snapshot.expiresAt.IsZero() && now.Before(c.snapshot.expiresAt) {
@@ -78,6 +78,9 @@ func (c *stockDirectoryCache) load(ctx context.Context, provider StockDirectoryP
 		if len(flight.data.Stocks) == 0 {
 			err = errors.New("stock directory returned no stocks")
 		}
+	}
+	for _, observe := range observers {
+		observe(catalog, err)
 	}
 	if err != nil && len(stale.Stocks) > 0 {
 		stale.Stale = true
@@ -147,7 +150,18 @@ func (s *Server) stockDirectoryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	data, err := s.stockDirectories.load(ctx, s.stockDirectory)
+	data, err := s.stockDirectories.load(ctx, s.stockDirectory, func(catalog []foundation.StockCatalogEntry, loadErr error) {
+		if !shouldObserveFailure(ctx) {
+			return
+		}
+		if loadErr != nil {
+			s.sourceHealth.failure(s.stockDirectorySourceID, loadErr)
+			return
+		}
+		for _, item := range catalog {
+			s.sourceHealth.success(item.Meta)
+		}
+	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

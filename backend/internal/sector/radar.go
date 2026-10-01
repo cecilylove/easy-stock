@@ -164,7 +164,10 @@ func (p *RadarProvider) buildIndustrySnapshot(ctx context.Context, themeID strin
 	} else {
 		fallbackErr = fmt.Errorf("sector map fallback is unavailable")
 	}
-	if p.industryStocks != nil && industry.Code != "" {
+	industry = normalizeRadarIndustryRef(industry)
+	// Native identities must never be sent to a different supplier. In
+	// particular, EastMoney BK codes are not Tencent board_code values.
+	if p.industryStocks != nil && industry.Provider == "tencent" && industry.Dimension == "industry" && strings.HasPrefix(industry.Code, "pt") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -175,7 +178,7 @@ func (p *RadarProvider) buildIndustrySnapshot(ctx context.Context, themeID strin
 	}
 	wg.Wait()
 
-	if fallbackErr != nil {
+	if fallbackErr != nil || len(result.Groups) == 0 || len(result.Groups[0].Nodes) == 0 {
 		result = emptyIndustrySectorMap(themeID, industry, p.now())
 	}
 	if industryStockErr == nil && len(industryStocks) > 0 {
@@ -203,44 +206,49 @@ func mergeIndustryConstituents(industryCode string, stocks []foundation.BoardSto
 		return
 	}
 	node := &result.Groups[0].Nodes[0]
-	authoritativeExisting := strings.Contains(node.StockSource, "board-constituents") || strings.Contains(node.StockSource, "stock-selection")
-	merged := make([]foundation.BoardStock, 0, len(stocks)+len(node.Stocks))
-	exactSymbols := make(map[string]struct{}, len(stocks))
-	for _, stock := range stocks {
-		exactSymbols[stock.Symbol] = struct{}{}
-		merged = mergeBoardStock(merged, stock)
-	}
-	for _, stock := range node.Stocks {
-		_, exact := exactSymbols[stock.Symbol]
-		if authoritativeExisting || exact {
-			merged = mergeBoardStock(merged, stock)
+	// Catalog/name matches and other suppliers' members are a separate set.
+	// Never union them into the native Tencent classification, even when the
+	// display names happen to match.
+	if len(node.Stocks) > 0 && (strings.Contains(node.StockSource, "stock-selection") || strings.Contains(node.StockSource, "board-constituents")) {
+		candidate := *node
+		candidate.ID = "industry_candidates"
+		candidate.Name += " · 关联候选"
+		candidate.Stocks = append([]foundation.BoardStock(nil), node.Stocks...)
+		candidate.MemberSet = &foundation.MemberSetMeta{Kind: "candidate", Returned: len(candidate.Stocks), Scope: "related_candidates", Method: "catalog_or_cross_provider_mapping"}
+		if candidate.BoardRef != nil {
+			candidate.MemberSet.BoardRef = *candidate.BoardRef
 		}
+		candidate.Warnings = append(append([]string(nil), node.Warnings...), "关联候选不代表腾讯行业完整成分。")
+		result.Groups = append(result.Groups, foundation.SectorMapGroup{ID: "industry_candidates", Name: "关联候选", Nodes: []foundation.SectorMapNode{candidate}})
+		// append may reallocate Groups, so reacquire the native node address.
+		node = &result.Groups[0].Nodes[0]
 	}
-	node.Stocks = merged
-	if authoritativeExisting {
-		if !strings.Contains(node.StockSource, meta.Source) {
-			node.StockSource += "+" + meta.Source
-		}
-	} else {
-		node.StockSource = meta.Source
-	}
+	node.Stocks = uniqueBoardStocks(stocks)
+	node.StockSource = meta.Source
+	node.MemberSet = meta.MemberSet
+	node.BoardRef = &foundation.BoardRef{Provider: "tencent", NativeCode: industryCode, Dimension: "industry", Name: node.Name}
+	node.BoardCode, node.BoardName, node.BoardSource = industryCode, node.Name, meta.Source
+	// Native constituents do not supply a board-level capital-flow measure.
+	// Keep the prior provider's measure only on the separate candidate node.
+	node.MainNetInflow = 0
+	node.ChangePercent = averageChangePercent(node.Stocks)
 	node.MatchStatus = "matched"
-	node.MatchedBy = append(node.MatchedBy, "tencent-code:"+industryCode)
+	node.MatchedBy = []string{"tencent-code:" + industryCode}
 	warnings := node.Warnings[:0]
 	for _, warning := range node.Warnings {
-		if warning == "未获取到股票行情" || strings.Contains(warning, "行业成分股暂不可用") {
+		if warning == "未获取到股票行情" || strings.Contains(warning, "行业成分股暂不可用") || strings.Contains(warning, "关联候选不代表") {
 			continue
 		}
 		warnings = append(warnings, warning)
 	}
 	node.Warnings = warnings
-	if fallbackOnly || !authoritativeExisting {
+	if fallbackOnly || len(result.Groups) == 1 {
 		node.Warnings = append(node.Warnings, "东方财富行业成分暂不可用，已使用腾讯行业成分。")
-		result.Meta.FallbackReason = "东方财富行业成分暂不可用，已使用腾讯行业成分"
-		result.Meta.Source = meta.Source
-	} else if meta.Source != "" && !strings.Contains(result.Meta.Source, meta.Source) {
-		result.Meta.Source = strings.Trim(strings.TrimSpace(result.Meta.Source)+"+"+meta.Source, "+")
 	}
+	if meta.MemberSet != nil && !meta.MemberSet.Complete {
+		node.Warnings = append(node.Warnings, "腾讯行业成分为部分集合，不代表完整行业；请核对已返回数量与源总数。")
+	}
+	result.Meta = meta
 }
 
 func (p *RadarProvider) addIndustryLeaderFallback(ctx context.Context, leader radarIndustryLeader, result *foundation.SectorMap, warning string) {
@@ -271,6 +279,7 @@ func (p *RadarProvider) addIndustryLeaderFallback(ctx context.Context, leader ra
 	node.MatchStatus = "matched"
 	node.MatchedBy = append(node.MatchedBy, "industry-leader")
 	node.Warnings = append(node.Warnings, warning)
+	node.MemberSet = &foundation.MemberSetMeta{Kind: "leader", Returned: len(node.Stocks), Scope: "known_leaders", Method: "industry_rank_leader"}
 }
 
 func (p *RadarProvider) rememberIndustryLeaders(items []foundation.MarketIndustryMomentum) {
@@ -279,7 +288,7 @@ func (p *RadarProvider) rememberIndustryLeaders(items []foundation.MarketIndustr
 		if item.LeaderSymbol == "" {
 			continue
 		}
-		leaders[radarIndustryThemeID(item.Code, item.Name)] = radarIndustryLeader{
+		leaders[radarIndustryRefID(radarIndustryRefFromMomentum(item))] = radarIndustryLeader{
 			Symbol: item.LeaderSymbol, Name: item.LeaderName, ChangePercent: item.LeaderChangePercent,
 		}
 	}
@@ -291,10 +300,18 @@ func (p *RadarProvider) rememberIndustryLeaders(items []foundation.MarketIndustr
 func (p *RadarProvider) industryLeader(themeID string) radarIndustryLeader {
 	p.industryLeaderMu.RLock()
 	defer p.industryLeaderMu.RUnlock()
-	return p.industryLeaders[themeID]
+	if leader, ok := p.industryLeaders[themeID]; ok {
+		return leader
+	}
+	if ref, ok := parseRadarIndustryThemeID(themeID); ok {
+		return p.industryLeaders[radarIndustryRefID(ref)]
+	}
+	return radarIndustryLeader{}
 }
 
 func emptyIndustrySectorMap(themeID string, industry radarIndustryThemeRef, now time.Time) foundation.SectorMap {
+	industry = normalizeRadarIndustryRef(industry)
+	ref := foundation.BoardRef{Provider: industry.Provider, NativeCode: industry.Code, Dimension: industry.Dimension, Name: industry.Name}
 	return foundation.SectorMap{
 		Theme:     themeID,
 		Name:      industry.Name,
@@ -302,7 +319,7 @@ func emptyIndustrySectorMap(themeID string, industry radarIndustryThemeRef, now 
 		ThemeTabs: []foundation.SectorMapTab{{ID: themeID, Name: industry.Name}},
 		Groups: []foundation.SectorMapGroup{{
 			ID: "industry_members", Name: industry.Name,
-			Nodes: []foundation.SectorMapNode{{ID: "industry_core", Name: industry.Name, Description: "依据行业趋势强度对应的行业归属筛选成分股。", Stocks: []foundation.BoardStock{}}},
+			Nodes: []foundation.SectorMapNode{{ID: "industry_core", Name: industry.Name, BoardRef: &ref, MemberSet: &foundation.MemberSetMeta{Kind: "native", BoardRef: ref, Scope: "unavailable", Method: "native_board_code"}, Description: "依据行业趋势强度对应的行业归属筛选成分股。", Stocks: []foundation.BoardStock{}}},
 		}},
 		Meta: foundation.SourceMeta{Source: radarIndustrySource, FetchedAt: now, FallbackReason: "行业成分映射暂不可用"},
 	}
@@ -332,12 +349,9 @@ func (p *RadarProvider) buildFusionSnapshot(
 	result.ThemeTabs = []foundation.SectorMapTab{{ID: themeID, Name: result.Name}}
 	result.Meta.Source = radarFusionSource
 
-	if p.fallback == nil {
-		appendKaipanlaWarning(&result, "行业成分股映射暂不可用。")
-		return result, nil
-	}
-	industryID := radarIndustryThemeID(fusion.IndustryCode, fusion.IndustryName)
-	industryMap, industryErr := p.fallback.Build(ctx, industryID)
+	industryRef := fusion.industryRef()
+	industryID := radarIndustryRefID(industryRef)
+	industryMap, industryErr := p.buildIndustrySnapshot(ctx, industryID, industryRef, p.industryLeader(industryID))
 	if industryErr != nil {
 		appendKaipanlaWarning(&result, fmt.Sprintf("行业“%s”成分股映射失败：%s", fusion.IndustryName, industryErr.Error()))
 		return result, nil
@@ -455,6 +469,8 @@ func (p *RadarProvider) buildKaipanla(ctx context.Context, themeID string, snaps
 				BoardCode:      theme.Code,
 				BoardName:      theme.Name,
 				BoardSource:    duanxianxia.SourceID,
+				BoardRef:       &foundation.BoardRef{Provider: "duanxianxia", NativeCode: theme.Code, Dimension: "theme", Name: theme.Name},
+				MemberSet:      &foundation.MemberSetMeta{Kind: "leader", Returned: len(stocks), Scope: "known_leaders", Method: "kaipanla_leader_rank", BoardRef: foundation.BoardRef{Provider: "duanxianxia", NativeCode: theme.Code, Dimension: "theme", Name: theme.Name}},
 				ChangePercent:  changePercent,
 				Stocks:         stocks,
 				StockSource:    duanxianxia.SourceID,

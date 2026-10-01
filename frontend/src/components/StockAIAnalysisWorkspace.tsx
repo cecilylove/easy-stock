@@ -70,6 +70,7 @@ import {
 	signedPercent,
 } from '../lib/stock-analysis';
 import { useStockResearch } from '../lib/use-stock-research';
+import { sourceName } from '../lib/source-integrations';
 import { loadCachedStockDirectory, saveCachedStockDirectory } from '../lib/stock-directory-cache';
 import { isResearchRunning, researchPlanText, type ResearchAnalysisLevel, type ResearchRequest } from '../lib/stock-research';
 import { StockResearchHistory, StockResearchOptions, StockResearchProgress, StockResearchReportView } from './StockResearchReport';
@@ -503,11 +504,11 @@ function HotStockSidebar({ data, state, error, activeSymbol, collapsed, onToggle
 			});
 	}, [data?.stocks, filter, query]);
 	const filters: Array<{ id: 'all' | HotStockRankSource; label: string; count: number; disabled?: boolean; title?: string }> = [
-		{ id: 'all', label: '并集', count: data?.total || 0 },
-		...(data?.sources || []).map((source) => ({ id: source.id, label: source.id === 'ths' ? '同花顺' : '东方财富', count: source.count, disabled: !source.available, title: source.error })),
+		{ id: 'all', label: '全部', count: data?.total || 0 },
+		...(data?.sources || []).map((source) => ({ id: source.id, label: source.name || sourceName(source.id), count: source.count, disabled: !source.available, title: source.error })),
 	];
 	if (collapsed) {
-		return <aside className="stock-hot-sidebar is-collapsed" aria-label="同花顺和东方财富人气股">
+		return <aside className="stock-hot-sidebar is-collapsed" aria-label="人气股榜单">
 			<div className="stock-hot-collapsed">
 				<span className="stock-hot-icon" title="人气股"><Flame size={17} /></span>
 				<button type="button" onClick={onToggle} title="展开人气股" aria-label="展开人气股" aria-expanded="false"><ChevronRight size={16} /></button>
@@ -515,10 +516,10 @@ function HotStockSidebar({ data, state, error, activeSymbol, collapsed, onToggle
 		</aside>;
 	}
 	return (
-		<aside className="stock-hot-sidebar" aria-label="同花顺和东方财富人气股">
+		<aside className="stock-hot-sidebar" aria-label="人气股榜单">
 			<header>
 				<span className="stock-hot-icon"><Flame size={17} /></span>
-				<div><strong>人气股</strong><small>同花顺 · 东方财富</small></div>
+				<div><strong>人气股</strong><small>{data?.sources.length ? data.sources.map(source => source.name || sourceName(source.id)).join(' · ') : '同花顺 · 东方财富'}</small></div>
 				<em>{data?.total || '--'}</em>
 				<button type="button" onClick={onRefresh} disabled={state === 'loading'} title="刷新人气股" aria-label="刷新人气股"><RefreshCw className={state === 'loading' ? 'spin' : ''} size={14} /></button>
 				<button type="button" onClick={onToggle} title="收拢人气股" aria-label="收拢人气股" aria-expanded="true"><ChevronLeft size={16} /></button>
@@ -533,7 +534,7 @@ function HotStockSidebar({ data, state, error, activeSymbol, collapsed, onToggle
 				{state !== 'loading' && data && stocks.length === 0 && <div className="stock-hot-empty"><FileSearch size={18} /><strong>没有匹配股票</strong></div>}
 				{stocks.map(({ stock, unionIndex }) => <HotStockRow stock={stock} index={unionIndex} active={stock.symbol === activeSymbol} onSelect={onSelect} key={stock.symbol} />)}
 			</div>
-			{data && <footer><span>{data.stale ? '缓存快照' : '实时人气榜'}</span><time>{formatHotRankTime(data.updated_at)}</time></footer>}
+			{data && <footer><span>{data.stale ? '历史榜单快照' : '最近人气榜快照'}</span><time>{formatHotRankTime(data.updated_at)}</time></footer>}
 		</aside>
 	);
 }

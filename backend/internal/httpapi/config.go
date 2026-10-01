@@ -29,6 +29,11 @@ type KLineProvider interface {
 	KLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error)
 }
 
+// AdjustedKLineProvider promises only its own supplier's adjustment convention.
+type AdjustedKLineProvider interface {
+	KLineAdjusted(context.Context, string, string, int, string) ([]foundation.KLine, error)
+}
+
 type NewsProvider interface {
 	LatestNews(ctx context.Context, limit int) ([]foundation.NewsItem, error)
 }
@@ -114,6 +119,7 @@ type Config struct {
 	Auction              AuctionProvider
 	KLinePrimary         KLineProvider
 	KLineFallback        KLineProvider
+	KLineStrictTencent   AdjustedKLineProvider
 	News                 NewsProvider
 	SectorMap            SectorMapProvider
 	ThemeOverview        ThemeOverviewProvider
@@ -126,6 +132,7 @@ type Config struct {
 	HotStocks            HotStockProvider
 	FuturesPosition      FuturesPositionProvider
 	MarketOverview       MarketOverviewProvider
+	SourceProbeProviders *SourceProbeProviders
 	Inflection           InflectionEvaluator
 	ReviewDBPath         string
 	PortfolioDBPath      string

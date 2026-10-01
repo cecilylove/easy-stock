@@ -67,13 +67,16 @@ func (c *Client) USSectorMomentum(ctx context.Context, limit int) ([]foundation.
 		if len(fields) < 33 {
 			continue
 		}
+		itemMeta := meta
+		itemMeta.TimeZone = "unknown"
+		itemMeta.NativeTimestamp = fieldAt(fields, 30)
 		items = append(items, foundation.MarketUSSectorMomentum{
 			ProxySymbol:   definition.Symbol,
 			Name:          definition.Name,
 			Price:         parseFloat(fieldAt(fields, 3)),
 			ChangePercent: parseFloat(fieldAt(fields, 32)),
-			TradeTime:     parseTencentTradeTime(fieldAt(fields, 30)),
-			Meta:          meta,
+			// Feed wall-clock lacks an offset; do not fabricate an instant.
+			Meta: itemMeta,
 		})
 	}
 	if len(items) == 0 {

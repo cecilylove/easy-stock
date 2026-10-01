@@ -16,6 +16,7 @@ type adjustedTestProvider struct {
 	period     string
 	limit      int
 	err        error
+	source     string
 }
 
 func (p *adjustedTestProvider) KLine(context.Context, string, string, int) ([]foundation.KLine, error) {
@@ -26,12 +27,16 @@ func (p *adjustedTestProvider) KLineAdjusted(_ context.Context, symbol, period s
 	if p.err != nil {
 		return nil, p.err
 	}
-	return []foundation.KLine{annualTestMonth("2026-09-30", 10, 11, 9, 10.5, 100)}, nil
+	bar := annualTestMonth("2026-09-30", 10, 11, 9, 10.5, 100)
+	bar.Symbol = symbol
+	bar.Meta.Source = firstNonEmpty(p.source, "tencent:stock-kline")
+	bar.Meta.EffectiveAdjustment = adjustment
+	return []foundation.KLine{bar}, nil
 }
 func TestExplicitAdjustmentDoesNotSilentlySwitchFallback(t *testing.T) {
 	primary := &adjustedTestProvider{err: errors.New("fixture source unavailable")}
 	fallbackCalled := false
-	server := NewServer(Config{KLinePrimary: primary, KLineFallback: klineProviderFunc(func(context.Context, string, string, int) ([]foundation.KLine, error) {
+	server := NewServer(Config{KLinePrimary: primary, KLineStrictTencent: primary, KLineFallback: klineProviderFunc(func(context.Context, string, string, int) ([]foundation.KLine, error) {
 		fallbackCalled = true
 		return fallbackTestBars(), nil
 	})})

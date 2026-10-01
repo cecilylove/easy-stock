@@ -116,7 +116,7 @@ Electron 会自动选择本机空闲端口、生成一次性 Token，并启动 G
 backend/                 Go 数据基座、领域模型、Provider、HTTP/WebSocket API
   cmd/server/            后端入口
   internal/foundation/   通用行情模型、股票代码规范化和来源元数据
-  internal/providers/    东方财富、新浪、财联社、短线侠等数据源
+  internal/providers/    东方财富、新浪、腾讯、财联社、短线侠、同花顺与中金所数据源
   internal/httpapi/      API 路由、缓存、鉴权和业务编排
   internal/stockanalysis 个股多路径分析引擎
   docs/                  后端架构、API、数据源和专项设计文档
@@ -350,4 +350,4 @@ tail -f .runtime/backend.log
 
 ### 行情或题材数据暂时为空
 
-先查看页面显示的来源、更新时间和降级信息，再检查 [数据源文档](../backend/docs/data-sources.md)。东方财富、新浪、财联社和短线侠等公共接口可能临时限流或调整字段。
+先查看页面实际来源、数据时间和降级信息，再到设置中查看最近业务观测或点击“刷新检测”，并参考 [数据源文档](../backend/docs/data-sources.md)。东方财富、新浪、腾讯等公共接口可能临时限流或调整字段；检测只验证代表接口，专属能力没有备用时仍可能不可用。

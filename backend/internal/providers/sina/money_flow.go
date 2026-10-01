@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -111,6 +112,9 @@ func (c *Client) StockFundFlows(ctx context.Context, sortKey string, limit int) 
 		if normalizeErr != nil {
 			continue
 		}
+		rowMeta := meta
+		rowMeta.FieldsKnown = true
+		rowMeta.AvailableFields = validMoneyFields(map[string]any{"price": raw.Trade, "change_percent": raw.ChangeRatio, "inflow": raw.Inflow, "outflow": raw.Outflow, "net_inflow": raw.NetInflow, "net_inflow_ratio": raw.NetRatio, "main_inflow": raw.MainInflow, "main_outflow": raw.MainOutflow, "main_net_inflow": raw.MainNet, "main_net_inflow_ratio": raw.MainRatio, "retail_inflow": raw.RetailIn, "retail_outflow": raw.RetailOut, "retail_net_inflow": raw.RetailNet, "retail_net_inflow_ratio": raw.RetailRatio})
 		items = append(items, foundation.MarketFundFlow{
 			Dimension: "stock", Code: normalized.RawCode, Symbol: normalized.Canonical, Name: name,
 			Price: parseSinaFloat(raw.Trade), ChangePercent: parseSinaFloat(raw.ChangeRatio) * 100,
@@ -120,7 +124,7 @@ func (c *Client) StockFundFlows(ctx context.Context, sortKey string, limit int) 
 			MainNetInflow: parseSinaFloat(raw.MainNet), MainNetInflowRatio: parseSinaFloat(raw.MainRatio) * 100,
 			RetailInflow: parseSinaFloat(raw.RetailIn), RetailOutflow: parseSinaFloat(raw.RetailOut),
 			RetailNetInflow: parseSinaFloat(raw.RetailNet), RetailNetRatio: parseSinaFloat(raw.RetailRatio) * 100,
-			Meta: meta,
+			Meta: rowMeta,
 		})
 		if len(items) >= limit {
 			break
@@ -179,6 +183,15 @@ func (c *Client) sectorFundFlows(ctx context.Context, dimension string, sortKey 
 		if normalized, err := foundation.NormalizeSymbol(leaderSymbol); err == nil {
 			leaderSymbol = normalized.Canonical
 		}
+		rowMeta := meta
+		rowMeta.FieldsKnown = true
+		rowMeta.AvailableFields = validMoneyFields(map[string]any{"price": raw.AveragePrice, "change_percent": raw.AverageChange, "inflow": raw.Inflow, "outflow": raw.Outflow, "net_inflow": raw.NetInflow, "net_inflow_ratio": raw.NetRatio, "leader_price": raw.LeaderPrice, "leader_change_percent": raw.LeaderChange, "leader_net_inflow_ratio": raw.LeaderNetRatio})
+		if leaderSymbol != "" {
+			rowMeta.AvailableFields = append(rowMeta.AvailableFields, "leader_symbol")
+		}
+		if sinaString(raw.LeaderName) != "" {
+			rowMeta.AvailableFields = append(rowMeta.AvailableFields, "leader_name")
+		}
 		items = append(items, foundation.MarketFundFlow{
 			Dimension: dimension, Code: sinaString(raw.Category), Name: name,
 			Price: parseSinaFloat(raw.AveragePrice), ChangePercent: parseSinaFloat(raw.AverageChange) * 100,
@@ -186,7 +199,7 @@ func (c *Client) sectorFundFlows(ctx context.Context, dimension string, sortKey 
 			NetInflow: parseSinaFloat(raw.NetInflow), NetInflowRatio: parseSinaFloat(raw.NetRatio) * 100,
 			LeaderSymbol: leaderSymbol, LeaderName: sinaString(raw.LeaderName), LeaderPrice: parseSinaFloat(raw.LeaderPrice),
 			LeaderChange: parseSinaFloat(raw.LeaderChange) * 100, LeaderNetRatio: parseSinaFloat(raw.LeaderNetRatio) * 100,
-			Meta: meta,
+			Meta: rowMeta,
 		})
 		if len(items) >= limit {
 			break
@@ -234,8 +247,22 @@ func isAStockMoneyFlowSymbol(symbol string) bool {
 	return false
 }
 
+func validMoneyFields(values map[string]any) []string {
+	fields := []string{}
+	for name, value := range values {
+		parsed, err := strconv.ParseFloat(sinaString(value), 64)
+		if err == nil && !math.IsNaN(parsed) && !math.IsInf(parsed, 0) {
+			fields = append(fields, name)
+		}
+	}
+	return fields
+}
+
 func parseSinaFloat(value any) float64 {
-	parsed, _ := strconv.ParseFloat(sinaString(value), 64)
+	parsed, err := strconv.ParseFloat(sinaString(value), 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0
+	}
 	return parsed
 }
 

@@ -12,6 +12,13 @@ import (
 
 var errDetailAuctionNotCurrent = errors.New("auction source has no current-day points")
 
+// A quote/order-book snapshot or executed minute bar cannot replace indicative
+// auction history. Keep the failure explicit until a same-semantic source is verified.
+func writeAuctionUnavailable(w http.ResponseWriter, symbol, source, reason string) {
+	meta := foundation.SourceMeta{Source: source, Capability: "auction-indicative", FallbackReason: reason, FieldsKnown: true}
+	writeJSON(w, http.StatusBadGateway, map[string]any{"error": reason, "status": "unavailable", "data": foundation.AuctionTrace{Symbol: symbol, Points: []foundation.AuctionPoint{}, Meta: meta}, "meta": meta})
+}
+
 func (s *Server) auctionTrace(w http.ResponseWriter, r *http.Request) {
 	if s.auctionProvider == nil {
 		writeError(w, http.StatusServiceUnavailable, "auction provider is unavailable")
@@ -37,7 +44,7 @@ func (s *Server) auctionTrace(w http.ResponseWriter, r *http.Request) {
 			return value, loadErr
 		})
 		if err != nil {
-			writeError(w, http.StatusBadGateway, "竞价上游行情暂时无响应")
+			writeAuctionUnavailable(w, symbol.Canonical, s.auctionSourceID, "竞价上游行情暂时无响应；暂无经验证的独立同语义备用源")
 			return
 		}
 		if stale {
@@ -54,7 +61,7 @@ func (s *Server) auctionTrace(w http.ResponseWriter, r *http.Request) {
 		if shouldObserveFailure(ctx) {
 			s.sourceHealth.failure(s.auctionSourceID, err)
 		}
-		writeError(w, http.StatusBadGateway, "竞价上游行情暂时无响应")
+		writeAuctionUnavailable(w, symbol.Canonical, s.auctionSourceID, "竞价上游行情暂时无响应；暂无经验证的独立同语义备用源")
 		return
 	}
 	if trace.Symbol != symbol.Canonical || len(trace.Points) == 0 || trace.TradeDate == "" {

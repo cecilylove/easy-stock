@@ -1,5 +1,6 @@
 import type { KLine } from './backend';
 import { shanghaiDayAndMinute } from './stock-intraday';
+import { priceBasis, sourceFieldAvailable, sourceVolumeInShares } from './source-fields';
 
 function sameBar(a: KLine, b: KLine) {
 	return a.symbol === b.symbol && a.time === b.time && a.open === b.open && a.high === b.high && a.low === b.low && a.close === b.close
@@ -15,7 +16,7 @@ export function reconcileChartLines(previous: KLine[], incoming: KLine[], intrad
 	const latest = ordered.at(-1)!;
 	const oldLatest = previous.at(-1);
 	const day = shanghaiDayAndMinute(latest.time)?.day;
-	const retain = intraday && oldLatest?.symbol === latest.symbol && oldLatest?.meta?.source === latest.meta?.source && shanghaiDayAndMinute(oldLatest.time)?.day === day;
+	const retain = intraday && oldLatest?.symbol === latest.symbol && oldLatest?.meta?.source === latest.meta?.source && priceBasis(oldLatest?.meta) === priceBasis(latest.meta) && shanghaiDayAndMinute(oldLatest.time)?.day === day;
 	const byTime = new Map<number, KLine>();
 	if (retain) for (const bar of previous) byTime.set(Date.parse(bar.time), bar);
 	for (const bar of ordered) {
@@ -33,6 +34,7 @@ export function intradayAveragePrices(lines: KLine[]): Array<number | null> {
 	let amount = 0, volume = 0, complete = true;
 	let unit: number | null = null;
 	return lines.map(line => {
+		if (!sourceFieldAvailable(line.meta, 'amount') || !sourceFieldAvailable(line.meta, 'volume')) complete = false;
 		if (!Number.isFinite(line.volume) || line.volume < 0 || !Number.isFinite(line.amount) || line.amount < 0 || (line.volume > 0 && line.amount <= 0)) complete = false;
 		if (!complete) return null;
 		amount += line.amount;
@@ -42,7 +44,11 @@ export function intradayAveragePrices(lines: KLine[]): Array<number | null> {
 		if (volume <= 0) return null;
 		const ratio = line.volume > 0 ? line.amount / line.volume : 0;
 		const fits = (price: number) => price >= line.low * .98 && price <= line.high * 1.02;
-		const shares = fits(ratio), lots = fits(ratio / 100);
+		const normalizedShares = sourceVolumeInShares(line.volume, line.meta);
+		const known = line.meta?.volume_unit;
+		const shares = known ? known === 'shares' && fits(ratio) : fits(ratio);
+		const lots = known ? known === 'lots' && fits(ratio / 100) : fits(ratio / 100);
+		if (known && normalizedShares == null) { complete = false; return null; }
 		if (line.volume > 0 && shares === lots) { complete = false; return null; }
 		if (line.volume > 0) {
 			const divisor = shares ? 1 : 100;

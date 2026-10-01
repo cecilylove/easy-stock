@@ -11,6 +11,33 @@ import (
 	"easy-stock/backend/internal/foundation"
 )
 
+func TestRequiredKLineValuesAndOptionalFieldPresence(t *testing.T) {
+	meta := foundation.SourceMeta{Source: "eastmoney"}
+	if _, err := parseKLine("2026-09-30,bad,bad,bad,bad,bad,bad", "000002.SZ", meta); err == nil {
+		t.Fatal("invalid required numbers accepted")
+	}
+	bar, err := parseKLine("2026-09-30,-2,-1,1,-3,100,1000,0,--,0,-", "000002.SZ", meta)
+	if err != nil || bar.Open != -2 || !bar.Meta.FieldsKnown || foundation.FieldAvailable(bar.Meta, "change_percent") || foundation.FieldAvailable(bar.Meta, "turnover_rate") {
+		t.Fatalf("adjusted price/mask: %+v %v", bar, err)
+	}
+}
+
+func TestEastMoneyRetryHonorsCancelledBudget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	defer upstream.Close()
+	client := NewClient(WithBaseURL(upstream.URL))
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := client.KLine(ctx, "000002.SZ", "day", 1)
+	if err == nil {
+		t.Fatal("timeout should fail")
+	}
+	if time.Since(start) > 200*time.Millisecond {
+		t.Fatalf("retry swallowed fallback budget: %v", time.Since(start))
+	}
+}
+
 func TestClientKLineParsesEastMoneyResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/qt/stock/kline/get" {

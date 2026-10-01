@@ -3,6 +3,7 @@ import type { KLine } from '../lib/backend';
 import { calculateIndicators, resolveChartWindow } from '../lib/technical-indicators';
 import { useChartViewport } from '../lib/use-chart-viewport';
 import { useChartBaseline, useExpandingChartValue } from '../lib/use-stable-chart-scale';
+import { sourceFieldAvailable, sourceVolumeInShares, priceBasis } from '../lib/source-fields';
 
 type Props = { lines: KLine[]; symbol: string; periodLabel: string; state: 'idle' | 'loading' | 'ready' | 'error' };
 type Indicator = 'MACD' | 'KDJ' | '无';
@@ -46,8 +47,13 @@ export function ProfessionalKLineChart({ lines, symbol, periodLabel, state }: Pr
 	const selection = selectedTime ? ordered.findIndex(line => line.time === selectedTime) : -1;
 	const selectedIndex = selection >= window.start && selection <= window.end ? selection : window.end;
 	const selected = ordered[selectedIndex];
-	const previous = ordered[selectedIndex - 1]?.close || selected?.previous_close;
-	const change = previous && selected ? (selected.close / previous - 1) * 100 : selected?.change_percent;
+	const previousLine = ordered[selectedIndex - 1];
+	const validPreviousClose = previousLine && sourceFieldAvailable(previousLine.meta, 'close') && Number.isFinite(previousLine.close) && previousLine.close > 0 ? previousLine.close : undefined;
+	const previous = previousLine ? validPreviousClose : (selected && sourceFieldAvailable(selected.meta, 'previous_close') && Number.isFinite(selected.previous_close) && selected.previous_close! > 0 ? selected.previous_close : undefined);
+	// Legal zero/negative adjusted prices remain drawable, but are not a valid
+	// percentage-return denominator. A supplier percentage needs its own mask.
+	const computedChange = selected && sourceFieldAvailable(selected.meta, 'close') && selected.close > 0 && previous !== undefined ? (selected.close / previous - 1) * 100 : undefined;
+	const change = Number.isFinite(computedChange) ? computedChange : selected && sourceFieldAvailable(selected.meta, 'change_percent') && Number.isFinite(selected.change_percent) ? selected.change_percent : undefined;
 	const [viewportHeight, setViewportHeight] = useState(() => typeof globalThis.innerHeight === 'number' ? globalThis.innerHeight : 943);
 	useEffect(() => { const resize = () => setViewportHeight(globalThis.innerHeight); globalThis.addEventListener('resize', resize); return () => globalThis.removeEventListener('resize', resize); }, []);
 	const height = Math.max(390, Math.min(680, viewportHeight - 450));
@@ -56,7 +62,7 @@ export function ProfessionalKLineChart({ lines, symbol, periodLabel, state }: Pr
 	const capacity = useExpandingChartValue(JSON.stringify([symbol, periodLabel, view.count]), Math.min(view.count, ordered.length), 20, 20, 1.08);
 	const plotWidth = width - left - right, slots = Math.min(view.count, capacity) + 3, step = plotWidth / slots;
 	const bodyWidth = Math.max(1, Math.min(16, step * .64));
-	const context = JSON.stringify([symbol, periodLabel, view.count, view.anchor, ordered.at(-1)?.meta?.source]);
+	const context = JSON.stringify([symbol, periodLabel, view.count, view.anchor, priceBasis(ordered.at(-1)?.meta)]);
 	const baseline = useChartBaseline(context, Math.max(Math.abs(visible[0]?.close || 1), .01), visible.length > 0);
 	const maPrices = showMA ? indicators.ma.flatMap(series => series.values.slice(window.start, window.end + 1).filter((value): value is number => value != null)) : [];
 	const lowRequired = Math.max(...visible.map(line => (1 - line.low / baseline) * 100), ...maPrices.map(value => (1 - value / baseline) * 100), 0);
@@ -123,7 +129,7 @@ export function ProfessionalKLineChart({ lines, symbol, periodLabel, state }: Pr
 			<label><input type="checkbox" checked={showMA} onChange={event => setShowMA(event.target.checked)} />MA 5/10/20/60</label>
 			<div className="chart-navigation"><button type="button" aria-label="向前查看历史K线" disabled={!hasData || window.start === 0} onClick={() => pan(-Math.max(1, Math.floor(view.count / 4)))}>←</button><button type="button" aria-label="缩小K线" disabled={!hasData || view.count >= 400} onClick={() => zoom(1.25)}>−</button><span>{view.count} 柱</span><button type="button" aria-label="放大K线" disabled={!hasData || view.count <= 10} onClick={() => zoom(.8)}>＋</button><button type="button" aria-label="向后查看K线" disabled={!hasData || view.anchor == null} onClick={() => pan(Math.max(1, Math.floor(view.count / 4)))}>→</button><button type="button" disabled={!hasData} onClick={() => { setView({ count: 80, anchor: null }); setSelectedTime(null); }}>回到最新</button></div>
 		</div>
-		<div className="chart-value-strip" aria-live="off"><strong>{selected ? dateText(selected.time, periodLabel) : periodLabel}</strong><span>开 {priceText(selected?.open)}</span><span>高 {priceText(selected?.high)}</span><span>低 {priceText(selected?.low)}</span><span>收 {priceText(selected?.close)}</span><span className={change != null && change >= 0 ? 'up' : 'down'}>涨幅 {change != null ? `${change.toFixed(2)}%` : '--'}</span><span>量 {selected ? amountText(selected.meta.source === 'eastmoney' ? selected.volume : selected.meta.source === 'sina' ? selected.volume / 100 : selected.volume) : '--'}（{selected?.meta.source === 'eastmoney' || selected?.meta.source === 'sina' ? '手' : '来源单位'}）</span></div>
+		<div className="chart-value-strip" aria-live="off"><strong>{selected ? dateText(selected.time, periodLabel) : periodLabel}</strong><span>开 {priceText(selected?.open)}</span><span>高 {priceText(selected?.high)}</span><span>低 {priceText(selected?.low)}</span><span>收 {priceText(selected?.close)}</span><span className={change == null ? '' : change >= 0 ? 'up' : 'down'}>涨幅 {change != null ? `${change.toFixed(2)}%` : '--'}</span><span>量 {selected ? amountText(sourceVolumeInShares(selected.volume, selected.meta) == null ? selected.volume : sourceVolumeInShares(selected.volume, selected.meta)! / 100) : '--'}（{selected && sourceVolumeInShares(selected.volume, selected.meta) != null ? '手' : '来源单位'}）</span></div>
 		{showMA && <div className="chart-ma-values">{indicators.ma.map((series, index) => <span key={series.period} style={{ color: colors[index] }}>MA{series.period}: {priceText(series.values[selectedIndex])}</span>)}</div>}
 		{!hasData ? <div className="kline-chart-placeholder">{state === 'loading' ? `正在加载${periodLabel}数据…` : state === 'error' ? `${periodLabel}数据暂不可用，请稍后重试。` : `暂无${periodLabel}数据。`}</div> : <>
 		{scrollable && <p className="stock-detail-chart-scroll-hint">左右滑动图表容器；触摸拖动查看历史。</p>}

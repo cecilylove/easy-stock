@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -205,14 +206,26 @@ func (c *Client) KLineAdjusted(ctx context.Context, symbol string, period string
 func (c *Client) getJSONWithRetry(ctx context.Context, requestURL string, target any) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if attempt > 0 {
-			time.Sleep(150 * time.Millisecond)
+			timer := time.NewTimer(150 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
 		}
 		err := c.getJSON(ctx, requestURL, target)
 		if err == nil {
 			return nil
 		}
 		lastErr = err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if !isTransient(err) {
 			return err
 		}
@@ -270,20 +283,34 @@ func parseKLine(raw string, symbol string, meta foundation.SourceMeta) (foundati
 	if err != nil {
 		return foundation.KLine{}, err
 	}
-	open, _ := strconv.ParseFloat(fields[1], 64)
-	closePrice, _ := strconv.ParseFloat(fields[2], 64)
-	high, _ := strconv.ParseFloat(fields[3], 64)
-	low, _ := strconv.ParseFloat(fields[4], 64)
-	volume, _ := strconv.ParseFloat(fields[5], 64)
-	amount, _ := strconv.ParseFloat(fields[6], 64)
-	changePercent := 0.0
-	if len(fields) > 8 {
-		changePercent, _ = strconv.ParseFloat(fields[8], 64)
+	numbers := make([]float64, 6)
+	for index := range numbers {
+		value, parseErr := strconv.ParseFloat(strings.TrimSpace(fields[index+1]), 64)
+		if parseErr != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			return foundation.KLine{}, fmt.Errorf("invalid eastmoney required kline number")
+		}
+		numbers[index] = value
 	}
-	turnover := 0.0
-	if len(fields) > 10 {
-		turnover, _ = strconv.ParseFloat(fields[10], 64)
+	open, closePrice, high, low, volume, amount := numbers[0], numbers[1], numbers[2], numbers[3], numbers[4], numbers[5]
+	if high < math.Max(open, closePrice) || low > math.Min(open, closePrice) || high < low || volume < 0 || amount < 0 {
+		return foundation.KLine{}, fmt.Errorf("invalid eastmoney OHLCV structure")
 	}
+	meta.FieldsKnown = true
+	meta.AvailableFields = []string{"open", "close", "high", "low", "volume", "amount"}
+	changePercent, turnover := 0.0, 0.0
+	optional := func(index int, name string) float64 {
+		if len(fields) <= index {
+			return 0
+		}
+		value, parseErr := strconv.ParseFloat(strings.TrimSpace(fields[index]), 64)
+		if parseErr != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			return 0
+		}
+		meta.AvailableFields = append(meta.AvailableFields, name)
+		return value
+	}
+	changePercent = optional(8, "change_percent")
+	turnover = optional(10, "turnover_rate")
 	return foundation.KLine{
 		Symbol:        symbol,
 		Time:          day,

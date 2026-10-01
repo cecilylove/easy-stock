@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -57,5 +58,48 @@ func TestStockDirectoryCachesNamesAndCodes(t *testing.T) {
 
 	if provider.calls.Load() != 1 {
 		t.Fatalf("catalog calls = %d, want one cached load", provider.calls.Load())
+	}
+}
+
+type observationDirectoryProvider struct{ fail bool }
+
+func (p *observationDirectoryProvider) StockCatalog(context.Context) ([]foundation.StockCatalogEntry, error) {
+	if p.fail {
+		return nil, errors.New("upstream offline")
+	}
+	return []foundation.StockCatalogEntry{{BoardStock: foundation.BoardStock{Symbol: "000002.SZ", Name: "万科A", Meta: foundation.SourceMeta{Source: "sina:stock-directory", FetchedAt: time.Now()}}}}, nil
+}
+
+func TestDirectoryObservesOnlyActualLoadAndRetainsFailureWithStaleCache(t *testing.T) {
+	provider := &observationDirectoryProvider{}
+	cache := newStockDirectoryCache(time.Hour)
+	health := newSourceHealthTracker()
+	observed := 0
+	observe := func(catalog []foundation.StockCatalogEntry, err error) {
+		observed++
+		if err != nil {
+			health.failure("sina", err)
+			return
+		}
+		for _, item := range catalog {
+			health.success(item.Meta)
+		}
+	}
+	_, err := cache.load(context.Background(), provider, observe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := sourceByID(t, health.snapshot(time.Now()), "sina")
+	_, err = cache.load(context.Background(), provider, observe)
+	second := sourceByID(t, health.snapshot(time.Now()), "sina")
+	if err != nil || observed != 1 || first.CheckedAt == nil || second.CheckedAt == nil || !second.CheckedAt.Equal(*first.CheckedAt) {
+		t.Fatalf("cache renewed observation: calls=%d first=%+v second=%+v err=%v", observed, first, second, err)
+	}
+	cache.snapshot.expiresAt = time.Now().Add(-time.Second)
+	provider.fail = true
+	data, err := cache.load(context.Background(), provider, observe)
+	entry := sourceByID(t, health.snapshot(time.Now()), "sina")
+	if err != nil || !data.Stale || len(data.Stocks) != 1 || observed != 2 || entry.Status != "degraded" {
+		t.Fatalf("stale failure concealed: data=%+v entry=%+v calls=%d err=%v", data, entry, observed, err)
 	}
 }

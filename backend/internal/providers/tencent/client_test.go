@@ -2,6 +2,8 @@ package tencent
 
 import (
 	"context"
+	"easy-stock/backend/internal/foundation"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,7 +17,9 @@ func TestClientParsesIndexSnapshotsAndSeries(t *testing.T) {
 			_, _ = w.Write([]byte(`{"code":0,"data":{"sh000001":{"day":[["2026-08-10","3943.82","3966.59","3967.59","3938.63","542118110"],["2026-08-11","3950.71","3934.09","3966.39","3930.64","529490944"]]}}}`))
 			return
 		}
-		_, _ = w.Write([]byte("v_s_sh000001=\"1~SSE~000001~3934.09~-32.50~-0.82~529490944~106673709~~689731.22~ZS~\";\n" +
+		fields := make([]string, 33)
+		fields[1], fields[2], fields[3], fields[30], fields[31], fields[32] = "SSE", "000001", "3934.09", "20260811150000", "-32.50", "-0.82"
+		_, _ = w.Write([]byte("v_sh000001=\"" + strings.Join(fields, "~") + "\";\n" +
 			"v_r_hkHSI=\"100~HSI~HSI~25652.820~25937.490~25998.590~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~2026/08/11 18:31:13~-284.670~-1.10~\";"))
 	}))
 	defer upstream.Close()
@@ -28,6 +32,69 @@ func TestClientParsesIndexSnapshotsAndSeries(t *testing.T) {
 	series, err := client.MarketIndexSeries(context.Background(), "sse", "day", 2)
 	if err != nil || len(series.Lines) != 2 || series.Lines[1].Close != 3934.09 || series.Lines[1].ChangePercent >= 0 || series.Meta.Source != "tencent:index-kline" {
 		t.Fatalf("series=%+v err=%v", series, err)
+	}
+}
+
+func TestIndexIdentitiesAndForeignTimestampRemainExplicit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Query().Get("q"), "usNDX") {
+			t.Error("NDX identity missing")
+		}
+		for _, code := range []string{"NDX", "IXIC"} {
+			fields := make([]string, 33)
+			fields[1], fields[2], fields[3], fields[30], fields[31], fields[32] = code, "."+code, "12345", "2026-09-30 17:15:59", "100", "1.2"
+			_, _ = w.Write([]byte("v_us" + code + "=\"" + strings.Join(fields, "~") + "\";"))
+		}
+	}))
+	defer upstream.Close()
+	client := NewClient(WithQuoteBaseURL(upstream.URL), WithHTTPClient(upstream.Client()))
+	items, _, err := client.MarketIndexes(context.Background(), "core")
+	if err != nil || len(items) != 2 || items[0].ID != "nasdaq100" || items[1].ID != "nasdaq_composite" {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	for _, item := range items {
+		if !item.TradeTime.IsZero() || item.Status != "unknown" || item.Meta.TimeZone != "unknown" || item.Meta.NativeTimestamp == "" {
+			t.Fatalf("foreign timezone fabricated: %+v", item)
+		}
+	}
+	definition, _ := findIndex("nasdaq")
+	if definition.KLineKey != "usNDX" {
+		t.Fatalf("legacy identity=%+v", definition)
+	}
+}
+
+func TestIndexSeriesReverseOrderUsesOnlyEarlierClose(t *testing.T) {
+	for _, period := range []string{"day", "week", "month"} {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"sh000001":{"` + period + `":[["2026-09-30","110","110","111","109","10"],["2026-09-29","100","100","101","99","10"]]}}}`))
+		}))
+		client := NewClient(WithKLineBaseURL(upstream.URL), WithHTTPClient(upstream.Client()))
+		series, err := client.MarketIndexSeries(context.Background(), "sse", period, 2)
+		upstream.Close()
+		if err != nil || len(series.Lines) != 2 {
+			t.Fatalf("period=%s series=%+v err=%v", period, series, err)
+		}
+		first, second := series.Lines[0], series.Lines[1]
+		if first.Close != 100 || first.ChangePercent != 0 || foundation.FieldAvailable(first.Meta, "change_percent") || !foundation.FieldAvailable(second.Meta, "change_percent") || math.Abs(second.ChangePercent-10) > 1e-8 {
+			t.Fatalf("causal change/masks invalid: %+v", series.Lines)
+		}
+	}
+}
+
+func TestIndexSeriesRejectsEmptyAndInvalidNumbers(t *testing.T) {
+	for _, rows := range []string{`[]`, `[["bad","1","2","3","1","0"]]`, `[["2026-09-30","1","NaN","3","1","0"]]`, `[["2026-09-30","0","0","0","0","0"]]`} {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Query().Get("param"), ",qfq") {
+				t.Error("index should not request stock qfq")
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"usNDX":{"day":` + rows + `}}}`))
+		}))
+		client := NewClient(WithKLineBaseURL(upstream.URL), WithHTTPClient(upstream.Client()))
+		series, err := client.MarketIndexSeries(context.Background(), "nasdaq", "day", 2)
+		upstream.Close()
+		if err == nil || len(series.Lines) != 0 {
+			t.Fatalf("rows=%s series=%+v err=%v", rows, series, err)
+		}
 	}
 }
 
@@ -75,7 +142,7 @@ func TestClientParsesUSSectorETFQuotes(t *testing.T) {
 	if err != nil || len(items) != 2 || items[0].ProxySymbol != "XLF" || items[0].ChangePercent != 0.38 || items[1].ProxySymbol != "XLK" || items[1].ChangePercent != -1.55 {
 		t.Fatalf("items=%+v meta=%+v err=%v", items, meta, err)
 	}
-	if meta.Source != "tencent:us-sector-etf" || items[0].TradeTime.IsZero() {
+	if meta.Source != "tencent:us-sector-etf" || !items[0].TradeTime.IsZero() || items[0].Meta.TimeZone != "unknown" || items[0].Meta.NativeTimestamp == "" {
 		t.Fatalf("unexpected US sector metadata: %+v %+v", items, meta)
 	}
 }

@@ -3,6 +3,7 @@ package sina
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -22,6 +23,7 @@ type Client struct {
 	kLineBaseURL           string
 	moneyFlowBaseURL       string
 	sectorMoneyFlowBaseURL string
+	stockCatalogBaseURL    string
 	httpClient             *http.Client
 }
 
@@ -59,12 +61,17 @@ func WithSectorMoneyFlowBaseURL(baseURL string) Option {
 	}
 }
 
+func WithStockCatalogBaseURL(baseURL string) Option {
+	return func(c *Client) { c.stockCatalogBaseURL = strings.TrimRight(baseURL, "/") }
+}
+
 func NewClient(opts ...Option) *Client {
 	c := &Client{
 		baseURL:                "https://hq.sinajs.cn",
 		kLineBaseURL:           "https://quotes.sina.cn/cn/api/jsonp_v2.php/callback/CN_MarketDataService.getKLineData",
 		moneyFlowBaseURL:       "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_ssggzj",
 		sectorMoneyFlowBaseURL: "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk",
+		stockCatalogBaseURL:    "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData",
 		httpClient:             &http.Client{Timeout: 10 * time.Second},
 	}
 	for _, opt := range opts {
@@ -105,7 +112,7 @@ func (c *Client) KLine(ctx context.Context, symbol string, period string, limit 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sina kline http status %d", resp.StatusCode)
+		return nil, &foundation.PriceHTTPStatusError{Provider: "sina", StatusCode: resp.StatusCode}
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -199,13 +206,23 @@ type sinaKLineItem struct {
 	Low    string `json:"low"`
 	Close  string `json:"close"`
 	Volume string `json:"volume"`
+	Amount string `json:"amount"`
 }
 
-func parseKLineJSONP(body string, symbol string, meta foundation.SourceMeta) ([]foundation.KLine, error) {
+func parseKLineJSONP(body string, symbol string, meta foundation.SourceMeta) (result []foundation.KLine, parseErr error) {
+	defer func() {
+		if parseErr != nil && !errors.Is(parseErr, foundation.ErrPriceNoData) {
+			parseErr = fmt.Errorf("%w: %v", foundation.ErrInvalidPriceData, parseErr)
+		}
+	}()
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "null" || trimmed == "" || strings.HasSuffix(trimmed, "(null);") || strings.HasSuffix(trimmed, "(null)") {
+		return nil, fmt.Errorf("%w: sina returned no requested kline series", foundation.ErrPriceNoData)
+	}
 	start := strings.Index(body, "[")
 	end := strings.LastIndex(body, "]")
 	if start < 0 || end < start {
-		return nil, fmt.Errorf("sina kline response has no JSON array")
+		return nil, fmt.Errorf("%w: sina kline response has no JSON array", foundation.ErrInvalidPriceData)
 	}
 	var rawItems []sinaKLineItem
 	if err := json.Unmarshal([]byte(body[start:end+1]), &rawItems); err != nil {
@@ -222,6 +239,18 @@ func parseKLineJSONP(body string, symbol string, meta foundation.SourceMeta) ([]
 		low, _ := strconv.ParseFloat(raw.Low, 64)
 		closePrice, _ := strconv.ParseFloat(raw.Close, 64)
 		volume, _ := strconv.ParseFloat(raw.Volume, 64)
+		if !isFiniteKLinePrice(open) || !isFiniteKLinePrice(high) || !isFiniteKLinePrice(low) || !isFiniteKLinePrice(closePrice) || high < math.Max(open, closePrice) || low > math.Min(open, closePrice) || math.IsNaN(volume) || math.IsInf(volume, 0) || volume < 0 {
+			return nil, fmt.Errorf("%w: sina returned malformed OHLCV", foundation.ErrInvalidPriceData)
+		}
+		rowMeta := meta
+		rowMeta.FieldsKnown, rowMeta.VolumeUnit, rowMeta.AmountCurrency = true, "shares", "CNY"
+		rowMeta.AvailableFields = []string{"open", "high", "low", "close", "volume"}
+		amount, amountErr := strconv.ParseFloat(raw.Amount, 64)
+		if amountErr == nil && !math.IsNaN(amount) && !math.IsInf(amount, 0) && amount >= 0 {
+			rowMeta.AvailableFields = append(rowMeta.AvailableFields, "amount")
+		} else {
+			amount = 0
+		}
 		items = append(items, foundation.KLine{
 			Symbol: symbol,
 			Time:   day,
@@ -230,13 +259,18 @@ func parseKLineJSONP(body string, symbol string, meta foundation.SourceMeta) ([]
 			Low:    low,
 			Close:  closePrice,
 			Volume: volume,
-			Meta:   meta,
+			Amount: amount,
+			Meta:   rowMeta,
 		})
 	}
 	if len(items) == 0 {
-		return nil, fmt.Errorf("sina returned no kline bars")
+		return nil, fmt.Errorf("%w: sina returned no kline bars", foundation.ErrPriceNoData)
 	}
 	return items, nil
+}
+
+func isFiniteKLinePrice(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func parseKLineTime(value string) (time.Time, error) {

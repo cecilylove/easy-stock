@@ -43,7 +43,7 @@ func TestServerListsSources(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if !strings.Contains(rec.Body.String(), "duanxianxia") || !strings.Contains(rec.Body.String(), "eastmoney") || !strings.Contains(rec.Body.String(), "sina") {
+	if !strings.Contains(rec.Body.String(), "duanxianxia") || !strings.Contains(rec.Body.String(), "cffex") || !strings.Contains(rec.Body.String(), "sina") {
 		t.Fatalf("body = %q, want source ids", rec.Body.String())
 	}
 }

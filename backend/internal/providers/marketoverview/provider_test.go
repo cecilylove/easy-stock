@@ -5,18 +5,13 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"easy-stock/backend/internal/foundation"
 )
 
 type failingPrimary struct{}
 
-func (failingPrimary) MarketIndexes(context.Context, string) ([]foundation.MarketIndexSnapshot, foundation.SourceMeta, error) {
-	return nil, foundation.SourceMeta{}, fmt.Errorf("index unavailable")
-}
-func (failingPrimary) MarketIndexSeries(context.Context, string, string, int) (foundation.MarketIndexSeries, error) {
-	return foundation.MarketIndexSeries{}, fmt.Errorf("series unavailable")
-}
 func (failingPrimary) IndustryMomentum(context.Context, int) ([]foundation.MarketIndustryMomentum, foundation.SourceMeta, error) {
 	return nil, foundation.SourceMeta{}, nil
 }
@@ -57,12 +52,12 @@ type indexFallback struct{}
 
 func (indexFallback) MarketIndexes(context.Context, string) ([]foundation.MarketIndexSnapshot, foundation.SourceMeta, error) {
 	meta := foundation.SourceMeta{Source: "tencent:index"}
-	return []foundation.MarketIndexSnapshot{{ID: "sse", Name: "上证指数", Meta: meta}}, meta, nil
+	return []foundation.MarketIndexSnapshot{{ID: "sse", Name: "上证指数", Price: 3934, Meta: meta}}, meta, nil
 }
 
 func (indexFallback) MarketIndexSeries(context.Context, string, string, int) (foundation.MarketIndexSeries, error) {
 	meta := foundation.SourceMeta{Source: "tencent:index-kline"}
-	return foundation.MarketIndexSeries{Index: foundation.MarketIndexSnapshot{ID: "sse", Meta: meta}, Lines: []foundation.KLine{{Symbol: "sse", Close: 3934.09, Meta: meta}}, Meta: meta}, nil
+	return foundation.MarketIndexSeries{Index: foundation.MarketIndexSnapshot{ID: "sse", Meta: meta}, Lines: []foundation.KLine{{Symbol: "sse", Time: time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC), Close: 3934.09, Meta: meta}}, Meta: meta}, nil
 }
 
 func (indexFallback) USSectorMomentum(context.Context, int) ([]foundation.MarketUSSectorMomentum, foundation.SourceMeta, error) {
@@ -90,14 +85,28 @@ func TestProviderUsesTencentIndustryMomentum(t *testing.T) {
 	}
 }
 
-func TestProviderFallsBackForIndexes(t *testing.T) {
+type retainedResearchPrimary struct{ failingPrimary }
+
+func (retainedResearchPrimary) MarketMarginSeries(context.Context, int) ([]foundation.MarketMarginPoint, foundation.SourceMeta, error) {
+	meta := foundation.SourceMeta{Source: "eastmoney:margin-balance"}
+	return []foundation.MarketMarginPoint{{TradeDate: "2026-09-30", MarginBalance: 100, Meta: meta}}, meta, nil
+}
+func TestRemovingIndexMethodsDoesNotRemoveResearchPrimary(t *testing.T) {
+	p := New(retainedResearchPrimary{}, indexFallback{}, nil, nil)
+	items, meta, err := p.MarketMarginSeries(context.Background(), 1)
+	if err != nil || len(items) != 1 || meta.Source != "eastmoney:margin-balance" {
+		t.Fatalf("items=%+v meta=%+v err=%v", items, meta, err)
+	}
+}
+
+func TestProviderUsesOnlyTencentIndexes(t *testing.T) {
 	provider := New(failingPrimary{}, indexFallback{}, nil, nil)
 	items, meta, err := provider.MarketIndexes(context.Background(), "core")
-	if err != nil || len(items) != 1 || meta.Source != "tencent:index" || !strings.Contains(meta.FallbackReason, "腾讯") {
+	if err != nil || len(items) != 1 || meta.Source != "tencent:index" || !meta.Partial || len(meta.MissingIDs) == 0 {
 		t.Fatalf("items=%+v meta=%+v err=%v", items, meta, err)
 	}
 	series, err := provider.MarketIndexSeries(context.Background(), "sse", "day", 20)
-	if err != nil || len(series.Lines) != 1 || !strings.Contains(series.Meta.FallbackReason, "腾讯") {
+	if err != nil || len(series.Lines) != 1 || series.Meta.Source != "tencent:index-kline" || len(series.Meta.Observations) != 1 {
 		t.Fatalf("series=%+v err=%v", series, err)
 	}
 }

@@ -8,8 +8,6 @@ import (
 )
 
 type Primary interface {
-	MarketIndexes(ctx context.Context, scope string) ([]foundation.MarketIndexSnapshot, foundation.SourceMeta, error)
-	MarketIndexSeries(ctx context.Context, id string, period string, limit int) (foundation.MarketIndexSeries, error)
 	IndustryMomentum(ctx context.Context, limit int) ([]foundation.MarketIndustryMomentum, foundation.SourceMeta, error)
 	MarketFundFlows(ctx context.Context, dimension string, sortKey string, limit int) ([]foundation.MarketFundFlow, foundation.SourceMeta, error)
 	MarketMarginSeries(ctx context.Context, limit int) ([]foundation.MarketMarginPoint, foundation.SourceMeta, error)
@@ -31,70 +29,71 @@ type USSectorMomentumProvider interface {
 	USSectorMomentum(ctx context.Context, limit int) ([]foundation.MarketUSSectorMomentum, foundation.SourceMeta, error)
 }
 
-type IndexFallback interface {
+type IndexProvider interface {
 	MarketIndexes(ctx context.Context, scope string) ([]foundation.MarketIndexSnapshot, foundation.SourceMeta, error)
 	MarketIndexSeries(ctx context.Context, id string, period string, limit int) (foundation.MarketIndexSeries, error)
 }
 
 type Provider struct {
 	primary          Primary
-	indexFallback    IndexFallback
+	indexProvider    IndexProvider
 	industryProvider IndustryMomentumProvider
 	fundFlowProvider FundFlowProvider
 }
 
-func New(primary Primary, indexFallback IndexFallback, industryProvider IndustryMomentumProvider, fundFlowProvider FundFlowProvider) *Provider {
-	return &Provider{primary: primary, indexFallback: indexFallback, industryProvider: industryProvider, fundFlowProvider: fundFlowProvider}
+func New(primary Primary, indexProvider IndexProvider, industryProvider IndustryMomentumProvider, fundFlowProvider FundFlowProvider) *Provider {
+	return &Provider{primary: primary, indexProvider: indexProvider, industryProvider: industryProvider, fundFlowProvider: fundFlowProvider}
 }
 
+// The constructor retains its parameter order. indexProvider is the sole
+// index source; primary remains Eastmoney for the other services.
+// The primary interface intentionally has no index methods.
 func (p *Provider) MarketIndexes(ctx context.Context, scope string) ([]foundation.MarketIndexSnapshot, foundation.SourceMeta, error) {
-	items, meta, err := p.primary.MarketIndexes(ctx, scope)
-	if err == nil || p.indexFallback == nil {
-		return items, meta, err
-	}
-	fallbackItems, fallbackMeta, fallbackErr := p.indexFallback.MarketIndexes(ctx, scope)
-	if fallbackErr != nil {
-		return nil, foundation.SourceMeta{}, fmt.Errorf("primary indexes failed: %v; fallback failed: %w", err, fallbackErr)
-	}
-	fallbackMeta.FallbackReason = "东方财富指数快照不可用，已切换腾讯行情；备用目录暂不包含部分亚太与欧洲指数"
-	for index := range fallbackItems {
-		fallbackItems[index].Meta = fallbackMeta
-	}
-	return fallbackItems, fallbackMeta, nil
+	return p.indexSnapshots(ctx, scope)
 }
 
 func (p *Provider) MarketIndexSeries(ctx context.Context, id string, period string, limit int) (foundation.MarketIndexSeries, error) {
-	series, err := p.primary.MarketIndexSeries(ctx, id, period, limit)
-	if err == nil || p.indexFallback == nil {
-		return series, err
-	}
-	fallback, fallbackErr := p.indexFallback.MarketIndexSeries(ctx, id, period, limit)
-	if fallbackErr != nil {
-		return foundation.MarketIndexSeries{}, fmt.Errorf("primary index series failed: %v; fallback failed: %w", err, fallbackErr)
-	}
-	fallback.Meta.FallbackReason = "东方财富指数走势不可用，已切换腾讯 K 线"
-	fallback.Index.Meta = fallback.Meta
-	for index := range fallback.Lines {
-		fallback.Lines[index].Meta = fallback.Meta
-	}
-	return fallback, nil
+	return p.indexSeries(ctx, id, period, limit)
 }
 
 func (p *Provider) IndustryMomentum(ctx context.Context, limit int) ([]foundation.MarketIndustryMomentum, foundation.SourceMeta, error) {
 	if p.industryProvider == nil {
 		return p.primary.IndustryMomentum(ctx, limit)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, foundation.SourceMeta{}, err
+	}
 	items, meta, err := p.industryProvider.IndustryMomentum(ctx, limit)
+	if err == nil && len(items) == 0 {
+		err = fmt.Errorf("tencent returned no industry rows")
+	}
+	capability := "industry-momentum"
+	observation := sourceAttempt(meta, "tencent", capability, err)
+	meta.Observations = []foundation.SourceObservation{observation}
+	meta.Capability = capability
 	if err == nil {
 		return items, meta, nil
 	}
+	if ctx.Err() != nil {
+		return nil, meta, ctx.Err()
+	}
 	fallbackItems, fallbackMeta, fallbackErr := p.primary.IndustryMomentum(ctx, limit)
+	if fallbackErr == nil && len(fallbackItems) == 0 {
+		fallbackErr = fmt.Errorf("eastmoney returned no industry rows")
+	}
+	fallbackMeta.Observations = []foundation.SourceObservation{observation, sourceAttempt(fallbackMeta, "eastmoney", capability, fallbackErr)}
+	fallbackMeta.Capability = capability
 	if fallbackErr != nil {
-		return nil, foundation.SourceMeta{}, fmt.Errorf("tencent industry momentum failed: %v; eastmoney fallback failed: %w", err, fallbackErr)
+		return nil, fallbackMeta, fmt.Errorf("tencent industry momentum failed: %v; eastmoney fallback failed: %w", err, fallbackErr)
 	}
 	fallbackMeta.FallbackReason = joinFallbackReason("腾讯行业强度不可用，已回退东方财富可用字段", fallbackMeta.FallbackReason)
 	for index := range fallbackItems {
-		fallbackItems[index].Meta = fallbackMeta
+		if fallbackItems[index].Meta.Source == "" {
+			fallbackItems[index].Meta = fallbackMeta
+		} else {
+			fallbackItems[index].Meta.FallbackReason = fallbackMeta.FallbackReason
+			fallbackItems[index].Meta.Capability = capability
+		}
 	}
 	return fallbackItems, fallbackMeta, nil
 }
@@ -103,17 +102,40 @@ func (p *Provider) MarketFundFlows(ctx context.Context, dimension string, sortKe
 	if p.fundFlowProvider == nil {
 		return p.primary.MarketFundFlows(ctx, dimension, sortKey, limit)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, foundation.SourceMeta{}, err
+	}
 	items, meta, err := p.fundFlowProvider.MarketFundFlows(ctx, dimension, sortKey, limit)
+	capability := "fund-flow/" + dimension
+	if err == nil && len(items) == 0 {
+		err = fmt.Errorf("sina returned no fund-flow rows")
+	}
+	observation := sourceAttempt(meta, "sina", capability, err)
+	meta.Observations = []foundation.SourceObservation{observation}
+	meta.Capability = capability
 	if err == nil {
 		return items, meta, nil
 	}
+	if ctx.Err() != nil {
+		return nil, meta, ctx.Err()
+	}
 	fallbackItems, fallbackMeta, fallbackErr := p.primary.MarketFundFlows(ctx, dimension, sortKey, limit)
+	if fallbackErr == nil && len(fallbackItems) == 0 {
+		fallbackErr = fmt.Errorf("eastmoney returned no fund-flow rows")
+	}
+	fallbackMeta.Observations = []foundation.SourceObservation{observation, sourceAttempt(fallbackMeta, "eastmoney", capability, fallbackErr)}
+	fallbackMeta.Capability = capability
 	if fallbackErr != nil {
-		return nil, foundation.SourceMeta{}, fmt.Errorf("sina %s fund flow failed: %v; eastmoney fallback failed: %w", dimension, err, fallbackErr)
+		return nil, fallbackMeta, fmt.Errorf("sina %s fund flow failed: %v; eastmoney fallback failed: %w", dimension, err, fallbackErr)
 	}
 	fallbackMeta.FallbackReason = joinFallbackReason("新浪资金榜不可用，已回退东方财富可用字段", fallbackMeta.FallbackReason)
 	for index := range fallbackItems {
-		fallbackItems[index].Meta = fallbackMeta
+		if fallbackItems[index].Meta.Source == "" {
+			fallbackItems[index].Meta = fallbackMeta
+		} else {
+			fallbackItems[index].Meta.FallbackReason = fallbackMeta.FallbackReason
+			fallbackItems[index].Meta.Capability = capability
+		}
 	}
 	return fallbackItems, fallbackMeta, nil
 }
@@ -122,14 +144,14 @@ func (p *Provider) USSectorMomentum(ctx context.Context, limit int) ([]foundatio
 	if provider, ok := p.primary.(USSectorMomentumProvider); ok {
 		return provider.USSectorMomentum(ctx, limit)
 	}
-	if provider, ok := p.indexFallback.(USSectorMomentumProvider); ok {
+	if provider, ok := p.indexProvider.(USSectorMomentumProvider); ok {
 		items, meta, err := provider.USSectorMomentum(ctx, limit)
 		if err != nil {
 			return nil, foundation.SourceMeta{}, err
 		}
 		meta.FallbackReason = joinFallbackReason("主行情源不提供美股板块ETF，已切换腾讯行情", meta.FallbackReason)
 		for index := range items {
-			items[index].Meta = meta
+			items[index].Meta.FallbackReason = meta.FallbackReason
 		}
 		return items, meta, nil
 	}

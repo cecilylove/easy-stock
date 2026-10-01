@@ -32,7 +32,7 @@ import {
 	NewsItem,
 	Quote,
 	SectorMap,
-	SourceHealth,
+	SectorMapNode,
 	StreamMessage,
 	ThemeOverview,
 	StockAIAnalysis,
@@ -65,8 +65,7 @@ import { stockDetailPath, stockDetailSymbolFromHash } from './lib/stock-detail';
 import { PortfolioInspectionWorkspace } from './components/PortfolioInspectionWorkspace';
 import { TokenUsageWorkspace } from './components/TokenUsageWorkspace';
 import { logRuntimeEvent } from './lib/runtime-log';
-import { sourceHealthCounts } from './lib/source-health';
-import { SourceHealthPanel } from './components/SourceHealthPanel';
+import { sourceName } from './lib/source-integrations';
 import { useTheme } from './lib/theme';
 import { useLimitUpWorkspace } from './lib/use-limit-up-workspace';
 import { useThemeOverview } from './lib/use-theme-overview';
@@ -84,6 +83,25 @@ const emptyStockPagination = (): ThemeScreenPagination => ({
 	total_pages: 0,
 	has_more: false,
 });
+
+function nativeMembershipComplete(node: SectorMapNode) {
+	const members = node.member_set;
+	const ref = node.board_ref;
+	return Boolean(members?.kind === 'native' && members.complete && ref && members.board_ref?.provider === ref.provider && members.board_ref.native_code === ref.native_code && members.board_ref.dimension === ref.dimension && members.board_ref.classification_version === ref.classification_version);
+}
+
+export function nodeMembershipLabel(node: SectorMapNode) {
+	const members = node.member_set;
+	if (!members) return `已加载 ${node.stocks.length}只 · 完整性未确认`;
+	const kind = members.kind === 'candidate' ? '关联候选' : members.kind === 'leader' ? '已知领涨' : members.kind === 'exact_catalog' ? '精确目录成分' : '原生成分';
+	const complete = nativeMembershipComplete(node);
+	return `${kind} · 返回 ${members.returned}只 / 总数 ${members.total > 0 || complete ? members.total : '未知'} · ${complete ? '完整' : '不完整'} · ${members.has_more ? '还有更多' : '无后续页'}`;
+}
+
+export function nodeMembershipIdentity(node: SectorMapNode) {
+	const ref = node.board_ref || node.member_set?.board_ref;
+	return ref ? `${sourceName(ref.provider)} · ${ref.native_code} · ${ref.dimension}${ref.classification_version ? ` · ${ref.classification_version}` : ''}` : '板块来源身份未提供';
+}
 
 export function App() {
 	const { theme, toggleTheme } = useTheme();
@@ -111,17 +129,12 @@ export function App() {
 	const [liveQuotes, setLiveQuotes] = useState<QuoteLookup>({});
 	const [quoteClock, setQuoteClock] = useState(Date.now);
 	useEffect(() => { const timer = window.setInterval(() => setQuoteClock(Date.now()), 15_000); return () => window.clearInterval(timer); }, []);
-	const [sources, setSources] = useState<SourceHealth[]>([]);
-	const [sourceDetailsOpen, setSourceDetailsOpen] = useState(false);
-	const sourceCounts = sourceHealthCounts(sources);
 	const [news, setNews] = useState<NewsItem[]>([]);
 	const [streamStatus, setStreamStatus] = useState('实时流待命');
 	const [configError, setConfigError] = useState('');
 	const [themeRefreshKey, setThemeRefreshKey] = useState(0);
 	const [newsError, setNewsError] = useState('');
 	const [newsRetryKey, setNewsRetryKey] = useState(0);
-	const [sourcesRetryKey, setSourcesRetryKey] = useState(0);
-	const [sourcesError, setSourcesError] = useState('');
 	const [stockQuery, setStockQuery] = useState('');
 	const [debouncedStockQuery, setDebouncedStockQuery] = useState('');
 	const [stockPage, setStockPage] = useState(1);
@@ -179,7 +192,17 @@ export function App() {
 	const sectorMap = constituents.data?.map || null;
 	const stockPagination = constituents.data?.pagination || emptyStockPagination();
 	const themeState = constituents.status;
-	const constituentsComplete = constituents.data?.complete === true;
+	const constituentsPageReady = constituents.data?.complete === true;
+	const memberNodes = sectorMap?.groups.flatMap(group => group.nodes) || [];
+	const membershipScope = constituents.data?.membership_scope;
+	const candidateMembership = memberNodes.some(node => node.member_set?.kind === 'candidate');
+	const leaderMembership = constituents.data?.coverage === 'leaders' || memberNodes.some(node => node.member_set?.kind === 'leader');
+	const memberIdentities = new Set(memberNodes.map(node => node.board_ref ? `${node.board_ref.provider}:${node.board_ref.native_code}:${node.board_ref.dimension}:${node.board_ref.classification_version || ''}` : 'unknown'));
+	const memberKinds = new Set(memberNodes.map(node => node.member_set?.kind || 'unknown'));
+	const mixedMembership = membershipScope === 'mixed' || (!membershipScope && (memberIdentities.size > 1 || memberKinds.size > 1));
+	const legacyComplete = !candidateMembership && !leaderMembership && memberNodes.length > 0 && !mixedMembership && memberNodes.every(nativeMembershipComplete);
+	const constituentsComplete = constituentsPageReady && !candidateMembership && !leaderMembership && membershipScope !== 'candidate' && membershipScope !== 'leader' && membershipScope !== 'mixed' && (constituents.data?.membership_complete ?? legacyComplete);
+	const memberScopeLabel = mixedMembership ? '混合成员范围' : membershipScope === 'candidate' || (!membershipScope && candidateMembership) ? '关联候选' : membershipScope === 'leader' || (!membershipScope && leaderMembership) ? '已知领涨' : constituentsComplete ? '完整原生成分' : membershipScope === 'native_partial' || (!membershipScope && memberNodes.some(node => node.member_set?.kind === 'native')) ? '部分原生成分' : '成员完整性未确认';
 	const baseThemeStocks = useMemo(() => {
 		const order = new Map((constituents.data?.order || []).map((symbol, index) => [symbol, index]));
 		return buildThemeStocks(sectorMap).sort((a,b) => (order.get(a.symbol) ?? 999) - (order.get(b.symbol) ?? 999));
@@ -233,27 +256,6 @@ export function App() {
 				setConfigError(error instanceof Error ? error.message : '后端配置失败');
 			});
 	}, []);
-
-	useEffect(() => {
-		if (!config || workspaceMode !== 'themes') return;
-		const abort = new AbortController();
-		let pending = false;
-		const refreshSources = () => {
-			if (pending) return;
-			pending = true;
-			void requestJSON<{ sources: SourceHealth[] }>(config, '/api/v1/sources', { signal: abort.signal })
-				.then(payload => { if (!abort.signal.aborted) { setSources(payload.sources); setSourcesError(''); } })
-				.catch(() => { if (!abort.signal.aborted) setSourcesError('数据源状态暂不可用'); })
-				.finally(() => { pending = false; });
-		};
-		refreshSources();
-		// The catalog is read-only. Recheck it while this page is visible so
-		// WebSocket observations and ten-minute expiry reach the UI.
-		const timer = window.setInterval(() => {
-			if (document.visibilityState === 'visible') refreshSources();
-		}, 30_000);
-		return () => { window.clearInterval(timer); abort.abort(); };
-	}, [config, workspaceMode, themeRefreshKey, sourcesRetryKey, overview.fetching]);
 
 	useEffect(() => {
 		if (!config || workspaceMode !== 'themes') return;
@@ -458,7 +460,7 @@ export function App() {
 			? overviewMeta.carry_forward ? '沿用 ' + (overviewMeta.trade_date || '上一交易日') + ' 开盘啦' : (overviewMeta.trade_date || '当日') + ' 开盘啦'
 			: '行业趋势强度';
 	const currentSubStatus = workspaceMode === 'limit-up'
-		? limitUpData ? `${limitUpData.current.trade_date} · ${limitUpData.session_status} · ${limitUpData.meta.source.includes('duanxianxia') ? '开盘啦涨停池' : '东方财富兜底'} · ${limitUpData.concept_status === 'ready' ? '题材已归因' : limitUpState === 'loading' ? '题材补充中' : '题材暂不完整'}` : '开盘啦涨停池优先'
+		? limitUpData ? `${limitUpData.current.trade_date} · ${limitUpData.session_status} · ${limitUpData.meta.source.includes('duanxianxia') ? '开盘啦涨停池' : limitUpData.meta.source} · ${limitUpData.concept_status === 'ready' ? '题材已归因' : limitUpState === 'loading' ? '题材补充中' : '题材暂不完整'}` : '开盘啦涨停池优先'
 		: workspaceMode === 'mastery' ? 'GitHub 原始资料 · 每日缓存 · Hermes 本地知识库' : workspaceMode === 'reviews' ? '雪球 · 淘股吧 · 微信公众号' : workspaceMode === 'stock-detail' ? '实时行情 · 多周期 K 线 · 无需 AI' : workspaceMode === 'stock-ai' ? '多周期评分 · 基准超额 · 隔日情景 · 动态风控' : workspaceMode === 'portfolio-inspection' ? '逐股分析 · 组合风险 · 后台任务' : workspaceMode === 'ai' ? '本机 Hermes AI 对话' : workspaceMode === 'market' ? '全球指数 · 行业资金 · 龙虎榜 · 公告研报' : workspaceMode === 'token-usage' ? '模型输入、输出与功能模块消耗' : themeSourceStatus + ' · ' + streamStatus;
 	const topbarTitle = workspaceMode === 'themes' ? '趋势题材雷达' : workspaceMode === 'limit-up' ? '短线连板雷达' : workspaceMode === 'mastery' ? '游资心法库' : workspaceMode === 'reviews' ? '大V复盘日记' : workspaceMode === 'stock-detail' ? '个股详情' : workspaceMode === 'stock-ai' ? '个股 AI 分析' : workspaceMode === 'portfolio-inspection' ? '持仓 AI 巡检' : workspaceMode === 'market' ? '行情总览' : workspaceMode === 'token-usage' ? 'Token 统计' : 'AI 对话';
 	const topbarDescription = workspaceMode === 'themes' ? '炒作主线、趋势强度、个股梯队与日 K 联动工作台' : workspaceMode === 'limit-up' ? '连板高度、炒作概念与晋级结构工作台' : workspaceMode === 'mastery' ? '阅读不同游资的交易经验，并由 Hermes 按原文辅助研读' : workspaceMode === 'reviews' ? '多平台复盘内容、作者观点与原文归档工作台' : workspaceMode === 'stock-detail' ? '搜索任意 A 股，快速查看行情、分时与多周期 K 线' : workspaceMode === 'stock-ai' ? '多周期评分、隔日情景推演与账户级风控执行工作台' : workspaceMode === 'portfolio-inspection' ? '逐股研判、集中度识别与组合风险巡检工作台' : workspaceMode === 'market' ? '从盘面快讯到资金与研究信号的统一行情工作台' : workspaceMode === 'token-usage' ? '按日、按月和功能模块查看模型 Token 消耗' : '像 Codex 一样持续协作、拆解问题并形成可执行结果';
@@ -500,22 +502,11 @@ export function App() {
 			<section className="market-strip" aria-label="市场概览">
 				<div><Activity size={16} aria-hidden="true" /><span>主线平均热度</span><strong>{marketPulse.average || '--'}</strong></div>
 				<div><Flame size={16} aria-hidden="true" /><span>活跃主线</span><strong>{rankedThemes.some(item => !item.provisional) ? marketPulse.active : '--'}</strong></div>
-				<button
-					type="button"
-					className="source-health-summary source-health-toggle"
-					aria-expanded={sourceDetailsOpen}
-					aria-controls="theme-source-details"
-					onClick={() => setSourceDetailsOpen(open => !open)}
-					aria-label={`数据源最近观测，${sourceCounts.available} 个可用，${sourceCounts.degraded} 个失败，${sourceCounts.unknown} 个未检测，${sourceCounts.unconfigured} 个未接入`}
-				>
-					<Database size={16} aria-hidden="true" />
-					<span>数据源</span>
-					<strong>{sourceCounts.available}/{sources.length || '--'}</strong>
-					<small>{sourceDetailsOpen ? '收起详情' : '查看详情'}</small>
-				</button>
+				<button type="button" className="source-health-summary source-health-toggle" onClick={openSourceSettings}><Database size={16} aria-hidden="true" /><span>数据源设置</span><small>来源能力与最近观测</small></button>
 				<div><Clock3 size={16} aria-hidden="true" /><span>题材快照</span><strong>{overviewMeta?.trade_date || formatTime(overviewMeta?.fetched_at)}</strong></div>
 			</section>
-			{sourceDetailsOpen && <SourceHealthPanel id="theme-source-details" sources={sources} context="themes" error={sourcesError} onRefresh={() => setSourcesRetryKey(key => key + 1)} onOpenSettings={openSourceSettings} meta={overviewMeta} steps={overview.steps} stepErrors={overview.errors} />}
+			{overviewMeta && <p className="load-notice" role="status">当前题材来源：{sourceName(overviewMeta.source)} · 抓取 {new Date(overviewMeta.fetched_at).toLocaleString('zh-CN')}{overviewMeta.trade_date && ` · 交易日 ${overviewMeta.trade_date}`}{overviewMeta.stale ? ' · 缓存 / 陈旧' : ''}{overviewMeta.fallback_reason && ` · ${overviewMeta.fallback_reason}`}{overviewMeta.next_refresh_at && ` · 下次允许请求 ${new Date(overviewMeta.next_refresh_at).toLocaleString('zh-CN')}`}</p>}
+			{Object.entries(overview.errors).length > 0 && <div className="load-notice" role="status">{Object.entries(overview.errors).map(([step, error]) => <p key={step}>{({ industry: '行业强度', kaipanla: '开盘啦题材 / 涨停池', strength: '成分股强度', overview: '题材快照' } as Record<string, string>)[step] || step}：{error}</p>)}</div>}
 
 			<div className="trading-layout">
 				<aside className="theme-rail">
@@ -585,11 +576,11 @@ export function App() {
 
 					<section className="node-filter" aria-label="题材细分">
 						<button type="button" className={selectedNode === 'all' ? 'active' : ''} onClick={() => { setSelectedNode('all'); setStockPage(1); }}>
-							{constituentsComplete ? '全部关联' : '已加载'} <span>{constituents.data ? stockPagination.total : '--'}</span>
+							{constituents.data ? memberScopeLabel : '已加载'} <span>{constituents.data ? constituentsPageReady ? stockPagination.total : visibleStocks.length : '--'}</span>
 						</button>
 						{themeNodes.map((node) => (
-							<button type="button" className={selectedNode === node.id ? 'active' : ''} key={node.id} onClick={() => { setSelectedNode(node.id); setStockPage(1); }}>
-								{node.name} <span>{node.candidate_count ?? node.stocks.length}只</span>
+							<button type="button" className={selectedNode === node.id ? 'active' : ''} key={node.id} title={nodeMembershipIdentity(node)} onClick={() => { setSelectedNode(node.id); setStockPage(1); }}>
+								{node.name} <span>{nodeMembershipLabel(node)}</span>
 							</button>
 						))}
 					</section>
@@ -598,7 +589,7 @@ export function App() {
 						<div className="board-heading">
 							<div>
 								<h3>主线个股梯队</h3>
-								<p>综合多日高度、启动时序、持续性、关注度、主线影响代理和分歧承接。</p>
+								<p>{constituents.data ? `${memberScopeLabel} · ` : ''}综合多日高度、启动时序、持续性、关注度、主线影响代理和分歧承接；候选与领涨样本不代表完整成分。</p>
 							</div>
 							<div className={`history-status ${historyState}`}>
 								<History size={14} aria-hidden="true" />
@@ -650,11 +641,11 @@ export function App() {
 						</div>
 						{constituents.error && <p className="load-notice">{constituents.error} <button type="button" onClick={() => setThemeRefreshKey(key => key + 1)}>重试成分</button></p>}
 						<div className="stock-pagination" aria-label="题材个股分页">
-							<span>{constituentsComplete ? `共 ${stockPagination.total} 只 · 每页 ${stockPagination.page_size} 只` : `已加载 ${visibleStocks.length} 只 · 完整成分${constituents.fetching ? '更新中' : '暂不可用'}`}</span>
+							<span>{constituents.data ? `${memberScopeLabel} · 本页返回 ${visibleStocks.length} 只 · ${constituentsPageReady ? `当前范围共 ${stockPagination.total} 只 · ${stockPagination.has_more ? '还有下一页' : '当前范围无下一页'}` : `完整成分${constituents.fetching ? '更新中' : '暂不可用'}`}` : '等待成分数据'}</span>
 							<div>
-								<button type="button" disabled={!constituentsComplete || stockPage <= 1 || constituents.fetching} onClick={() => setStockPage((current) => Math.max(1, current - 1))}>上一页</button>
-								<strong>{constituentsComplete ? `${stockPagination.page}/${stockPagination.total_pages || 1}` : '--'}</strong>
-								<button type="button" disabled={!constituentsComplete || !stockPagination.has_more || constituents.fetching} onClick={() => setStockPage((current) => current + 1)}>下一页</button>
+								<button type="button" disabled={!constituentsPageReady || stockPage <= 1 || constituents.fetching} onClick={() => setStockPage((current) => Math.max(1, current - 1))}>上一页</button>
+								<strong>{constituentsPageReady ? `${stockPagination.page}/${stockPagination.total_pages || 1}` : '--'}</strong>
+								<button type="button" disabled={!constituentsPageReady || !stockPagination.has_more || constituents.fetching} onClick={() => setStockPage((current) => current + 1)}>下一页</button>
 							</div>
 						</div>
 					</section>
@@ -731,7 +722,7 @@ export function App() {
 			</div>
 			<footer className="data-footer">
 				<div><Wifi size={15} aria-hidden="true" /><span>{config?.backendUrl || '连接本地数据服务中'}</span></div>
-					<div><Radio size={15} aria-hidden="true" /><span>{workspaceMode === 'themes' ? '题材与龙一至龙五：开盘啦 · 实时行情：新浪 · K线与领导力：东方财富/新浪' : workspaceMode === 'limit-up' ? '当日涨停池与逐股题材：开盘啦优先 · 历史梯队、缺失股票与行情字段：东方财富补充 · 默认剔除ST' : workspaceMode === 'mastery' ? '来源：trading-mastery/游资心法 · 每日缓存 · 同步至 Hermes Skill 与本地记忆索引' : workspaceMode === 'reviews' ? '复盘文章：本地 SQLite 归档 · 原文观点不代表系统结论' : workspaceMode === 'stock-detail' ? '个股行情：新浪 · K 线：东方财富优先，新浪回退 · 时间、来源与降级信息以实际返回为准' : workspaceMode === 'stock-ai' ? '行情与K线：东方财富/新浪 · 涨停与题材：开盘啦/东方财富 · AI只基于结构化证据总结' : workspaceMode === 'portfolio-inspection' ? '逐股分析复用个股引擎 · 组合指标由本地程序计算 · AI只基于结构化证据汇总' : workspaceMode === 'market' ? '行情与行业强度：腾讯/东方财富 · 资金与领涨标的：新浪/东方财富 · 龙虎榜、公告与研报：东方财富 · 盘面快讯：财联社 · AI 只读取带时间和来源的证据' : workspaceMode === 'token-usage' ? '真实用量来自模型返回的 usage · 本地估算单独记录，不并入真实总量' : '模型请求由本地后端转发 · API Key 不会暴露给页面 · 对话历史保存在当前设备'}</span></div>
+					<div><Radio size={15} aria-hidden="true" /><span>{workspaceMode === 'themes' ? '行业强度：腾讯/东方财富 · 题材与龙一至龙五：开盘啦 · 实时行情：新浪 · 默认K：新浪优先，腾讯支持能力备用 · 时间、来源与降级信息以实际返回为准' : workspaceMode === 'limit-up' ? '涨停池与逐股题材：开盘啦优先 · 历史梯队、缺失股票与行情字段：东方财富补充 · 默认剔除ST' : workspaceMode === 'mastery' ? '来源：trading-mastery/游资心法 · 每日缓存 · 同步至 Hermes Skill 与本地记忆索引' : workspaceMode === 'reviews' ? '复盘文章：本地 SQLite 归档 · 原文观点不代表系统结论' : workspaceMode === 'stock-detail' ? '个股行情：新浪 · 默认K：新浪优先，腾讯支持能力备用 · 指定复权：腾讯 · 竞价：东方财富 · 时间、来源与降级信息以实际返回为准' : workspaceMode === 'stock-ai' ? '行情与K线：新浪/腾讯 · 涨停与题材：开盘啦/东方财富 · 人气榜：同花顺/东方财富 · 缺失证据会明确标记，AI只基于实际结构化证据总结' : workspaceMode === 'portfolio-inspection' ? '逐股分析复用个股引擎 · 组合指标由本地程序计算 · AI只基于结构化证据汇总' : workspaceMode === 'market' ? '指数：腾讯独立 · 行业强度：腾讯/东方财富有效字段 · 资金与领涨标的：新浪/东方财富 · 龙虎榜、公告与研报：东方财富 · 期指：东方财富/中金所 · 快讯：财联社 · AI只读取带时间和来源的证据' : workspaceMode === 'token-usage' ? '真实用量来自模型返回的 usage · 本地估算单独记录，不并入真实总量' : '模型请求由本地后端转发 · API Key 不会暴露给页面 · 对话历史保存在当前设备'}</span></div>
 			</footer>
 			</div>
 			<SettingsDrawer config={config} open={settingsOpen} fallbackFocusRef={mobileNavTriggerRef} initialSection={settingsInitialSection} onClose={() => { setSettingsOpen(false); setSettingsInitialSection(undefined); }} onSaved={() => { setAIRefreshKey((current) => current + 1); setStockAIRefreshKey((current) => current + 1); setSettingsSavedNotice((current) => current + 1); }} />

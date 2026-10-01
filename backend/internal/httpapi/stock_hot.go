@@ -119,6 +119,7 @@ func (s *Server) hotStockRanksHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	lists := <-listChannel
+	s.observeHotStockRanks(ctx, lists)
 	directory := <-directoryChannel
 	data := buildHotStockRankData(lists, directory.Stocks, time.Now().Add(s.hotStockRanks.ttl))
 	if len(data.Stocks) == 0 {
@@ -130,6 +131,26 @@ func (s *Server) hotStockRanksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.hotStockRanks.store(data)
 	writeJSON(w, http.StatusOK, map[string]any{"data": data})
+}
+
+// Only fresh provider calls reach this method. Each list describes one actual
+// upstream attempt; neither a cached union nor its previous source list is a
+// new observation. Record failures after successes so a partial result from
+// the same source cannot hide the failed portion of that refresh.
+func (s *Server) observeHotStockRanks(ctx context.Context, lists []foundation.HotStockRankList) {
+	for _, list := range lists {
+		if len(list.Items) > 0 {
+			s.sourceHealth.success(foundation.SourceMeta{Source: list.Source, FetchedAt: list.FetchedAt})
+		}
+	}
+	if !shouldObserveFailure(ctx) {
+		return
+	}
+	for _, list := range lists {
+		if strings.TrimSpace(list.Error) != "" || len(list.Items) == 0 {
+			s.sourceHealth.markFailure(list.Source, "人气榜最近一次请求失败或未返回有效股票，请查看对应功能")
+		}
+	}
 }
 
 func buildHotStockRankData(lists []foundation.HotStockRankList, directory []stockDirectoryEntry, expiresAt time.Time) hotStockRankData {

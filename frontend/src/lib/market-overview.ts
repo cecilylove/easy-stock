@@ -15,6 +15,8 @@ import type {
 } from './backend';
 import { BILLBOARD_SEAT_MAPPINGS } from '../data/billboard-seat-mappings';
 import { formatFuturesOpeningHands } from './futures-position';
+import { sourceFieldAvailable } from './source-fields';
+import { formatIndexTradeTime } from './source-time';
 
 export type MarketOverviewView =
 	| 'pulse'
@@ -247,24 +249,30 @@ export function buildMarketModulePrompt(view: Exclude<MarketOverviewView, 'pulse
 	const module = findMarketOverviewModule(view);
 	const lines: string[] = [];
 	if (evidence.indexes?.length) {
-		lines.push(...evidence.indexes.slice(0, 20).map((item, index) => `${index + 1}. ${item.name}（${item.region}/${item.market}）：${item.price}，涨跌 ${formatSigned(item.change_percent)}%，状态 ${item.status}，行情时间 ${item.trade_time || '未知'}`));
+		lines.push(...evidence.indexes.slice(0, 20).map((item, index) => `${index + 1}. ${item.name}（${item.region}/${item.market}）：价格 ${sourceFieldAvailable(item.meta, 'price', evidence.meta) && Number.isFinite(item.price) ? item.price : '未提供'}，涨跌 ${sourceFieldAvailable(item.meta, 'change_percent', evidence.meta) && Number.isFinite(item.change_percent) ? formatPercentValue(item.change_percent) : '未提供'}，状态 ${item.status}，行情时间 ${formatIndexTradeTime(item.trade_time, item.meta)}`));
 	}
 	if (evidence.industries?.length) {
-		lines.push(...evidence.industries.slice(0, 20).map((item, index) => `${index + 1}. ${item.name}：动能 ${item.score.toFixed(1)}，当日 ${formatSigned(item.change_percent)}%，5日 ${formatSigned(item.five_day_change_percent)}%，20日 ${formatSigned(item.twenty_day_change_percent)}%，上涨/下跌 ${item.rising_count}/${item.falling_count}，主力 ${formatMoney(item.main_net_inflow)}，领涨 ${item.leader_name || '未知'}`));
+		lines.push(...evidence.industries.slice(0, 20).map((item, index) => {
+			const value = (field: keyof MarketIndustryMomentum, formatter: (value: number) => string) => sourceFieldAvailable(item.meta, field, evidence.meta) && Number.isFinite(item[field]) ? formatter(item[field] as number) : '未提供';
+			const leader = sourceFieldAvailable(item.meta, 'leader_name', evidence.meta) ? item.leader_name || '未提供' : '未提供';
+			return `${index + 1}. ${item.name}：动能 ${value('score', (score) => score.toFixed(1))}，当日 ${value('change_percent', formatPercentValue)}，5日 ${value('five_day_change_percent', formatPercentValue)}，20日 ${value('twenty_day_change_percent', formatPercentValue)}，上涨/下跌 ${value('rising_count', String)}/${value('falling_count', String)}，主力净流入 ${value('main_net_inflow', formatMoney)}，领涨 ${leader}`;
+		}));
 	}
 	if (evidence.flows?.length) {
 		lines.push(...evidence.flows.slice(0, 25).map((item, index) => {
-			const fields = evidence.meta?.available_fields || item.meta.available_fields || [];
-			const available = (field: string) => !fields.length || fields.includes(field);
-			const facts: string[] = [];
-			if (available('change_percent')) facts.push(`涨跌 ${formatSigned(item.change_percent)}%`);
-			if (available('net_inflow')) facts.push(`净流入 ${formatMoney(item.net_inflow)}（${formatSigned(item.net_inflow_ratio)}%）`);
-			if (available('main_net_inflow')) facts.push(`主力净流入 ${formatMoney(item.main_net_inflow)}（${formatSigned(item.main_net_inflow_ratio)}%）`);
-			if (available('retail_net_inflow')) facts.push(`散户净流入 ${formatMoney(item.retail_net_inflow)}（${formatSigned(item.retail_net_inflow_ratio)}%）`);
-			if (available('inflow')) facts.push(`流入 ${formatMoney(item.inflow)}，流出 ${formatMoney(item.outflow)}`);
-			if (available('leader_name') && item.leader_name) facts.push(`领涨 ${item.leader_name}${item.leader_symbol ? `（${item.leader_symbol}）` : ''} ${formatSigned(item.leader_change_percent)}%`);
-			if (available('super_large_net_inflow')) facts.push(`超大单 ${formatMoney(item.super_large_net_inflow)}，大单 ${formatMoney(item.large_net_inflow)}`);
-			return `${index + 1}. ${item.name}${item.symbol ? `（${item.symbol}）` : ''}：${facts.length ? facts.join('，') : '当前来源未提供可验证明细'}`;
+			const available = (field: string) => sourceFieldAvailable(item.meta, field, evidence.meta);
+			const value = (field: keyof MarketFundFlow, formatter: (value: number) => string) => available(field) && Number.isFinite(item[field]) ? formatter(item[field] as number) : '未提供';
+			const leader = available('leader_name') && item.leader_name ? `${item.leader_name}${available('leader_symbol') && item.leader_symbol ? `（${item.leader_symbol}）` : ''}（涨跌 ${value('leader_change_percent', formatPercentValue)}）` : '未提供';
+			const facts = [
+				`涨跌 ${value('change_percent', formatPercentValue)}`,
+				`总净流入 ${value('net_inflow', formatMoney)}（总净流入率 ${value('net_inflow_ratio', formatPercentValue)}）`,
+				`主力净流入 ${value('main_net_inflow', formatMoney)}（主力净流入率 ${value('main_net_inflow_ratio', formatPercentValue)}）`,
+				`散户净流入 ${value('retail_net_inflow', formatMoney)}（散户净流入率 ${value('retail_net_inflow_ratio', formatPercentValue)}）`,
+				`流入 ${value('inflow', formatMoney)}，流出 ${value('outflow', formatMoney)}`,
+				`领涨 ${leader}`,
+				`超大单 ${value('super_large_net_inflow', formatMoney)}，大单 ${value('large_net_inflow', formatMoney)}`,
+			];
+			return `${index + 1}. ${item.name}${item.symbol ? `（${item.symbol}）` : ''}：${facts.join('，')}`;
 		}));
 	}
 	if (evidence.margins?.length) {

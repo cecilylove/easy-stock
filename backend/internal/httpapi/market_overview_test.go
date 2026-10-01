@@ -80,6 +80,138 @@ func (p *fakeMarketOverviewProvider) MarketReports(_ context.Context, kind strin
 	return []foundation.MarketResearchItem{{Kind: kind, ID: "R1", Title: "研报", Meta: meta}}, meta, err
 }
 
+type identityMarketOverview struct {
+	fakeMarketOverviewProvider
+	requested []string
+}
+
+func (p *identityMarketOverview) MarketIndexSeries(_ context.Context, id, _ string, _ int) (foundation.MarketIndexSeries, error) {
+	p.requested = append(p.requested, id)
+	return foundation.MarketIndexSeries{Index: foundation.MarketIndexSnapshot{ID: id}, Lines: []foundation.KLine{{Symbol: id, Close: 100}}, Meta: foundation.SourceMeta{Source: "test:market"}}, nil
+}
+
+type periodIndexOverview struct {
+	fakeMarketOverviewProvider
+	periods []string
+}
+
+func (p *periodIndexOverview) MarketIndexSeries(_ context.Context, id, period string, _ int) (foundation.MarketIndexSeries, error) {
+	p.periods = append(p.periods, period)
+	return foundation.MarketIndexSeries{Index: foundation.MarketIndexSnapshot{ID: id}, Lines: []foundation.KLine{{Symbol: id, Close: 100}}, Meta: foundation.SourceMeta{Source: "tencent:index-kline"}}, nil
+}
+func TestIndexHandlerPeriodAliasesAndRetiredCapabilities(t *testing.T) {
+	p := &periodIndexOverview{}
+	server := NewServer(Config{MarketOverview: p})
+	defer server.Close()
+	server.marketIndexSourceID = "tencent"
+	for _, period := range []string{"day", "daily", "101", "week", "weekly", "102", "month", "monthly", "103"} {
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/market/index-series?id=sse&period="+period, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("period=%s status=%d body=%s", period, rec.Code, rec.Body.String())
+		}
+	}
+	if strings.Join(p.periods, ",") != "day,week,month" {
+		t.Fatalf("normalized cache/provider periods=%v", p.periods)
+	}
+	for _, query := range []string{"id=sse&period=5", "id=sse&period=120", "id=nikkei&period=day", "id=sse&period=year"} {
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/market/index-series?"+query, nil))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "不支持") {
+			t.Fatalf("query=%s status=%d body=%s", query, rec.Code, rec.Body.String())
+		}
+	}
+	if len(p.periods) != 3 || len(server.sourceHealth.capabilities) != 0 {
+		t.Fatalf("unsupported capabilities launched request or failure observation: periods=%v capabilities=%v", p.periods, server.sourceHealth.capabilities)
+	}
+}
+
+func TestIndexHandlerCanonicalAliasSharesCache(t *testing.T) {
+	p := &identityMarketOverview{}
+	server := NewServer(Config{MarketOverview: p})
+	defer server.Close()
+	for _, id := range []string{"nasdaq", "nasdaq100", "ixic"} {
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/market/index-series?id="+id, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("id=%s status=%d", id, rec.Code)
+		}
+	}
+	if len(p.requested) != 2 || p.requested[0] != "nasdaq100" || p.requested[1] != "nasdaq_composite" {
+		t.Fatalf("identity requests=%v", p.requested)
+	}
+}
+
+type maskedIndexOverview struct{ fakeMarketOverviewProvider }
+
+func (p *maskedIndexOverview) MarketIndexSeries(context.Context, string, string, int) (foundation.MarketIndexSeries, error) {
+	meta := foundation.SourceMeta{Source: "test:market", FieldsKnown: true, AvailableFields: []string{"close"}}
+	latest := meta
+	latest.AvailableFields = []string{"close", "change_percent"}
+	return foundation.MarketIndexSeries{Index: foundation.MarketIndexSnapshot{ID: "sse", Meta: latest}, Lines: []foundation.KLine{{Close: 100, Meta: meta}, {Close: 110, ChangePercent: 10, Meta: latest}}, Meta: meta}, nil
+}
+func TestIndexHandlerRetainsLatestAndPerBarMasks(t *testing.T) {
+	server := NewServer(Config{MarketOverview: &maskedIndexOverview{}})
+	defer server.Close()
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/market/index-series?id=sse", nil))
+	var response struct {
+		Data foundation.MarketIndexSeries `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || len(response.Data.Lines) != 2 || !foundation.FieldAvailable(response.Data.Index.Meta, "change_percent") || foundation.FieldAvailable(response.Data.Lines[0].Meta, "change_percent") || !foundation.FieldAvailable(response.Data.Lines[1].Meta, "change_percent") {
+		t.Fatalf("response=%+v status=%d err=%v", response, rec.Code, err)
+	}
+}
+
+func TestIndexSeriesFailureUsesOnlySameQueryStaleSnapshot(t *testing.T) {
+	provider := &fakeMarketOverviewProvider{}
+	server := NewServer(Config{MarketOverview: provider})
+	defer server.Close()
+	server.marketSnapshots.ttl = -time.Second
+	path := "/api/v1/market/index-series?id=sse&period=day&limit=2"
+	first := httptest.NewRecorder()
+	server.ServeHTTP(first, httptest.NewRequest(http.MethodGet, path, nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	provider.fail = true
+	second := httptest.NewRecorder()
+	server.ServeHTTP(second, httptest.NewRequest(http.MethodGet, path, nil))
+	var response struct {
+		Data foundation.MarketIndexSeries `json:"data"`
+		Meta foundation.SourceMeta        `json:"meta"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &response); err != nil || second.Code != http.StatusOK || !response.Meta.Stale || !response.Data.Index.Meta.Stale || !response.Data.Lines[0].Meta.Stale {
+		t.Fatalf("stale result=%+v status=%d err=%v", response, second.Code, err)
+	}
+	uncached := httptest.NewRecorder()
+	server.ServeHTTP(uncached, httptest.NewRequest(http.MethodGet, "/api/v1/market/index-series?id=sse&period=week&limit=2", nil))
+	if uncached.Code != http.StatusBadGateway {
+		t.Fatalf("wrong-period cached series reused: %d %s", uncached.Code, uncached.Body.String())
+	}
+}
+
+func TestMarketOverviewCapabilityObservationsOnlyOnRealLoader(t *testing.T) {
+	cache := newMarketOverviewCache(time.Minute)
+	health := newSourceHealthTracker()
+	calls := 0
+	attemptAt := time.Now().Add(-time.Second)
+	loader := func(context.Context) ([]int, foundation.SourceMeta, error) {
+		calls++
+		meta := foundation.SourceMeta{Source: "marketoverview:index", FetchedAt: attemptAt, Observations: []foundation.SourceObservation{{SourceID: "tencent", Capability: "index-snapshot/core", AttemptAt: attemptAt, Failed: true}, {SourceID: "eastmoney", Capability: "index-snapshot/core", AttemptAt: attemptAt, Meta: foundation.SourceMeta{Source: "eastmoney:index", FetchedAt: attemptAt}}}}
+		return []int{1}, meta, nil
+	}
+	_, _, err := loadMarketOverview(context.Background(), cache, health, "capability", loader, "tencent")
+	if err != nil || calls != 1 || !health.capabilities["tencent"]["index-snapshot/core"].failed || health.capabilities["eastmoney"]["index-snapshot/core"].failed {
+		t.Fatalf("calls=%d health=%+v err=%v", calls, health.capabilities, err)
+	}
+	before := health.capabilities["tencent"]["index-snapshot/core"].checkedAt
+	_, _, err = loadMarketOverview(context.Background(), cache, health, "capability", loader, "tencent")
+	if err != nil || calls != 1 || !health.capabilities["tencent"]["index-snapshot/core"].checkedAt.Equal(before) {
+		t.Fatal("cached observations renewed source health")
+	}
+}
+
 func TestMarketOverviewRoutesReturnStructuredData(t *testing.T) {
 	server := NewServer(Config{MarketOverview: &fakeMarketOverviewProvider{}})
 	tests := []struct {

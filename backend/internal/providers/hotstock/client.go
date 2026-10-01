@@ -59,6 +59,13 @@ func NewClient(options ...Option) *Client {
 	return client
 }
 
+// NewTHSClient uses only the implemented public THS ranking endpoint.
+func NewTHSClient(options ...Option) *Client {
+	client := NewClient(options...)
+	client.eastMoneyURL = ""
+	return client
+}
+
 func (client *Client) HotStockRanks(ctx context.Context, limit int) []foundation.HotStockRankList {
 	if limit <= 0 || limit > 100 {
 		limit = 100
@@ -67,9 +74,9 @@ func (client *Client) HotStockRanks(ctx context.Context, limit int) []foundation
 		index int
 		list  foundation.HotStockRankList
 	}
-	loaders := []func(context.Context, int) foundation.HotStockRankList{
-		client.loadTHS,
-		client.loadEastMoney,
+	loaders := []func(context.Context, int) foundation.HotStockRankList{client.loadTHS}
+	if client.eastMoneyURL != "" {
+		loaders = append(loaders, client.loadEastMoney)
 	}
 	results := make(chan result, len(loaders))
 	var group sync.WaitGroup

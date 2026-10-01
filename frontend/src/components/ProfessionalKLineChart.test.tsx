@@ -47,6 +47,31 @@ describe('professional chart navigation', () => {
 		expect(ticks.some(value => value < 0)).toBe(true);
 	});
 
+	it.each([-1, 0])('draws a %s previous adjusted close but does not use it as a percentage denominator', previous => {
+		const sample = [
+			{ ...lines[0], open: previous, close: previous, high: previous + 1, low: previous - 1 },
+			{ ...lines[1], open: 1, close: 3, high: 4, low: 0, previous_close: 2, change_percent: 0, meta: { ...lines[1].meta, fields_known: true, available_fields: ['open', 'high', 'low', 'close', 'volume', 'previous_close'] } },
+		];
+		act(() => root.render(<ProfessionalKLineChart lines={sample} symbol="000002.SZ" periodLabel="日K" state="ready" />));
+		expect(host.querySelectorAll('.kline-body')).toHaveLength(2);
+		expect(host.querySelector('.chart-value-strip')?.textContent).toContain('涨幅 --');
+		expect(host.innerHTML).not.toMatch(/NaN|Infinity/);
+	});
+	it('uses only finite masked supplier change without a positive previous price', () => {
+		const sample = { ...lines[0], previous_close: 0, change_percent: 7.25, meta: { ...lines[0].meta, fields_known: true, available_fields: ['close', 'change_percent'] } };
+		const render = (line: KLine) => act(() => root.render(<ProfessionalKLineChart lines={[line]} symbol="000002.SZ" periodLabel="日K" state="ready" />));
+		render(sample); expect(host.querySelector('.chart-value-strip')?.textContent).toContain('涨幅 7.25%');
+		render({ ...sample, change_percent: NaN }); expect(host.querySelector('.chart-value-strip')?.textContent).toContain('涨幅 --');
+		render({ ...sample, meta: { ...sample.meta, available_fields: ['close'] } }); expect(host.querySelector('.chart-value-strip')?.textContent).toContain('涨幅 --');
+	});
+	it('does not compute using a masked previous close', () => {
+		const sample = [
+			{ ...lines[0], meta: { ...lines[0].meta, fields_known: true, available_fields: ['volume'] } },
+			{ ...lines[1], change_percent: 0, meta: { ...lines[1].meta, fields_known: true, available_fields: ['close', 'volume'] } },
+		];
+		act(() => root.render(<ProfessionalKLineChart lines={sample} symbol="000002.SZ" periodLabel="日K" state="ready" />));
+		expect(host.querySelector('.chart-value-strip')?.textContent).toContain('涨幅 --');
+	});
 	it('preserves a panned viewport and SVG while appending new data', () => {
 		click('向前查看历史K线');
 		const svg = host.querySelector('svg'), candle = host.querySelector('.kline-body');

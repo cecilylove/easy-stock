@@ -2,6 +2,7 @@ package eastmoney
 
 import (
 	"context"
+	"easy-stock/backend/internal/foundation"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,6 +121,81 @@ func TestMarketFundFlowsFallsBackToBoardRanking(t *testing.T) {
 	momentum, _, err := client.IndustryMomentum(context.Background(), 1)
 	if err != nil || len(momentum) != 1 {
 		t.Fatalf("momentum fallback should honor limit: items=%+v err=%v", momentum, err)
+	}
+}
+
+func TestFundFlowFallbackDimensionAndEffectiveSort(t *testing.T) {
+	var requestedCodes []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/qt/clist/get" {
+			_, _ = w.Write([]byte(`{"rc":0,"data":{"diff":[]}}`))
+			return
+		}
+		requestedCodes = append(requestedCodes, r.URL.Query().Get("code"))
+		_, _ = w.Write([]byte(`{"rc":0,"data":{"diff":[{"f12":"BK01","f14":"low","f62":1},{"f12":"BK02","f14":"high","f62":9}]}}`))
+	}))
+	defer upstream.Close()
+	client := NewClient(WithQuoteBaseURL(upstream.URL), WithDataBaseURL(upstream.URL), WithHTTPClient(upstream.Client()))
+	items, meta, err := client.MarketFundFlows(context.Background(), "theme", "ratio", 1)
+	if err != nil || len(items) != 1 || items[0].Code != "BK02" || meta.RequestedSort != "ratio" || meta.EffectiveSort != "net" || !meta.FieldsKnown || len(meta.AvailableFields) != 1 {
+		t.Fatalf("items=%+v meta=%+v err=%v", items, meta, err)
+	}
+	_, _, err = client.IndustryMomentum(context.Background(), 1)
+	if err != nil || len(requestedCodes) != 2 || requestedCodes[0] != "m:90+t:3+f:!50" || requestedCodes[1] != "m:90+t:2+f:!50" {
+		t.Fatalf("codes=%v err=%v", requestedCodes, err)
+	}
+}
+
+func TestEastmoneyMinuteIndexBarsKeepShanghaiClock(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("klt") != "5" || r.URL.Query().Get("secid") != "1.000001" {
+			t.Errorf("unexpected index request: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"rc":0,"data":{"klines":["2026-09-30 09:35,100,101,102,99,1000,10000","2026-09-30 09:40,101,102,103,100,2000,20000"]}}`))
+	}))
+	defer upstream.Close()
+	client := NewClient(WithBaseURL(upstream.URL), WithHTTPClient(upstream.Client()))
+	series, err := client.MarketIndexSeries(context.Background(), "sse", "5", 2)
+	if err != nil || len(series.Lines) != 2 {
+		t.Fatalf("series=%+v err=%v", series, err)
+	}
+	if series.Meta.TimeZone != "Asia/Shanghai" || series.Index.TradeTime.Format("15:04") != "09:40" {
+		t.Fatalf("lost minute metadata: %+v", series)
+	}
+	for i, clock := range []string{"09:35", "09:40"} {
+		_, offset := series.Lines[i].Time.Zone()
+		if offset != 8*60*60 || series.Lines[i].Time.Format("15:04") != clock || series.Lines[i].Meta.TimeZone != "Asia/Shanghai" {
+			t.Fatalf("minute %d collapsed or miszoned: %+v", i, series.Lines[i])
+		}
+	}
+}
+
+func TestEastmoneyIndexChangeMaskOnlyForValidReportedChange(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"rc":0,"data":{"klines":["2026-09-28,100,101,102,99,1000,10000","2026-09-29,101,102,103,100,2000,20000,1,NaN","2026-09-30,102,103,104,101,2000,20000,1,0.98"]}}`))
+	}))
+	defer upstream.Close()
+	client := NewClient(WithBaseURL(upstream.URL), WithHTTPClient(upstream.Client()))
+	series, err := client.MarketIndexSeries(context.Background(), "sse", "day", 3)
+	if err != nil || len(series.Lines) != 3 {
+		t.Fatalf("series=%+v err=%v", series, err)
+	}
+	if foundation.FieldAvailable(series.Lines[0].Meta, "change_percent") || foundation.FieldAvailable(series.Lines[1].Meta, "change_percent") || series.Lines[1].ChangePercent != 0 || !foundation.FieldAvailable(series.Lines[2].Meta, "change_percent") || !foundation.FieldAvailable(series.Index.Meta, "change_percent") {
+		t.Fatalf("invalid change masks: %+v", series)
+	}
+}
+
+func TestEastmoneyIndexSeriesRejectsNoValidHistory(t *testing.T) {
+	for _, rows := range []string{`[]`, `["2026-09-30,0,0,0,0,0,0"]`, `["bad,1,1,1,1,0,0"]`} {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"rc":0,"data":{"klines":` + rows + `}}`))
+		}))
+		client := NewClient(WithBaseURL(upstream.URL), WithHTTPClient(upstream.Client()))
+		series, err := client.MarketIndexSeries(context.Background(), "nasdaq", "day", 2)
+		upstream.Close()
+		if err == nil || len(series.Lines) != 0 {
+			t.Fatalf("rows=%s series=%+v err=%v", rows, series, err)
+		}
 	}
 }
 

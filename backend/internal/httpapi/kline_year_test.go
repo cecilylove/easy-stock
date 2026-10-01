@@ -63,6 +63,40 @@ func TestAggregateYearAcceptsNegativeAdjustedPricesAndRejectsNonFiniteFields(t *
 	}
 }
 
+func TestAnnualFieldMaskNeverCarriesMonthPreviousClose(t *testing.T) {
+	first := annualTestMonth("2025-06-30", 10, 11, 9, 10, 100)
+	first.PreviousClose = 999
+	first.Meta.FieldsKnown = true
+	first.Meta.AvailableFields = []string{"open", "high", "low", "close", "volume", "amount", "turnover_rate", "previous_close", "change_percent"}
+	last := annualTestMonth("2025-12-31", 10, 12, 9, 11, 100)
+	last.Meta.FieldsKnown = true
+	last.Meta.AvailableFields = []string{"open", "high", "low", "close", "volume"}
+	next := last
+	next.Time = next.Time.AddDate(1, 0, 0)
+	bars := aggregateYearKLines([]foundation.KLine{first, last, next}, 2)
+	if len(bars) != 2 || bars[0].PreviousClose != 0 || bars[0].ChangePercent != 0 || foundation.FieldAvailable(bars[0].Meta, "previous_close") || foundation.FieldAvailable(bars[0].Meta, "turnover_rate") || foundation.FieldAvailable(bars[0].Meta, "amount") || foundation.FieldAvailable(bars[0].Meta, "change_percent") || bars[0].Meta.Period != "year" {
+		t.Fatalf("month mask leaked into year %+v", bars)
+	}
+	if bars[1].PreviousClose != 11 || !foundation.FieldAvailable(bars[1].Meta, "previous_close") || !foundation.FieldAvailable(bars[1].Meta, "change_percent") {
+		t.Fatalf("actual previous-year baseline missing %+v", bars[1])
+	}
+	last.Time, _ = time.Parse(time.RFC3339, "2025-11-30T15:00:00+08:00")
+	bars = aggregateYearKLines([]foundation.KLine{first, last, next}, 2)
+	if bars[1].PreviousClose != 0 || foundation.FieldAvailable(bars[1].Meta, "change_percent") {
+		t.Fatal("incomplete prior year used as full year baseline")
+	}
+}
+
+func TestAnnualRejectsMixedPriceBasis(t *testing.T) {
+	first := annualTestMonth("2025-06-30", 10, 11, 9, 10, 100)
+	last := annualTestMonth("2025-12-31", 10, 12, 9, 11, 100)
+	first.Meta.BasisID = "tencent:qfq"
+	last.Meta.BasisID = "eastmoney:qfq"
+	if result := aggregateYearKLines([]foundation.KLine{first, last}, 1); len(result) != 0 {
+		t.Fatal("mixed annual price bases accepted")
+	}
+}
+
 func TestYearKLineRouteFetchesMonthlyHistoryAndFallsBack(t *testing.T) {
 	var periods []string
 	provider := klineProviderFunc(func(_ context.Context, _ string, period string, limit int) ([]foundation.KLine, error) {

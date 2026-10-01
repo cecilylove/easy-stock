@@ -23,7 +23,7 @@ type countedDetailLines struct{ calls atomic.Int32 }
 
 func (p *countedDetailLines) KLine(_ context.Context, symbol, _ string, _ int) ([]foundation.KLine, error) {
 	p.calls.Add(1)
-	return []foundation.KLine{{Symbol: symbol, Time: time.Now(), Close: 10.1, Meta: foundation.SourceMeta{Source: "test", FetchedAt: time.Now()}}}, nil
+	return []foundation.KLine{{Symbol: symbol, Time: time.Now(), Open: 10, High: 11, Low: 9, Close: 10.1, Meta: foundation.SourceMeta{Source: "test", FetchedAt: time.Now()}}}, nil
 }
 
 func TestStockDetailPollRoutesDeduplicateWithoutChangingSharedEndpoints(t *testing.T) {
