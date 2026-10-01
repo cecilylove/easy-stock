@@ -699,6 +699,15 @@ func (s *Server) kline(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
+	adjustment := strings.TrimSpace(r.URL.Query().Get("adjust"))
+	if adjustment != "" && adjustment != "source" && adjustment != "none" && adjustment != "qfq" && adjustment != "hfq" {
+		writeError(w, http.StatusBadRequest, "adjust must be source, none, qfq or hfq")
+		return
+	}
+	if adjustment != "" && adjustment != "source" && strings.TrimSpace(period) == "1" && r.URL.Query().Get("detail") == "1" {
+		writeError(w, http.StatusBadRequest, "single-day detail minute data does not support explicit adjustment")
+		return
+	}
 	if r.URL.Query().Get("detail") == "1" && strings.TrimSpace(period) == "1" {
 		normalized, normalizeErr := foundation.NormalizeSymbol(symbol)
 		if normalizeErr != nil {
@@ -727,7 +736,13 @@ func (s *Server) kline(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	lines, err := s.loadKLine(ctx, symbol, period, limit)
+	var lines []foundation.KLine
+	var err error
+	if adjustment != "" && adjustment != "source" {
+		lines, err = s.loadAdjustedKLine(ctx, symbol, period, limit, adjustment)
+	} else {
+		lines, err = s.loadKLine(ctx, symbol, period, limit)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -803,6 +818,20 @@ func (s *Server) klineBatch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loadKLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(period) == "year" {
+		// Neither configured source has a portable calendar-year period.
+		// Fetch an extra year of monthly history to avoid a truncated leading year.
+		limit = min(max(limit, 1), 50)
+		months, err := s.loadKLine(ctx, symbol, "month", (limit+1)*12)
+		if err != nil {
+			return nil, err
+		}
+		years := aggregateYearKLines(months, limit)
+		if len(years) == 0 {
+			return nil, fmt.Errorf("monthly source returned no usable bars for year aggregation")
+		}
+		return years, nil
 	}
 	// The primary gets at most half of the remaining request budget, capped
 	// at six seconds, so a slow primary cannot prevent the fallback running.

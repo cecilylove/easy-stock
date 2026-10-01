@@ -1,14 +1,19 @@
 import type { StockDirectoryEntry } from './backend';
 import { normalizeAnalysisSymbol } from './stock-analysis';
 
-export type StockDetailPeriod = 'intraday' | 'five-day' | 'day' | 'week' | 'month';
+export type StockDetailPeriod = 'intraday' | 'five-day' | 'day' | 'week' | 'month' | 'year' | 'minute5' | 'minute15' | 'minute30' | 'minute60';
 
 export const stockDetailPeriods: { key: StockDetailPeriod; label: string; apiPeriod: string; limit: number; mode: 'intraday' | 'daily' }[] = [
 	{ key: 'intraday', label: '分时', apiPeriod: '1', limit: 240, mode: 'intraday' },
 	{ key: 'five-day', label: '5日', apiPeriod: '5', limit: 240, mode: 'intraday' },
-	{ key: 'day', label: '日K', apiPeriod: 'day', limit: 120, mode: 'daily' },
+	{ key: 'day', label: '日K', apiPeriod: 'day', limit: 240, mode: 'daily' },
 	{ key: 'week', label: '周K', apiPeriod: 'week', limit: 80, mode: 'daily' },
 	{ key: 'month', label: '月K', apiPeriod: 'month', limit: 60, mode: 'daily' },
+	{ key: 'year', label: '年K', apiPeriod: 'year', limit: 40, mode: 'daily' },
+	{ key: 'minute5', label: '5分', apiPeriod: '5', limit: 240, mode: 'daily' },
+	{ key: 'minute15', label: '15分', apiPeriod: '15', limit: 240, mode: 'daily' },
+	{ key: 'minute30', label: '30分', apiPeriod: '30', limit: 240, mode: 'daily' },
+	{ key: 'minute60', label: '60分', apiPeriod: '60', limit: 240, mode: 'daily' },
 ];
 
 // This route carries only a stock symbol, never account or model data.

@@ -17,6 +17,12 @@ This document tracks the stock-related data sources that form the `easy-stock` d
 
 `/api/v1/quotes/kline` requests EastMoney first and falls back to Sina when the primary request fails or returns no bars. The primary has at most 6 seconds and half the remaining request budget; the fallback has at most 10 seconds within the original deadline. This reserves time for a healthy fallback during slow primary failures. Caller cancellation stops both, and an unattempted fallback is not recorded as a failed source. If both sources return no bars, the API reports an error rather than a successful empty result. Sina uses `scale=240` for daily bars, `1200` for weekly bars, and `7200` for calendar-month bars (`month`, `monthly`, `103`, or `7200`). Monthly bars come directly from the source, rather than aggregating a fixed number of trading days. Read each bar's `meta.source` and `meta.source_url` to identify the actual source; the source's latest monthly bar may still represent an unfinished month.
 
+`period=year` aggregates the configured source's calendar-month OHLC bars by Shanghai calendar year. It fetches `(min(limit, 50)+1)*12` monthly bars, then keeps the latest requested annual bars. Annual open/close are the first/last observed monthly values; high/low are extrema and volume/amount are summed once per month. Previous annual close is retained when available; annual turnover is omitted rather than misrepresenting a sum as unique yearly turnover. The source's adjustment convention is unchanged. Metadata explicitly warns that the first and current years may be incomplete; no missing months are fabricated. EastMoney-to-Sina fallback still applies to the monthly fetch.
+
+Explicit `adjust=qfq|hfq|none` is available on the single-stock K-line route, through EastMoney `fqt=1|2|0`. It does **not** fall back to Sina: a source error must remain an error rather than returning a different adjustment convention. `adjust=source` (or omitted) retains the existing fallback contract. Annual aggregation uses the selected monthly convention. UI cache/request identities include adjustment. These parameters do not change shared batch callers.
+
+Sina realtime quotes additionally expose optional cumulative `volume` (shares), `amount`, and five `bids`/`asks` with share quantities. Malformed or missing fields remain unavailable; the UI converts depth to lots once and carries the quote timestamp/stale state through the order book. Zero-valued source levels represent an empty level, not a fabricated quote. The data is L1 snapshots, not Level-2 or tick-by-tick trades.
+
 ## Trend Theme Radar Priority
 
 - 开盘啦当天快照优先，题材榜和领涨股作为同一来源快照使用。
@@ -82,7 +88,9 @@ If EastMoney `push2` closes the constituent connection, the node falls back to `
 
 `GET /api/v1/quotes/auction?symbol=600519.SH` 使用东方财富 `stock/trends2/get` 的单交易日分钟快照，仅筛选 09:15–09:25 价格点；09:15–09:25 价格是**参考价而非逐分钟成交价**，不从 09:26 来源量额推断竞价最终成交。该接口不改写普通 K 线口径；返回 `data.meta` 的来源/抓取时间与 `data.trade_date`，历史交易日只给 `status=historical`、空点，避免旧日数据冒充当日竞价。东财主节点失败可尝试现有行情镜像节点，但可用性与盘中更新频率仍须在交易时段持续验证；无可靠点时页面显示缺失，不用 09:30 开盘价补造；页面可暂存同股同日已经成功获取的真实参考点，后续刷新失败时明确标为旧快照，跨交易日不可复用。仅个股详情的 `detail=1` 单股请求使用本机短时复用：成功至少间隔 5 秒，按股票/周期/上海日期隔离，同键合并在途请求，失败暂时退避 30–120 秒；取消最后一个查看者时取消尚未完成的来源请求。普通报价/K 线公共接口的行为不变。返回的 `meta.stale`、行情时间及来源仍是判断旧快照的依据；昨天的数据不能当作今天行情。
 
-个股详情在工作日盘中且页面可见时后台刷新：报价、分时和竞价约每 5 秒（竞价只在对应盘前时段），五日及日/周/月 K 约每 60 秒。午休、收盘后、周末与隐藏页面暂停；节假日仍按来源交易时间判断。已有图表和行情在请求期间保持显示，不切回加载占位或插入提示行；失败保留旧图并在图下固定状态位置说明。慢请求未完成时不发起同类轮询，切换股票/周期取消旧请求且拒绝旧响应，后台更新保持悬浮时间点和滚动容器。服务器缓存命中可能返回相同数据，不表示来源在该次轮询重新抓取。
+个股详情在工作日盘中且页面可见时后台刷新：报价、分时和竞价约每 5 秒（竞价只在对应盘前时段），五日及日/周/月/年 K 约每 60 秒。午休、收盘后、周末与隐藏页面暂停；节假日仍按来源交易时间判断。已有图表和行情在请求期间保持显示，不切回加载占位或插入提示行；失败保留旧图并在图下固定状态位置说明。慢请求未完成时不发起同类轮询，切换股票/周期取消旧请求且拒绝旧响应，后台更新保持悬浮时间点和滚动容器。服务器缓存命中可能返回相同数据，不表示来源在该次轮询重新抓取。
+
+分时图固定 09:30–11:30、13:00–15:00 时间轴，未来区域保持空白，不按已返回点数拉伸。前端同股、同来源、同日分钟快照按时间合并，允许更新最后一分钟和追加新点；跨日或换源重置，不拼接不同复权口径。日/周/月/年 K 仍以来源返回的历史快照为准，避免保留已失效的复权历史。React 保留 SVG、按时间键复用柱体，更新路径/属性而非销毁图表；不是网络端的逐笔推送或增量协议。价格/成交量坐标范围保持不收缩，突破边界时扩展；换股、周期、日期或窗口大小变化仍可能调整坐标。专业 K 线支持加载样本内缩放/平移、按时间保持历史窗口、主副图光标联动与MA/MACD/KDJ；跟随最新时新增K线推动窗口，主动查看历史时不自动跳回最新。实现口径与公开参考见 `docs/stock-detail-terminal.md`。分时成交均价只用可校验单位的成交额/成交量计算，量额不足时省略黄线，不用普通移动均线替代。
 
 ## 接入方式与降级边界
 

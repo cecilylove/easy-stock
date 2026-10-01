@@ -122,7 +122,7 @@ export function TradingMastery({ config, refreshKey, onAskAI }: Props) {
 			<div className="mastery-layout">
 				<aside className="mastery-trader-rail">
 					<header><div><span>游资人物</span><strong>{snapshot?.traders.length || 0} 位</strong></div><BrainCircuit size={18} /></header>
-					<label className="mastery-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索人物或关键词" /></label>
+					<label className="mastery-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="搜索游资人物或关键词" placeholder="搜索人物或关键词" /></label>
 					<div className="mastery-trader-list">
 						{indexState === 'loading' && !snapshot && <div className="mastery-loading"><LoaderCircle className="spin" size={19} /><span>首次读取 GitHub 并建立缓存…</span></div>}
 						{visibleTraders.map((trader, index) => (
@@ -166,7 +166,7 @@ export function TradingMastery({ config, refreshKey, onAskAI }: Props) {
 							{activeDocument && (
 								<div className="mastery-document">
 									<div className="mastery-document-note"><span>{activeDocument.kind === 'deep_report' ? '优先阅读：深度研读报告通常比学习笔记完整' : '原始学习笔记，可能包含待补充占位'}</span><a href={activeDocument.source_url} target="_blank" rel="noreferrer">原文 <ExternalLink size={12} /></a></div>
-									<MarkdownDocument content={activeDocument.content} />
+									<MarkdownDocument key={activeDocument.id} content={activeDocument.content} />
 								</div>
 							)}
 						</>
@@ -236,7 +236,7 @@ function MarkdownDocument({ content }: { content: string }) {
 		while (index < lines.length && lines[index].trim() && !isBlockStart(lines[index].trim(), lines[index + 1]?.trim())) paragraph.push(lines[index++].trim());
 		blocks.push(<p key={`p-${index}`}>{inlineMarkdown(paragraph.join(' '))}</p>);
 	}
-	return <div className="mastery-markdown">{blocks}</div>;
+	return <div className="mastery-markdown" role="region" aria-label="心法正文" tabIndex={0}><div className="mastery-prose">{blocks}</div></div>;
 }
 
 function inlineMarkdown(value: string): ReactNode[] {

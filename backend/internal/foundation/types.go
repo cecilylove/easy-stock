@@ -16,18 +16,27 @@ type SourceMeta struct {
 	CarryForward    bool       `json:"carry_forward,omitempty"`
 }
 
+type QuoteLevel struct {
+	Price  float64 `json:"price"`
+	Volume float64 `json:"volume"` // shares, never lots
+}
+
 type Quote struct {
-	Symbol        string     `json:"symbol"`
-	Name          string     `json:"name"`
-	Price         float64    `json:"price"`
-	Open          float64    `json:"open"`
-	PreviousClose float64    `json:"previous_close"`
-	High          float64    `json:"high"`
-	Low           float64    `json:"low"`
-	Change        float64    `json:"change"`
-	ChangePercent float64    `json:"change_percent"`
-	TradeTime     time.Time  `json:"trade_time,omitempty"`
-	Meta          SourceMeta `json:"meta"`
+	Symbol        string       `json:"symbol"`
+	Name          string       `json:"name"`
+	Price         float64      `json:"price"`
+	Open          float64      `json:"open"`
+	PreviousClose float64      `json:"previous_close"`
+	High          float64      `json:"high"`
+	Low           float64      `json:"low"`
+	Change        float64      `json:"change"`
+	ChangePercent float64      `json:"change_percent"`
+	TradeTime     time.Time    `json:"trade_time,omitempty"`
+	Volume        *float64     `json:"volume,omitempty"`
+	Amount        *float64     `json:"amount,omitempty"`
+	Bids          []QuoteLevel `json:"bids,omitempty"`
+	Asks          []QuoteLevel `json:"asks,omitempty"`
+	Meta          SourceMeta   `json:"meta"`
 }
 
 // AuctionTrace is a separately sourced indicative pre-open price series.

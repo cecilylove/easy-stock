@@ -125,6 +125,48 @@ describe('stock detail refresh preserves the rendered chart', () => {
 		} finally { observer.disconnect(); }
 	});
 
+	it('appends a minute delta without moving existing points, replacing SVG nodes or shrinking the price axis', async () => {
+		await render(); await selectPeriod('分时');
+		const svg = chartSVG()!;
+		const path = svg.querySelector('.stock-intraday-price-line')!;
+		const oldPath = path.getAttribute('d')!;
+		const oldBars = [...svg.querySelectorAll('.stock-intraday-volume')];
+		const oldAxis = [...svg.querySelectorAll('.stock-intraday-label')].map(label => label.textContent);
+		const poll = deferred<{ data: KLine[] }>(); nextChart = () => poll.promise;
+		await advance(5000);
+		const next = { ...lines()[1], time: '2026-09-30T09:41:00+08:00', close: 10.4, volume: 50, amount: 520 };
+		await act(async () => poll.resolve({ data: [next] }));
+		expect(chartSVG()).toBe(svg); expect(svg.querySelector('.stock-intraday-price-line')).toBe(path);
+		expect(path.getAttribute('d')).toMatch(new RegExp(`^${oldPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} L`));
+		expect([...svg.querySelectorAll('.stock-intraday-volume')].slice(0, 2)).toEqual(oldBars);
+		expect([...svg.querySelectorAll('.stock-intraday-label')].map(label => label.textContent)).toEqual(oldAxis);
+	});
+
+	it('patches the current candle without moving the prior candle or replacing it', async () => {
+		await render();
+		const svg = chartSVG()!;
+		const firstBody = svg.querySelector('.kline-body')!;
+		const previousX = firstBody.getAttribute('x');
+		const previousY = firstBody.getAttribute('y');
+		const poll = deferred<{ data: KLine[] }>(); nextChart = () => poll.promise;
+		await advance(60000);
+		await act(async () => poll.resolve({ data: [lines()[0], { ...lines()[1], close: 10.4 }] }));
+		expect(chartSVG()).toBe(svg); expect(svg.querySelector('.kline-body')).toBe(firstBody);
+		expect(firstBody.getAttribute('x')).toBe(previousX); expect(firstBody.getAttribute('y')).toBe(previousY);
+	});
+
+	it('keeps candle spacing when a new bar arrives within the reserved right margin', async () => {
+		await render();
+		const svg = chartSVG()!;
+		const body = svg.querySelector('.kline-body')!;
+		const x = body.getAttribute('x');
+		const poll = deferred<{ data: KLine[] }>(); nextChart = () => poll.promise;
+		await advance(60000);
+		await act(async () => poll.resolve({ data: [...lines(), { ...lines()[1], time: '2026-10-01T09:40:00+08:00' }] }));
+		expect(svg.querySelector('.kline-body')).toBe(body); expect(body.getAttribute('x')).toBe(x);
+		expect(svg.querySelectorAll('.kline-body')).toHaveLength(3);
+	});
+
 	it('keeps the old SVG and data when an automatic refresh fails', async () => {
 		await render(); await selectPeriod('分时');
 		const svg = chartSVG(); const path = svg!.querySelector('path')?.getAttribute('d');
@@ -174,6 +216,32 @@ describe('stock detail refresh preserves the rendered chart', () => {
 		expect(panel().textContent).not.toContain('old-period-response');
 	});
 
+	it('isolates adjustment data and does not display the old convention after a failed switch', async () => {
+		await render();
+		const original = chartSVG(); expect(original).not.toBeNull();
+		const failure = deferred<{ data: KLine[] }>(); nextChart = () => failure.promise;
+		const select = host.querySelector<HTMLSelectElement>('[aria-label="复权口径"]')!;
+		await act(async () => { select.value = 'hfq'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+		expect(chartRequests('day').at(-1)?.url.searchParams.get('adjust')).toBe('hfq');
+		expect(chartSVG()).toBeNull();
+		await act(async () => failure.reject(new Error('指定复权来源暂不可用')));
+		expect(chartSVG()).toBeNull(); expect(panel().textContent).toContain('指定复权来源暂不可用');
+		await act(async () => { select.value = 'source'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+		expect(chartSVG()).not.toBeNull();
+	});
+
+	it('supports focused F5/F8 chart shortcuts without intercepting search input', async () => {
+		await render();
+		const workspace = host.querySelector('.stock-terminal')!;
+		await act(async () => workspace.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', bubbles: true, cancelable: true })));
+		expect(panel().querySelector('h3')?.textContent).toContain('分时');
+		await act(async () => workspace.dispatchEvent(new KeyboardEvent('keydown', { key: 'F8', bubbles: true, cancelable: true })));
+		expect(panel().querySelector('h3')?.textContent).toContain('5日');
+		const input = host.querySelector('input[aria-label="搜索股票名称或代码"]')!;
+		await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', bubbles: true, cancelable: true })));
+		expect(panel().querySelector('h3')?.textContent).toContain('5日');
+	});
+
 	it('ignores a late response from the previously selected stock', async () => {
 		const initial = deferred<{ data: KLine[] }>(); nextChart = () => initial.promise;
 		await render(); const previous = chartRequests('day').at(-1)!;
@@ -184,7 +252,7 @@ describe('stock detail refresh preserves the rendered chart', () => {
 		expect(panel().textContent).not.toContain('old-stock-response');
 	});
 
-	it.each([['5日', '5'], ['日K', 'day'], ['周K', 'week'], ['月K', 'month']])('%s refreshes at 60 seconds while preserving the SVG', async (label, apiPeriod) => {
+	it.each([['5日', '5'], ['日K', 'day'], ['周K', 'week'], ['月K', 'month'], ['年K', 'year']])('%s refreshes at 60 seconds while preserving the SVG', async (label, apiPeriod) => {
 		await render(); await selectPeriod(label);
 		const svg = chartSVG(); const before = chartRequests(apiPeriod).length;
 		for (let tick = 0; tick < 11; tick += 1) await advance(5000);

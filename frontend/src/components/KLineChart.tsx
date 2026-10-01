@@ -1,6 +1,7 @@
 import { KLine } from '../lib/backend';
 import { type MouseEvent, useState } from 'react';
 import { useChartViewport } from '../lib/use-chart-viewport';
+import { useChartBaseline, useExpandingChartValue } from '../lib/use-stable-chart-scale';
 
 type Props = {
 	lines: KLine[];
@@ -14,6 +15,8 @@ type Props = {
 function formatTime(value: string, mode: 'intraday' | 'daily', periodLabel: string) {
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) return value.slice(0, 16);
+	if (mode === 'daily' && periodLabel === '年K') return date.toLocaleDateString('zh-CN', { year: 'numeric', timeZone: 'Asia/Shanghai' });
+	if (mode === 'daily' && periodLabel === '月K') return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', timeZone: 'Asia/Shanghai' });
 	if (mode === 'intraday' && periodLabel === '5日') return `${date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })} ${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
 	if (mode === 'intraday') return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 	return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
@@ -61,9 +64,6 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 	const [hoveredPoint, setHoveredPoint] = useState<{ context: string; time: string } | null>(null);
 	const context = JSON.stringify([symbol, mode, periodLabel]);
 	const { containerRef, width: containerWidth, scrollable } = useChartViewport(fluid && lines.length > 0);
-	if (state === 'loading' && !lines.length) return <div className="kline-chart-placeholder">正在加载{periodLabel}数据…</div>;
-	if (!lines.length) return <div className="kline-chart-placeholder">{state === 'error' ? `${periodLabel}数据暂不可用，请稍后重试。` : `暂无${periodLabel}数据。`}</div>;
-
 	const sorted = [...lines].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 	// Anchor inspection to the observed candle, not its index in a refreshed window.
 	const selectedIndex = hoveredPoint?.context === context ? sorted.findIndex(line => line.time === hoveredPoint.time) : -1;
@@ -78,30 +78,40 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 	const volumeTop = height - 92;
 	const volumeBottom = height - 42;
 	const plotWidth = width - left - right;
-	const minPrice = Math.min(...sorted.map((line) => line.low));
-	const maxPrice = Math.max(...sorted.map((line) => line.high));
 	// One-day intraday data is filtered to the latest trading day, so retain
 	// the previous close supplied by the API as the 0% baseline.
 	const suppliedPreviousClose = sorted.find((line) => line.previous_close != null && line.previous_close > 0)?.previous_close;
-	const referencePrice = mode === 'intraday' && suppliedPreviousClose && suppliedPreviousClose > 0
+	const candidate = mode === 'intraday' && suppliedPreviousClose && suppliedPreviousClose > 0
 		? suppliedPreviousClose
-		: sorted[0].close > 0 ? sorted[0].close : Math.max(minPrice, 0.01);
+		: sorted[0]?.close > 0 ? sorted[0].close : 1;
+	const referencePrice = useChartBaseline(context, candidate, sorted.length > 0);
 	const percentChange = (value: number) => ((value - referencePrice) / referencePrice) * 100;
 	// A multi-day change can exceed a stock's single-day limit; do not flatten it.
-	const percentRange = mode === 'intraday' && !showTradingDays ? intradayLimitPercent(symbol) : Math.max(
-		5,
-		Math.ceil((Math.max(...sorted.flatMap((line) => [Math.abs(percentChange(line.high)), Math.abs(percentChange(line.low))]), 1) * 1.08) / 5) * 5,
-	);
-	const maxVolume = Math.max(...sorted.map((line) => line.volume), 1);
-	const step = plotWidth / sorted.length;
+	const requiredRange = mode === 'intraday' && !showTradingDays ? intradayLimitPercent(symbol) : Math.max(...sorted.flatMap((line) => [Math.abs(percentChange(line.high)), Math.abs(percentChange(line.low))]), 1);
+	const percentRange = useExpandingChartValue(context, requiredRange, 5, 5, mode === 'daily' || showTradingDays ? 1.08 : 1);
+	const maxVolume = useExpandingChartValue(context, Math.max(...sorted.map((line) => line.volume), 1), 1, 1, 1.15);
+	// Reserve a small right margin for new bars. Existing candles keep their x
+	// coordinates until that capacity is exhausted, rather than refitting each poll.
+	const slots = useExpandingChartValue(context, sorted.length, 20, 20, 1.08);
+	const lowerRange = useExpandingChartValue(context, Math.max(...sorted.map(line => -percentChange(line.low)), 0), 5, 5, 1.08);
+	const upperRange = useExpandingChartValue(context, Math.max(...sorted.map(line => percentChange(line.high)), 0), 5, 5, 1.08);
+	const axisMin = mode === 'daily' ? -Math.min(lowerRange, 99.9) : -percentRange;
+	const axisMax = mode === 'daily' ? upperRange : percentRange;
+	if (state === 'loading' && !lines.length) return <div className="kline-chart-placeholder">正在加载{periodLabel}数据…</div>;
+	if (!lines.length) return <div className="kline-chart-placeholder">{state === 'error' ? `${periodLabel}数据暂不可用，请稍后重试。` : `暂无${periodLabel}数据。`}</div>;
+	const step = plotWidth / (fluid && mode === 'daily' ? slots : sorted.length);
 	const bodyWidth = Math.max(2, Math.min(10, step * 0.62));
 	const percentY = (value: number) => {
-		const bounded = Math.max(-percentRange, Math.min(percentRange, value));
-		return chartTop + ((percentRange - bounded) / (percentRange * 2)) * (chartBottom - chartTop);
+		const bounded = Math.max(axisMin, Math.min(axisMax, value));
+		return chartTop + ((axisMax - bounded) / (axisMax - axisMin)) * (chartBottom - chartTop);
 	};
 	const priceY = (value: number) => percentY(percentChange(value));
 	const volumeY = (value: number) => volumeBottom - (value / maxVolume) * (volumeBottom - volumeTop);
-	const percentTicks = Array.from({ length: 7 }, (_, index) => percentRange - (percentRange * 2 * index) / 6);
+	const percentTicks = Array.from({ length: 7 }, (_, index) => axisMax - ((axisMax - axisMin) * index) / 6);
+	if (mode === 'daily' && !percentTicks.some(tick => Math.abs(tick) < .001)) {
+		const nearest = percentTicks.reduce((best, tick, index) => Math.abs(tick) < Math.abs(percentTicks[best]) ? index : best, 0);
+		percentTicks[nearest] = 0;
+	}
 	const labelIndexes = sorted.length <= 5 ? sorted.map((_, index) => index) : [0, Math.floor((sorted.length - 1) / 2), sorted.length - 1];
 	const dayKey = (value: string) => value.slice(0, 10);
 	const tradingDays: { day: string; start: number; end: number; time: string }[] = [];
@@ -154,7 +164,8 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 		const bounds = event.currentTarget.getBoundingClientRect();
 		if (!bounds.width) return;
 		const plotX = left + ((event.clientX - bounds.left) / bounds.width) * plotWidth;
-		const index = Math.max(0, Math.min(sorted.length - 1, Math.floor((plotX - left) / step)));
+		const index = Math.floor((plotX - left) / step);
+		if (index < 0 || index >= sorted.length) { setHoveredPoint(null); return; }
 		setHoveredPoint({ context, time: sorted[index].time });
 	};
 	const linePath = sorted.map((line, index) => {
@@ -190,7 +201,7 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 							const x = left + index * step + step / 2;
 							const barTop = volumeY(line.volume);
 							const change = barChangePercent(index);
-							return <g key={`${line.time}-${index}`} className={line.close >= line.open ? 'kline-up' : 'kline-down'}><title>{`${formatLongDate(line.time)} 收 ${line.close.toFixed(2)}（${change >= 0 ? '+' : ''}${change.toFixed(2)}%）成交量 ${formatVolume(line.volume)}`}</title><circle className="kline-close-point" cx={x} cy={priceY(line.close)} r={Math.max(1.5, Math.min(3, step / 3))} /><rect className="kline-volume" x={x - bodyWidth / 2} y={barTop} width={bodyWidth} height={volumeBottom - barTop} /></g>;
+							return <g key={line.time} className={line.close >= line.open ? 'kline-up' : 'kline-down'}><title>{`${formatLongDate(line.time)} 收 ${line.close.toFixed(2)}（${change >= 0 ? '+' : ''}${change.toFixed(2)}%）成交量 ${formatVolume(line.volume)}`}</title><circle className="kline-close-point" cx={x} cy={priceY(line.close)} r={Math.max(1.5, Math.min(3, step / 3))} /><rect className="kline-volume" x={x - bodyWidth / 2} y={barTop} width={bodyWidth} height={volumeBottom - barTop} /></g>;
 						})}
 					</>
 				) : sorted.map((line, index) => {
@@ -200,7 +211,7 @@ export function KLineChart({ lines, symbol, state = 'ready', mode = 'daily', per
 					const bodyBottom = priceY(Math.min(line.open, line.close));
 					const barTop = volumeY(line.volume);
 					const change = barChangePercent(index);
-					return <g className={rising ? 'kline-up' : 'kline-down'} key={`${line.time}-${index}`}><title>{`${formatLongDate(line.time)} 开 ${line.open.toFixed(2)} 高 ${line.high.toFixed(2)} 低 ${line.low.toFixed(2)} 收 ${line.close.toFixed(2)}（${change >= 0 ? '+' : ''}${change.toFixed(2)}%）成交量 ${formatVolume(line.volume)}`}</title><line className="kline-wick" x1={x} x2={x} y1={priceY(line.high)} y2={priceY(line.low)} /><rect className="kline-body" x={x - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={Math.max(bodyBottom - bodyTop, 1.5)} /><rect className="kline-volume" x={x - bodyWidth / 2} y={barTop} width={bodyWidth} height={volumeBottom - barTop} /></g>;
+					return <g className={rising ? 'kline-up' : 'kline-down'} key={line.time}><title>{`${formatLongDate(line.time)} 开 ${line.open.toFixed(2)} 高 ${line.high.toFixed(2)} 低 ${line.low.toFixed(2)} 收 ${line.close.toFixed(2)}（${change >= 0 ? '+' : ''}${change.toFixed(2)}%）成交量 ${formatVolume(line.volume)}`}</title><line className="kline-wick" x1={x} x2={x} y1={priceY(line.high)} y2={priceY(line.low)} /><rect className="kline-body" x={x - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={Math.max(bodyBottom - bodyTop, 1.5)} /><rect className="kline-volume" x={x - bodyWidth / 2} y={barTop} width={bodyWidth} height={volumeBottom - barTop} /></g>;
 				})}
 				{showTradingDays ? tradingDays.map(day => <text className="kline-date-label" x={left + (day.start + day.end + 1) * step / 2} y={height - 15} textAnchor="middle" key={day.day}>{formatTime(day.time, 'daily', periodLabel)}</text>) : labelIndexes.map((index) => {
 					const line = sorted[index];

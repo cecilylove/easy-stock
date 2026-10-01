@@ -136,6 +136,14 @@ func NewClient(opts ...Option) *Client {
 }
 
 func (c *Client) KLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error) {
+	return c.KLineAdjusted(ctx, symbol, period, limit, "qfq")
+}
+
+func (c *Client) KLineAdjusted(ctx context.Context, symbol string, period string, limit int, adjustment string) ([]foundation.KLine, error) {
+	fqt := map[string]string{"none": "0", "qfq": "1", "hfq": "2"}[adjustment]
+	if fqt == "" {
+		return nil, fmt.Errorf("unsupported adjustment %q", adjustment)
+	}
 	normalized, err := foundation.NormalizeSymbol(symbol)
 	if err != nil {
 		return nil, err
@@ -154,7 +162,7 @@ func (c *Client) KLine(ctx context.Context, symbol string, period string, limit 
 	params.Set("fields1", "f1,f2,f3,f4,f5,f6")
 	params.Set("fields2", "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61")
 	params.Set("klt", klt)
-	params.Set("fqt", "1")
+	params.Set("fqt", fqt)
 	params.Set("end", "20500101")
 	params.Set("lmt", strconv.Itoa(limit))
 	params.Set("_", strconv.FormatInt(time.Now().UnixMilli(), 10))

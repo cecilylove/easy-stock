@@ -31,7 +31,7 @@ describe('stock detail navigation and lookup', () => {
 		expect(resolveStockDetailSymbol('not-a-stock', [])).toBe('');
 	});
 	it('uses five-minute samples for the five-day tab and loads one period at a time', () => {
-		expect(stockDetailPeriods.map(item => item.key)).toEqual(['intraday', 'five-day', 'day', 'week', 'month']);
+		expect(stockDetailPeriods.map(item => item.key)).toEqual(['intraday', 'five-day', 'day', 'week', 'month', 'year', 'minute5', 'minute15', 'minute30', 'minute60']);
 		expect(stockDetailPeriods.find(item => item.key === 'five-day')?.apiPeriod).toBe('5');
 	});
 });

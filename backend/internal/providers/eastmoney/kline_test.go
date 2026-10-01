@@ -53,6 +53,24 @@ func TestClientKLineParsesEastMoneyResponse(t *testing.T) {
 	}
 }
 
+func TestExplicitKLineAdjustmentUsesSourceParameter(t *testing.T) {
+	for adjustment, expected := range map[string]string{"none": "0", "qfq": "1", "hfq": "2"} {
+		t.Run(adjustment, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("fqt") != expected {
+					t.Errorf("fqt=%s", r.URL.Query().Get("fqt"))
+				}
+				_, _ = w.Write([]byte(`{"rc":0,"data":{"klines":["2026-09-30,10,11,12,9,100,1000"]}}`))
+			}))
+			defer upstream.Close()
+			client := NewClient(WithBaseURL(upstream.URL))
+			if _, err := client.KLineAdjusted(context.Background(), "000001.SZ", "day", 1, adjustment); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestClientKLineRetriesTransientHTTPFailure(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

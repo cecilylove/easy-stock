@@ -279,6 +279,10 @@ export type Quote = {
   change: number;
   change_percent: number;
   trade_time?: string;
+  volume?: number;
+  amount?: number;
+  bids?: { price: number; volume: number }[];
+  asks?: { price: number; volume: number }[];
   meta: SourceMeta;
 };
 

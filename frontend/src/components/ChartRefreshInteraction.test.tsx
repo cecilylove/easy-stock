@@ -15,6 +15,11 @@ vi.mock('react', async importOriginal => {
 		return [hover.selection, (value: unknown) => { hover.selection = value; }];
 	} };
 });
+// These tests exercise point identity, not persistent scale state.
+vi.mock('../lib/use-stable-chart-scale', () => ({
+	useChartBaseline: (_context: string, candidate: number) => candidate,
+	useExpandingChartValue: (_context: string, required: number, step: number, minimum: number, padding = 1) => Math.max(minimum, Math.ceil(required * padding / step) * step),
+}));
 vi.mock('../lib/use-chart-viewport', () => ({ useChartViewport: () => ({ containerRef: { current: null }, width: 960, scrollable: false }) }));
 
 type InteractiveProps = { className?: string; children?: unknown; onMouseMove?: (event: unknown) => void };
@@ -41,7 +46,7 @@ describe('chart inspection across refreshes', () => {
 		const lines = [line('2026-09-28', '15:00', 10), line('2026-09-29', '15:00', 11), line('2026-09-30', '15:00', 12)];
 		const props = { lines, symbol: '000002.SZ', fluid: true };
 		const layer = elementWithClass(KLineChart(props), 'kline-hover-layer')!;
-		layer.props.onMouseMove!({ clientX: 472, currentTarget: { getBoundingClientRect: () => ({ left: 68, width: 808 }) } });
+		layer.props.onMouseMove!({ clientX: 68 + 808 / 20 * 1.5, currentTarget: { getBoundingClientRect: () => ({ left: 68, width: 808 }) } });
 		expect(renderToStaticMarkup(KLineChart(props))).toContain('<strong>09/29</strong>');
 		const backfilled = [line('2026-09-25', '15:00', 9), ...lines];
 		expect(renderToStaticMarkup(KLineChart({ ...props, lines: backfilled, state: 'loading' }))).toContain('<strong>09/29</strong>');

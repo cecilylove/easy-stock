@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -310,6 +311,24 @@ func parseRealtime(body string, symbols []foundation.Symbol, meta foundation.Sou
 		if prevClose != 0 {
 			changePercent = change / prevClose * 100
 		}
+		optionalNumber := func(index int) *float64 {
+			value, parseErr := strconv.ParseFloat(fields[index], 64)
+			if parseErr != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+				return nil
+			}
+			return &value
+		}
+		levels := func(start int) []foundation.QuoteLevel {
+			result := make([]foundation.QuoteLevel, 5)
+			for index := range result {
+				volume, price := optionalNumber(start+index*2), optionalNumber(start+index*2+1)
+				if volume == nil || price == nil {
+					return nil
+				}
+				result[index] = foundation.QuoteLevel{Price: *price, Volume: *volume}
+			}
+			return result
+		}
 		tradeTime, _ := time.ParseInLocation("2006-01-02 15:04:05", fields[30]+" "+fields[31], time.FixedZone("CST", 8*60*60))
 		quotes = append(quotes, foundation.Quote{
 			Symbol:        symbol.Canonical,
@@ -322,6 +341,10 @@ func parseRealtime(body string, symbols []foundation.Symbol, meta foundation.Sou
 			Change:        change,
 			ChangePercent: changePercent,
 			TradeTime:     tradeTime,
+			Volume:        optionalNumber(8),
+			Amount:        optionalNumber(9),
+			Bids:          levels(10),
+			Asks:          levels(20),
 			Meta:          meta,
 		})
 	}

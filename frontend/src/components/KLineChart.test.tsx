@@ -17,6 +17,13 @@ describe('stock detail multi-day chart', () => {
 		expect(empty).toContain('正在加载日K数据');
 	});
 
+	it('shows annual labels and never emits negative price ticks for long-term gains', () => {
+		const html = renderToStaticMarkup(<KLineChart lines={[line('1991-12-31T15:00:00+08:00', 10), line('2026-09-30T15:00:00+08:00', 40)]} mode="daily" periodLabel="年K" fluid />);
+		expect(html).toContain('1991年'); expect(html).toContain('2026年');
+		const priceLabels = [...html.matchAll(/class="kline-axis-label"[^>]*>([^<]+)</g)].map(match => Number(match[1]));
+		expect(priceLabels.length).toBeGreaterThan(0); expect(priceLabels.every(price => price > 0)).toBe(true);
+	});
+
 	it('keeps multi-day gains above a single-day limit inside the plotted range', () => {
 		const html = renderToStaticMarkup(<KLineChart lines={lines} symbol="000002.SZ" mode="intraday" periodLabel="5日" fluid />);
 		const path = /class="kline-close-line" d="([^"]+)"/.exec(html)![1];

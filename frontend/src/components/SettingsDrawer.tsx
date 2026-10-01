@@ -21,12 +21,13 @@ import {
 	Trash2,
 	X,
 } from 'lucide-react';
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { AppSettings, BackendConfig, BrowserAuthStatus, LLMConnectionTestResult, LLMModelOption, LLMModelsResult, LLMProfile, ReviewAutomationProfile, RuntimeLogStatus, SecretSettingStatus, WechatServiceStatus, requestJSON } from '../lib/backend';
 import { llmProviderDefinition, llmProviders } from '../lib/llm-providers';
 import { AppUpdatePanel } from './AppUpdatePanel';
 import { HermesAgentSettingsPanel } from './HermesAgentSettingsPanel';
 import { SourceIntegrationCatalog } from './SourceIntegrationCatalog';
+import { useModalDialog } from '../lib/use-modal-dialog';
 
 type Props = {
 	config: BackendConfig | null;
@@ -34,6 +35,7 @@ type Props = {
 	onClose: () => void;
 	onSaved?: () => void;
 	initialSection?: 'data-sources';
+	fallbackFocusRef?: RefObject<HTMLElement | null>;
 };
 
 type SecretKey = 'llm_api_key' | 'tushare_token' | 'ths_cookie' | 'xueqiu_cookie' | 'eastmoney_cookie' | 'wechat_api_token';
@@ -53,7 +55,7 @@ const emptySecrets = (): Record<SecretKey, string> => ({
 	wechat_api_token: '',
 });
 
-export function SettingsDrawer({ config, open, onClose, onSaved, initialSection }: Props) {
+export function SettingsDrawer({ config, open, onClose, onSaved, initialSection, fallbackFocusRef }: Props) {
 	const [settings, setSettings] = useState<AppSettings | null>(null);
 	const [llmProfiles, setLLMProfiles] = useState<LLMProfile[]>([]);
 	const [activeLLMProfileID, setActiveLLMProfileID] = useState('');
@@ -87,6 +89,8 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection 
 	const modelFetchSequence = useRef(0);
 	const dataSourcesRef = useRef<HTMLElement | null>(null);
 	const sourceSectionFocused = useRef(false);
+	const dialogRef = useRef<HTMLElement>(null);
+	useModalDialog(open, dialogRef, onClose, fallbackFocusRef);
 	useEffect(() => {
 		if (!open || state === 'loading') { sourceSectionFocused.current = false; return; }
 		if (initialSection === 'data-sources' && settings && !sourceSectionFocused.current && dataSourcesRef.current) {
@@ -95,15 +99,6 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection 
 			dataSourcesRef.current.focus({ preventScroll: true });
 		}
 	}, [initialSection, open, settings, state]);
-
-	useEffect(() => {
-		if (!open) return;
-		const onKeyDown = (event: KeyboardEvent) => {
-			if (event.key === 'Escape') onClose();
-		};
-		window.addEventListener('keydown', onKeyDown);
-		return () => window.removeEventListener('keydown', onKeyDown);
-	}, [onClose, open]);
 
 	useEffect(() => {
 		if (!open || !config) return;
@@ -480,7 +475,7 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection 
 
 	return (
 		<div className="settings-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-			<aside className="settings-drawer" role="dialog" aria-modal="true" aria-label="系统设置">
+			<aside ref={dialogRef} className="settings-drawer" role="dialog" aria-modal="true" aria-label="系统设置" tabIndex={-1}>
 				<header className="settings-header">
 					<div><span>HERMES LOCAL RUNTIME</span><h2>系统设置</h2><p>管理 Hermes 模型运行时与外部数据源凭据</p></div>
 					<button type="button" onClick={onClose} aria-label="关闭设置"><X size={20} /></button>

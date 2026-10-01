@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,24 @@ func TestClientRealtimeParsesSinaResponse(t *testing.T) {
 	}
 	if got[0].TradeTime.Format(time.RFC3339) != "2026-06-12T15:00:00+08:00" {
 		t.Fatalf("quote timestamp must use Shanghai time: %v", got[0].TradeTime)
+	}
+}
+
+func TestRealtimeParsesDepthAsSharesWithoutInventingLevels(t *testing.T) {
+	body := `var hq_str_sz000001="平安银行,10,9.8,10.5,10.8,9.9,10.49,10.50,123456,123456789,1000,10.49,2000,10.48,3000,10.47,4000,10.46,5000,10.45,6000,10.50,7000,10.51,8000,10.52,9000,10.53,10000,10.54,2026-09-30,15:00:00,00";`
+	symbol, _ := foundation.NormalizeSymbol("000001.SZ")
+	quotes, err := parseRealtime(body, []foundation.Symbol{symbol}, foundation.SourceMeta{})
+	if err != nil || len(quotes) != 1 {
+		t.Fatalf("parse failed: %v", err)
+	}
+	quote := quotes[0]
+	if quote.Volume == nil || *quote.Volume != 123456 || quote.Amount == nil || *quote.Amount != 123456789 || len(quote.Bids) != 5 || len(quote.Asks) != 5 || quote.Bids[0].Volume != 1000 || quote.Asks[4].Price != 10.54 {
+		t.Fatalf("wrong depth: %+v", quote)
+	}
+	broken := strings.Replace(body, "1000,10.49", "invalid,10.49", 1)
+	quotes, _ = parseRealtime(broken, []foundation.Symbol{symbol}, foundation.SourceMeta{})
+	if quotes[0].Bids != nil {
+		t.Fatalf("invalid depth fabricated: %+v", quotes[0].Bids)
 	}
 }
 

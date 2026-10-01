@@ -1,10 +1,6 @@
 import {
 	Activity,
 	BarChart3,
-	ChartCandlestick,
-	Bot,
-	BookMarked,
-	BookOpen,
 	BrainCircuit,
 	CheckCircle2,
 	ChevronRight,
@@ -14,23 +10,19 @@ import {
 	Gauge,
 	History,
 	Layers3,
-	LayoutDashboard,
 	LoaderCircle,
 	Moon,
 	Newspaper,
-	PanelLeftClose,
-	PanelLeftOpen,
+	Menu,
 	Radio,
 	RefreshCw,
 	Search,
 	Server,
-	Settings,
 	ShieldAlert,
 	ShieldCheck,
 	Sun,
 	Target,
 	Wifi,
-	WalletCards,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { disconnectLiveQuotes, mergeLiveQuotes } from './lib/live-quotes';
@@ -81,8 +73,9 @@ import { useThemeOverview } from './lib/use-theme-overview';
 import { useThemeConstituents, sameTheme } from './lib/use-theme-constituents';
 import { useThemeKLines } from './lib/use-theme-klines';
 
+import { WorkspaceSidebar, useSidebarPreference, type WorkspaceMode } from './components/WorkspaceSidebar';
+
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
-type WorkspaceMode = 'themes' | 'limit-up' | 'mastery' | 'reviews' | 'stock-detail' | 'stock-ai' | 'portfolio-inspection' | 'ai' | 'market' | 'token-usage';
 
 const emptyStockPagination = (): ThemeScreenPagination => ({
 	page: 1,
@@ -106,7 +99,10 @@ export function App() {
 		if (window.location.hash === '#token-usage') return 'token-usage';
 		return 'themes';
 	});
-	const [sidebarExpanded, setSidebarExpanded] = useState(true);
+	const { expanded: sidebarExpanded, toggle: toggleSidebar } = useSidebarPreference();
+	const [mobileNavOpen, setMobileNavOpen] = useState(false);
+	const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+	const mobileNavTriggerRef = useRef<HTMLButtonElement>(null);
 	const [config, setConfig] = useState<BackendConfig | null>(null);
 	const [themeStrengthWindow, setThemeStrengthWindow] = useState<ThemeStrengthWindow>('daily');
 	const [activeTheme, setActiveTheme] = useState('');
@@ -367,6 +363,7 @@ export function App() {
 	};
 
 	const switchWorkspace = (mode: WorkspaceMode) => {
+		setMobileNavOpen(false);
 		setWorkspaceMode(mode);
 		window.history.replaceState(null, '', mode === 'stock-detail' ? stockDetailPath(stockDetailSymbol) : mode === 'limit-up' ? '#limit-up' : mode === 'mastery' ? '#mastery' : mode === 'reviews' ? '#reviews' : mode === 'stock-ai' ? '#stock-ai' : mode === 'portfolio-inspection' ? '#portfolio-inspection' : mode === 'ai' ? '#ai' : mode === 'market' ? '#market/pulse' : mode === 'token-usage' ? '#token-usage' : '#themes');
 	};
@@ -467,53 +464,29 @@ export function App() {
 	const topbarDescription = workspaceMode === 'themes' ? '炒作主线、趋势强度、个股梯队与日 K 联动工作台' : workspaceMode === 'limit-up' ? '连板高度、炒作概念与晋级结构工作台' : workspaceMode === 'mastery' ? '阅读不同游资的交易经验，并由 Hermes 按原文辅助研读' : workspaceMode === 'reviews' ? '多平台复盘内容、作者观点与原文归档工作台' : workspaceMode === 'stock-detail' ? '搜索任意 A 股，快速查看行情、分时与多周期 K 线' : workspaceMode === 'stock-ai' ? '多周期评分、隔日情景推演与账户级风控执行工作台' : workspaceMode === 'portfolio-inspection' ? '逐股研判、集中度识别与组合风险巡检工作台' : workspaceMode === 'market' ? '从盘面快讯到资金与研究信号的统一行情工作台' : workspaceMode === 'token-usage' ? '按日、按月和功能模块查看模型 Token 消耗' : '像 Codex 一样持续协作、拆解问题并形成可执行结果';
 
 	return (
-		<main className={`workspace-frame ${workspaceMode === 'ai' ? 'workspace-ai' : ''} ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`}>
-			<aside className="app-sidebar" aria-label="功能导航">
-				<div className="sidebar-brand"><div className="sidebar-logo"><img src={`${import.meta.env.BASE_URL}easy-stock-mark.svg`} alt="easy-stock" /></div>{sidebarExpanded && <div><strong>easy-stock</strong><span>AI STOCK LAB</span></div>}</div>
-				<nav>
-					<button type="button" className={workspaceMode === 'reviews' ? 'active' : ''} onClick={() => switchWorkspace('reviews')} title="大V复盘日记"><BookOpen size={18} /><span>大V复盘日记</span></button>
-					<button type="button" className={workspaceMode === 'stock-detail' ? 'active' : ''} onClick={() => switchWorkspace('stock-detail')} title="个股详情"><ChartCandlestick size={18} /><span>个股详情</span></button>
-					<button type="button" className={workspaceMode === 'stock-ai' ? 'active' : ''} onClick={() => switchWorkspace('stock-ai')} title="个股分析"><BrainCircuit size={18} /><span>个股分析</span></button>
-					<button type="button" className={workspaceMode === 'portfolio-inspection' ? 'active' : ''} onClick={() => switchWorkspace('portfolio-inspection')} title="持仓AI巡检"><WalletCards size={18} /><span>持仓AI巡检</span></button>
-					<button type="button" className={workspaceMode === 'limit-up' ? 'active' : ''} onClick={() => switchWorkspace('limit-up')} title="短线连板"><Flame size={18} /><span>短线连板</span></button>
-					<button type="button" className={workspaceMode === 'themes' ? 'active' : ''} onClick={() => switchWorkspace('themes')} title="趋势题材"><LayoutDashboard size={18} /><span>趋势题材</span></button>
-					<button type="button" className={workspaceMode === 'market' ? 'active' : ''} onClick={() => switchWorkspace('market')} title="行情总览"><BarChart3 size={18} /><span>行情总览</span></button>
-					<button type="button" className={workspaceMode === 'mastery' ? 'active' : ''} onClick={() => switchWorkspace('mastery')} title="游资心法"><BookMarked size={18} /><span>游资心法</span></button>
-				<button type="button" className={workspaceMode === 'ai' ? 'active' : ''} onClick={() => switchWorkspace('ai')} title="AI 对话"><Bot size={18} /><span>AI 对话</span></button>
-				</nav>
-				<div className="sidebar-bottom-actions">
-					<button type="button" className={`sidebar-settings ${workspaceMode === 'token-usage' ? 'active' : ''}`} onClick={() => switchWorkspace('token-usage')} aria-label="打开Token统计" title="Token统计"><BarChart3 size={17} />{sidebarExpanded && <span>Token统计</span>}</button>
-					<button type="button" className="sidebar-settings" onClick={() => setSettingsOpen(true)} aria-label="打开系统设置" title="系统设置"><Settings size={17} />{sidebarExpanded && <span>系统设置</span>}</button>
-					<button type="button" className="sidebar-toggle" onClick={() => setSidebarExpanded((value) => !value)} aria-label={sidebarExpanded ? '收起侧边栏' : '展开侧边栏'}>{sidebarExpanded ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />} {sidebarExpanded && <span>收起侧栏</span>}</button>
-				</div>
-			</aside>
-			<div className="app-shell">
+		<main className={`workspace-frame workspace-${workspaceMode} ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'} ${mobileNavOpen ? 'mobile-nav-open' : ''}`}>
+			<a className="skip-to-workspace" href="#workspace-content" onClick={event => { event.preventDefault(); document.getElementById('workspace-content')?.focus(); }}>跳转到工作区</a>
+			<WorkspaceSidebar mode={workspaceMode} expanded={sidebarExpanded} mobileOpen={mobileNavOpen} blocked={settingsOpen} onNavigate={switchWorkspace} onToggle={toggleSidebar} onMobileClose={closeMobileNav} onSettings={() => { setMobileNavOpen(false); setSettingsOpen(true); }} />
+			<div className="app-shell" inert={mobileNavOpen || settingsOpen}>
 			<header className={`topbar ${workspaceMode === 'stock-detail' ? 'stock-detail-topbar' : ''}`}>
 				<div className="brand-block">
-					<div className="brand-mark"><img src={`${import.meta.env.BASE_URL}easy-stock-mark.svg`} alt="easy-stock" /></div>
+					<button type="button" ref={mobileNavTriggerRef} className="icon-button mobile-nav-trigger" aria-label="打开功能导航" aria-expanded={mobileNavOpen} aria-controls="workspace-navigation" onClick={() => setMobileNavOpen(true)}><Menu size={20} aria-hidden="true" /></button>
 					<div>
 						<h1>{topbarTitle}</h1>
 						<p>{topbarDescription}</p>
 					</div>
 				</div>
-				{workspaceMode !== 'stock-detail' && <nav className="mode-nav" aria-label="工作台模式">
-					{workspaceMode === 'token-usage' ? <button type="button" className="active"><BarChart3 size={16} aria-hidden="true" />Token统计</button> : null}
-					{workspaceMode === 'token-usage' ? null : workspaceMode === 'stock-ai' ? <>
-						<button type="button" className={stockAIWorkspaceMode === 'analysis' ? 'active' : ''} onClick={() => setStockAIWorkspaceMode('analysis')}><BrainCircuit size={16} aria-hidden="true" />个股分析</button>
-						<button type="button" className={stockAIWorkspaceMode === 'expectation' ? 'active' : ''} onClick={() => setStockAIWorkspaceMode('expectation')}><Target size={16} aria-hidden="true" />隔日预期</button>
-						<button type="button" className={stockAIWorkspaceMode === 'risk' ? 'active' : ''} onClick={() => setStockAIWorkspaceMode('risk')}><ShieldCheck size={16} aria-hidden="true" />风控执行</button>
-					</> : <>
-						<button type="button" className="active">{workspaceMode === 'mastery' ? <BookMarked size={16} aria-hidden="true" /> : workspaceMode === 'reviews' ? <BookOpen size={16} aria-hidden="true" /> : workspaceMode === 'portfolio-inspection' ? <WalletCards size={16} aria-hidden="true" /> : workspaceMode === 'ai' ? <Bot size={16} aria-hidden="true" /> : workspaceMode === 'market' ? <BarChart3 size={16} aria-hidden="true" /> : <Flame size={16} aria-hidden="true" />}{workspaceMode === 'themes' ? '趋势题材' : workspaceMode === 'limit-up' ? '短线连板' : workspaceMode === 'mastery' ? '游资心法' : workspaceMode === 'reviews' ? '复盘日记' : workspaceMode === 'portfolio-inspection' ? '持仓巡检' : workspaceMode === 'market' ? '行情总览' : 'AI 对话'}</button>
-						<button type="button" disabled><Target size={16} aria-hidden="true" />隔日预期</button>
-						<button type="button" disabled><ShieldCheck size={16} aria-hidden="true" />风控执行</button>
-					</>}
+				{workspaceMode === 'stock-ai' && <nav className="mode-nav" aria-label="工作台模式">
+					<button type="button" className={stockAIWorkspaceMode === 'analysis' ? 'active' : ''} aria-pressed={stockAIWorkspaceMode === 'analysis'} onClick={() => setStockAIWorkspaceMode('analysis')}><BrainCircuit size={16} aria-hidden="true" />个股分析</button>
+					<button type="button" className={stockAIWorkspaceMode === 'expectation' ? 'active' : ''} aria-pressed={stockAIWorkspaceMode === 'expectation'} onClick={() => setStockAIWorkspaceMode('expectation')}><Target size={16} aria-hidden="true" />隔日预期</button>
+					<button type="button" className={stockAIWorkspaceMode === 'risk' ? 'active' : ''} aria-pressed={stockAIWorkspaceMode === 'risk'} onClick={() => setStockAIWorkspaceMode('risk')}><ShieldCheck size={16} aria-hidden="true" />风控执行</button>
 				</nav>}
 				<div className="top-actions">
-					<div className={`data-status ${currentLoadState}`}>
+					<div className={`data-status ${currentLoadState}`} title={`${currentStatusText} · ${currentSubStatus}`}>
 						<span className="status-dot" />
 						<div><strong>{currentStatusText}</strong><small>{currentSubStatus}</small></div>
 					</div>
-					<button type="button" className="icon-button" onClick={refreshAll} aria-label="刷新全部数据">
+					<button type="button" className="icon-button" onClick={refreshAll} aria-label="刷新当前工作台" title="刷新当前工作台">
 						<RefreshCw size={18} aria-hidden="true" />
 					</button>
 					<button type="button" className="icon-button theme-toggle" onClick={toggleTheme} aria-label={theme === 'light' ? '切换至深色模式' : '切换至浅色模式'} title={theme === 'light' ? '切换至深色模式' : '切换至浅色模式'} aria-pressed={theme === 'dark'}>
@@ -522,6 +495,7 @@ export function App() {
 				</div>
 			</header>
 
+			<div id="workspace-content" className="workspace-content" key={workspaceMode} tabIndex={-1} aria-label={topbarTitle}>
 			{workspaceMode === 'token-usage' ? <TokenUsageWorkspace config={config} refreshKey={tokenUsageRefreshKey} /> : workspaceMode === 'themes' ? <>
 			<section className="market-strip" aria-label="市场概览">
 				<div><Activity size={16} aria-hidden="true" /><span>主线平均热度</span><strong>{marketPulse.average || '--'}</strong></div>
@@ -637,7 +611,7 @@ export function App() {
 							<label><span>排序</span><select value={stockSort} onChange={(event) => { setStockSort(event.target.value as ThemeScreenSort); setStockPage(1); }}><option value="rank_score">{constituentsComplete ? '全池领导力' : '来源优先顺序'}</option><option value="change_percent">当日涨幅</option><option value="amount">成交额</option><option value="limit_up_streak">连板高度</option></select></label>
 							<label className="stock-search">
 								<Search size={16} aria-hidden="true" />
-								<input value={stockQuery} onChange={(event) => setStockQuery(event.target.value)} placeholder="搜索完整候选池中的代码、名称或细分" />
+								<input value={stockQuery} onChange={(event) => setStockQuery(event.target.value)} aria-label="搜索题材个股" placeholder="搜索代码、名称或细分" />
 							</label>
 						</div>
 						<div className="stock-table-wrap">
@@ -659,7 +633,7 @@ export function App() {
 											}}
 										>
 											<td>{metricsReady ? <RoleBadge role={stock.role} regime={stock.limit_regime} /> : <span className="role-badge watch">{stock.rank_role || '待计算'}</span>}</td>
-											<td><strong>{stock.name}</strong><small>{stock.symbol}{stock.live ? ' · 实时' : ''}</small></td>
+											<td><button type="button" className="stock-row-select" aria-pressed={stock.symbol === selectedStock?.symbol} aria-label={`查看${stock.name}的日K与指标`} onClick={() => setSelectedSymbol(stock.symbol)}><strong>{stock.name}</strong><small>{stock.symbol}{stock.live ? ' · 实时' : ''}</small></button></td>
 											<td>{metricsReady ? <StateBadge state={stock.state} /> : <MetricPending failed={metricsFailed} />}</td>
 											<td>{metricsReady ? <ScoreCell value={stock.leader_score} /> : <MetricPending failed={metricsFailed} />}</td>
 											<td>{metricsReady ? <ScoreCell value={stock.tradability_score} /> : <MetricPending failed={metricsFailed} />}</td>
@@ -754,12 +728,13 @@ export function App() {
 			</div>
 			</> : workspaceMode === 'stock-detail' ? <StockDetailWorkspace config={config} symbol={stockDetailSymbol} onSelectSymbol={selectStockDetail} onOpenAnalysis={openStockDetailAnalysis} refreshKey={stockDetailRefreshKey} /> : workspaceMode === 'limit-up' ? <LimitUpWorkspace config={config} data={limitUpData} state={limitUpState} error={limitUpError} emotionData={marketEmotionData} emotionState={marketEmotionState} emotionError={marketEmotionError} progress={limitUp.ladder.progress} onRefresh={refreshLimitUpWorkspace} /> : workspaceMode === 'mastery' ? <TradingMastery config={config} refreshKey={masteryRefreshKey} onAskAI={askMasteryAI} /> : workspaceMode === 'reviews' ? <ReviewDiary config={config} refreshKey={reviewRefreshKey} /> : workspaceMode === 'stock-ai' ? <StockAIAnalysisWorkspace config={config} refreshKey={stockAIRefreshKey} mode={stockAIWorkspaceMode} initialSymbol={stockAIPrefill} onInitialSymbolConsumed={() => setStockAIPrefill('')} initialAnalysis={stockAIInitialAnalysis} onInitialAnalysisConsumed={() => setStockAIInitialAnalysis(null)} onAskAI={askStockAnalysisAI} onOpenSettings={() => setSettingsOpen(true)} /> : workspaceMode === 'portfolio-inspection' ? <PortfolioInspectionWorkspace config={config} refreshKey={portfolioInspectionRefreshKey} onOpenSettings={() => setSettingsOpen(true)} onOpenStockAnalysis={openPortfolioStockAnalysis} /> : workspaceMode === 'market' ? <MarketOverviewWorkspace config={config} refreshKey={marketRefreshKey} onAskAI={askMarketAI} onOpenSourceSettings={openSourceSettings} /> : <AIChatWorkspace config={config} refreshKey={aiRefreshKey} initialPrompt={aiPrefill} initialAnalysisID={aiAnalysisID} onInitialPromptConsumed={() => { setAIPrefill(''); setAIAnalysisID(undefined); }} onOpenSettings={() => setSettingsOpen(true)} />}
 
+			</div>
 			<footer className="data-footer">
 				<div><Wifi size={15} aria-hidden="true" /><span>{config?.backendUrl || '连接本地数据服务中'}</span></div>
 					<div><Radio size={15} aria-hidden="true" /><span>{workspaceMode === 'themes' ? '题材与龙一至龙五：开盘啦 · 实时行情：新浪 · K线与领导力：东方财富/新浪' : workspaceMode === 'limit-up' ? '当日涨停池与逐股题材：开盘啦优先 · 历史梯队、缺失股票与行情字段：东方财富补充 · 默认剔除ST' : workspaceMode === 'mastery' ? '来源：trading-mastery/游资心法 · 每日缓存 · 同步至 Hermes Skill 与本地记忆索引' : workspaceMode === 'reviews' ? '复盘文章：本地 SQLite 归档 · 原文观点不代表系统结论' : workspaceMode === 'stock-detail' ? '个股行情：新浪 · K 线：东方财富优先，新浪回退 · 时间、来源与降级信息以实际返回为准' : workspaceMode === 'stock-ai' ? '行情与K线：东方财富/新浪 · 涨停与题材：开盘啦/东方财富 · AI只基于结构化证据总结' : workspaceMode === 'portfolio-inspection' ? '逐股分析复用个股引擎 · 组合指标由本地程序计算 · AI只基于结构化证据汇总' : workspaceMode === 'market' ? '行情与行业强度：腾讯/东方财富 · 资金与领涨标的：新浪/东方财富 · 龙虎榜、公告与研报：东方财富 · 盘面快讯：财联社 · AI 只读取带时间和来源的证据' : workspaceMode === 'token-usage' ? '真实用量来自模型返回的 usage · 本地估算单独记录，不并入真实总量' : '模型请求由本地后端转发 · API Key 不会暴露给页面 · 对话历史保存在当前设备'}</span></div>
 			</footer>
 			</div>
-			<SettingsDrawer config={config} open={settingsOpen} initialSection={settingsInitialSection} onClose={() => { setSettingsOpen(false); setSettingsInitialSection(undefined); }} onSaved={() => { setAIRefreshKey((current) => current + 1); setStockAIRefreshKey((current) => current + 1); setSettingsSavedNotice((current) => current + 1); }} />
+			<SettingsDrawer config={config} open={settingsOpen} fallbackFocusRef={mobileNavTriggerRef} initialSection={settingsInitialSection} onClose={() => { setSettingsOpen(false); setSettingsInitialSection(undefined); }} onSaved={() => { setAIRefreshKey((current) => current + 1); setStockAIRefreshKey((current) => current + 1); setSettingsSavedNotice((current) => current + 1); }} />
 			{settingsSavedNotice > 0 && <div className="settings-save-notice" role="status"><CheckCircle2 size={22} aria-hidden="true" /><span>保存成功</span></div>}
 		</main>
 	);

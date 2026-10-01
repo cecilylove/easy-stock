@@ -4,6 +4,8 @@ import { App } from './App';
 import { installRuntimeLogging } from './lib/runtime-log';
 import './styles.css';
 import './theme.css';
+import './workspace.css';
+import './stock-terminal.css';
 
 installRuntimeLogging();
 
