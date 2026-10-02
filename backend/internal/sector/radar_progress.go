@@ -7,13 +7,12 @@ import (
 	"time"
 
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/duanxianxia"
 )
 
 type radarProgressEvent struct {
 	step       string
-	snapshot   duanxianxia.Snapshot
-	fetchMeta  duanxianxia.FetchMeta
+	snapshot   foundation.ThemeSnapshot
+	fetchMeta  foundation.ThemeFetchMeta
 	industries []foundation.MarketIndustryMomentum
 	meta       foundation.SourceMeta
 	quotes     map[string]foundation.Quote
@@ -27,8 +26,8 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 	events := make(chan radarProgressEvent, 3)
 	steps := map[string]string{"industry": "loading", "kaipanla": "loading", "strength": "loading"}
 	errors := map[string]string{}
-	var snapshot duanxianxia.Snapshot
-	var fetchMeta duanxianxia.FetchMeta
+	var snapshot foundation.ThemeSnapshot
+	var fetchMeta foundation.ThemeFetchMeta
 	var industries []foundation.MarketIndustryMomentum
 	var industryMeta foundation.SourceMeta
 	var quotes map[string]foundation.Quote
@@ -62,7 +61,7 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 		observations = nil
 	}
 	if cached, ok := p.source.(interface {
-		CachedSnapshot(context.Context) (duanxianxia.Snapshot, bool, error)
+		CachedSnapshot(context.Context) (foundation.ThemeSnapshot, bool, error)
 	}); ok {
 		if value, exists, err := cached.CachedSnapshot(ctx); err == nil && exists {
 			snapshot = value
@@ -101,7 +100,7 @@ func (p *RadarProvider) ProgressiveOverviews(ctx context.Context, publish func(f
 			start = time.Now()
 			themes := e.snapshot.Themes[:min(len(e.snapshot.Themes), max(24, p.fallbackFill))]
 			strength.quotes = p.quoteLookup(ctx, themes)
-			strength.strengths = p.realtimeStrengthScores(ctx, themes)
+			strength.strengths = p.realtimeStrengthScores(ctx, themes, themeSnapshotMeta(e.snapshot).Source)
 			if ctx.Err() != nil {
 				strength.err = ctx.Err()
 			} else if len(strength.strengths) == 0 {
@@ -158,13 +157,21 @@ func radarEventObservations(e radarProgressEvent) []foundation.SourceObservation
 		} // A failed composed provider has no reliable supplier identity.
 	case "kaipanla":
 		if e.fetchMeta.Refreshed && !e.snapshot.FetchedAt.IsZero() {
-			observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.snapshot.FetchedAt}})
+			observations = append(observations, foundation.SourceObservation{Meta: themeSnapshotMeta(e.snapshot)})
 		}
 		if e.fetchMeta.PoolRefreshed && !e.fetchMeta.PoolFetchedAt.IsZero() {
-			observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: duanxianxia.SourceID, FetchedAt: e.fetchMeta.PoolFetchedAt}})
+			source := e.fetchMeta.PoolSource
+			if source == "" {
+				source = legacyThemeSnapshotSource
+			}
+			observations = append(observations, foundation.SourceObservation{Meta: foundation.SourceMeta{Source: source, FetchedAt: e.fetchMeta.PoolFetchedAt}})
 		}
 		if e.fetchMeta.Attempted && !e.fetchMeta.LastAttemptAt.IsZero() && e.fetchMeta.RefreshError != "" {
-			observations = append(observations, foundation.SourceObservation{SourceID: "duanxianxia", AttemptAt: time.Now(), Failed: true})
+			sourceID := e.fetchMeta.SourceID
+			if sourceID == "" {
+				sourceID = "duanxianxia"
+			}
+			observations = append(observations, foundation.SourceObservation{SourceID: sourceID, AttemptAt: time.Now(), Failed: true})
 		}
 	}
 	return observations

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,8 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"easy-stock/backend/internal/datasource/contracts"
+	"easy-stock/backend/internal/datasource/service"
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/marketoverview"
 )
 
 type marketOverviewSnapshot struct {
@@ -57,7 +59,8 @@ func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, 
 		}
 	}
 	value, meta, err := loader(ctx)
-	if shouldObserveFailure(ctx) {
+	observe := shouldObserveFailure(ctx) && !errors.Is(err, context.Canceled) && contracts.Kind(err) != contracts.Unsupported
+	if observe {
 		for _, observation := range meta.Observations {
 			health.observe(observation)
 		}
@@ -65,7 +68,7 @@ func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, 
 	if err == nil {
 		// Only the loader ran an actual request. A cache hit must not renew a
 		// previous fallback failure or make a stale snapshot look fresh.
-		if shouldObserveFailure(ctx) && len(meta.Observations) == 0 {
+		if observe && len(meta.Observations) == 0 {
 			health.fallback(meta)
 			health.success(meta)
 		}
@@ -76,13 +79,13 @@ func loadMarketOverview[T any](ctx context.Context, cache *marketOverviewCache, 
 		if stale, typeOK := cached.value.(T); typeOK {
 			cached.meta.Stale = true
 			cached.meta.FallbackReason = "实时数据刷新失败，已返回最近一次成功快照：" + err.Error()
-			if shouldObserveFailure(ctx) && len(meta.Observations) == 0 && len(failureSource) > 0 {
+			if observe && len(meta.Observations) == 0 && len(failureSource) > 0 {
 				health.cacheFailure(cached.meta, failureSource[0])
 			}
 			return stale, cached.meta, nil
 		}
 	}
-	if shouldObserveFailure(ctx) && len(meta.Observations) == 0 && len(failureSource) > 0 {
+	if observe && len(meta.Observations) == 0 && len(failureSource) > 0 {
 		health.failure(failureSource[0], err)
 	}
 	return zero, foundation.SourceMeta{}, err
@@ -105,11 +108,13 @@ func (s *Server) marketIndexSeriesHandler(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	id = marketoverview.CanonicalIndexID(id)
-	period := marketoverview.CanonicalIndexPeriod(r.URL.Query().Get("period"))
-	if (s.marketIndexSourceID == "tencent" || s.marketIndexSourceID == "eastmoney") && !marketoverview.SupportsIndexSeries(id, period) {
-		writeError(w, http.StatusBadRequest, "腾讯指数不支持该标的或周期；仅提供目录内日、周、月 K，不提供指数分钟 K")
-		return
+	id = service.CanonicalIndexID(id)
+	period := service.CanonicalIndexPeriod(r.URL.Query().Get("period"))
+	if source, ok := s.marketOverview.(interface{ SupportsIndexSeries(string, string) bool }); ok {
+		if !source.SupportsIndexSeries(id, period) {
+			writeError(w, http.StatusBadRequest, "当前指数源不支持该标的或周期")
+			return
+		}
 	}
 	limit, err := marketLimitQuery(r, 120, 500)
 	if err != nil {
@@ -285,7 +290,7 @@ func (s *Server) marketFuturesMembersHandler(w http.ResponseWriter, r *http.Requ
 	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesMembers, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Members(loadCtx, contract, tradeDate)
 		return value, value.Meta, loadErr
-	}, s.futuresExchangeSourceID)
+	}, s.futuresMembersSourceID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -312,7 +317,7 @@ func (s *Server) marketFuturesConsensusHandler(w http.ResponseWriter, r *http.Re
 	data, meta, err := loadMarketOverview(ctx, s.marketSnapshots, s.sourceHealth, key, func(loadCtx context.Context) (foundation.MarketFuturesConsensus, foundation.SourceMeta, error) {
 		value, loadErr := s.futuresPosition.Consensus(loadCtx, tradeDate)
 		return value, value.Meta, loadErr
-	}, s.futuresExchangeSourceID)
+	}, s.futuresConsensusSourceID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

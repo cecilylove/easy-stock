@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"easy-stock/backend/internal/datasource/service"
 	"easy-stock/backend/internal/foundation"
 )
 
@@ -93,6 +94,10 @@ func (p *identityMarketOverview) MarketIndexSeries(_ context.Context, id, _ stri
 type periodIndexOverview struct {
 	fakeMarketOverviewProvider
 	periods []string
+}
+
+func (p *periodIndexOverview) SupportsIndexSeries(id, period string) bool {
+	return service.SupportsIndexSeries(id, period)
 }
 
 func (p *periodIndexOverview) MarketIndexSeries(_ context.Context, id, period string, _ int) (foundation.MarketIndexSeries, error) {

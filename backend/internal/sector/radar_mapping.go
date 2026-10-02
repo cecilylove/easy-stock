@@ -6,14 +6,13 @@ import (
 	"strings"
 
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/duanxianxia"
 )
 
-func (p *RadarProvider) mergeFallbackStocks(ctx context.Context, theme duanxianxia.Theme, result *foundation.SectorMap) {
+func (p *RadarProvider) mergeFallbackStocks(ctx context.Context, theme foundation.ThemeSnapshotItem, result *foundation.SectorMap) {
 	if p.fallback == nil || result == nil {
 		return
 	}
-	fallbackThemeID, mappedName := mappedFallbackThemeID(theme.Code, theme.Name)
+	fallbackThemeID, mappedName := mappedFallbackThemeID(themeMappingCode(result.Meta.Source, theme.Code), theme.Name)
 	fallbackMap, err := p.fallback.Build(ctx, fallbackThemeID)
 	if err != nil {
 		appendKaipanlaWarning(result, fmt.Sprintf("开盘啦题材“%s”映射东财题材失败：%s", theme.Name, err.Error()))

@@ -29,9 +29,11 @@ type Service struct {
 	gate             chan struct{}
 	poolMu           sync.Mutex
 	poolUpdated      chan struct{}
+	sourceID         string
 }
 
 type ServiceConfig struct {
+	SourceID         string
 	RefreshInterval  time.Duration
 	LeaderThemeLimit int
 	Now              func() time.Time
@@ -51,7 +53,11 @@ func NewService(client Fetcher, store *Store, config ServiceConfig) *Service {
 		now = time.Now
 	}
 	poolClient, _ := client.(LimitUpPoolFetcher)
-	return &Service{client: client, poolClient: poolClient, store: store, refreshInterval: interval, leaderThemeLimit: leaderLimit, now: now, gate: make(chan struct{}, 1), poolUpdated: make(chan struct{})}
+	sourceID := strings.TrimSpace(config.SourceID)
+	if sourceID == "" {
+		sourceID = "duanxianxia" // Compatibility for the existing persisted service constructor.
+	}
+	return &Service{client: client, poolClient: poolClient, store: store, refreshInterval: interval, leaderThemeLimit: leaderLimit, now: now, gate: make(chan struct{}, 1), poolUpdated: make(chan struct{}), sourceID: sourceID}
 }
 
 func (s *Service) Store() *Store {
@@ -88,6 +94,7 @@ func (s *Service) Snapshots(ctx context.Context, limit int) ([]Snapshot, FetchMe
 		return nil, FetchMeta{}, err
 	}
 	meta := fetchMeta(result.state, result.themeRefreshed, len(snapshots) > 0 && !result.themeRefreshed, result.refreshError, result.attempted, result.poolRefreshed, result.poolFetchedAt)
+	meta.SourceID, meta.PoolSource = s.sourceID, result.poolSource
 	if len(snapshots) > 0 {
 		return snapshots, meta, nil
 	}
@@ -124,6 +131,7 @@ func (s *Service) LimitUpPools(ctx context.Context, limit int) ([]LimitUpPoolSna
 		return nil, FetchMeta{}, err
 	}
 	meta := fetchMeta(result.state, result.poolRefreshed, len(pools) > 0 && !result.poolRefreshed, result.refreshError, result.attempted, result.poolRefreshed, result.poolFetchedAt)
+	meta.SourceID, meta.PoolSource = s.sourceID, result.poolSource
 	if len(pools) > 0 {
 		return pools, meta, nil
 	}
@@ -139,6 +147,7 @@ type serviceRefreshResult struct {
 	themeRefreshed bool
 	poolRefreshed  bool
 	poolFetchedAt  time.Time
+	poolSource     string
 	themeError     error
 	poolError      error
 	refreshError   string
@@ -204,6 +213,7 @@ func (s *Service) refreshLocked(ctx context.Context) (serviceRefreshResult, erro
 	result.poolRefreshed = s.poolClient != nil && poolErr == nil
 	if result.poolRefreshed {
 		result.poolFetchedAt = pool.FetchedAt
+		result.poolSource = pool.Meta.Source
 	}
 
 	errors := []string{}
@@ -278,4 +288,10 @@ func (s *Service) EarlyLimitUpPools(ctx context.Context, limit int) ([]LimitUpPo
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+// LimitUpPoolStale reports the retained pool freshness using the service clock
+// and the same persistent refresh interval used before orchestration moved.
+func (s *Service) LimitUpPoolStale(fetchedAt time.Time) bool {
+	return s.now().Sub(fetchedAt) >= s.refreshInterval
 }

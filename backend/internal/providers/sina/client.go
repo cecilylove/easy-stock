@@ -86,6 +86,13 @@ func NewClient(opts ...Option) *Client {
 	return c
 }
 
+// SupportsKLine declares the source-default capability without an HTTP-layer
+// concrete-client check. Sina does not provide a supported 120-minute scale.
+func (c *Client) SupportsKLine(symbol, period string) bool {
+	_, err := foundation.NormalizeSymbol(symbol)
+	return err == nil && sinaKLineScale(period) != ""
+}
+
 func (c *Client) KLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error) {
 	normalized, err := foundation.NormalizeSymbol(symbol)
 	if err != nil {
@@ -129,6 +136,10 @@ func (c *Client) KLine(ctx context.Context, symbol string, period string, limit 
 		SourceURL: requestURL,
 		FetchedAt: time.Now(),
 		LatencyMS: time.Since(start).Milliseconds(),
+		Provider:  "sina", NativeCode: normalized.Sina, InstrumentID: normalized.Canonical,
+		RequestedAdjustment: "source", EffectiveAdjustment: "source",
+		AdjustmentConvention: "sina:kline:source-default-unspecified",
+		BasisID:              "sina:sina:kline:source-default-unspecified:source", TimeZone: "Asia/Shanghai",
 	}
 	return parseKLineJSONP(decodeSinaBody(bodyBytes, resp.Header.Get("Content-Type")), normalized.Canonical, meta)
 }

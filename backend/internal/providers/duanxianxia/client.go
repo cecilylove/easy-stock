@@ -100,6 +100,7 @@ func (c *Client) Fetch(ctx context.Context, leaderThemeLimit int) (Snapshot, err
 
 	fetchedAt := c.now()
 	return Snapshot{
+		Meta:      foundation.SourceMeta{Source: "duanxianxia:kaipanla", Provider: "duanxianxia", SourceURL: c.baseURL + "/web/platerotat", FetchedAt: fetchedAt, TradeDate: tradeDate},
 		ID:        fmt.Sprintf("kpl-%s-%d", tradeDate, fetchedAt.UnixMilli()),
 		TradeDate: tradeDate,
 		FetchedAt: fetchedAt,
@@ -141,6 +142,7 @@ func (c *Client) FetchLimitUpPool(ctx context.Context) (LimitUpPoolSnapshot, err
 		return LimitUpPoolSnapshot{}, err
 	}
 	return LimitUpPoolSnapshot{
+		Meta:       foundation.SourceMeta{Source: "duanxianxia:kaipanla-limit-up", Provider: "duanxianxia", SourceURL: sourceURL, FetchedAt: fetchedAt, TradeDate: tradeDate},
 		ID:         fmt.Sprintf("kpl-pool-%s-%d", tradeDate, fetchedAt.UnixMilli()),
 		TradeDate:  tradeDate,
 		FetchedAt:  fetchedAt,

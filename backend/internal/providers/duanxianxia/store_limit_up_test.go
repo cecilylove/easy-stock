@@ -119,7 +119,7 @@ func TestLimitUpProviderPrefersRetainedKaipanlaPreviousDay(t *testing.T) {
 	}
 	byKey := map[string]foundation.LimitUpEvent{}
 	for _, event := range events {
-		byKey[limitUpEventKey(event)] = event
+		byKey[event.Date.Format("2006-01-02")+"|"+event.Symbol] = event
 	}
 	previous := byKey["2026-08-06|600001.SH"]
 	if previous.Meta.Source != "duanxianxia:kaipanla-limit-up" || previous.Streak != 2 || previous.Price != 12.3 || len(previous.Concepts) != 1 || previous.Concepts[0] != "算力租赁" {
@@ -159,4 +159,13 @@ func TestStoreKeepsRecentThemeVersionsButRecentListsOnePerDay(t *testing.T) {
 	if _, ok, err := store.Get(ctx, "old"); err != nil || ok {
 		t.Fatalf("old version not expired: %v", err)
 	}
+}
+
+// Fixture copies preserve the old isolation check; production orchestration lives in service.
+func cloneLimitUpEvents(events []foundation.LimitUpEvent) []foundation.LimitUpEvent {
+	result := append([]foundation.LimitUpEvent(nil), events...)
+	for i := range result {
+		result[i].Concepts = append([]string(nil), result[i].Concepts...)
+	}
+	return result
 }

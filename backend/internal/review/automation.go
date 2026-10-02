@@ -1,26 +1,27 @@
 package review
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
+
 	"strings"
 	"sync"
 	"time"
 
 	"easy-stock/backend/internal/appsettings"
+	"easy-stock/backend/internal/datasource/contracts"
 	"easy-stock/backend/internal/hermes"
+	"easy-stock/backend/internal/providers/reviewautomation"
 	"easy-stock/backend/internal/runtimelog"
 )
 
@@ -31,25 +32,28 @@ type URLImporter interface {
 const WechatArticleListUnavailableMessage = "微信已停用公众号历史文章列表接口，自动订阅暂不可用；请粘贴具体文章链接导入"
 
 type Automation struct {
-	store                  *Store
-	importer               URLImporter
-	settings               *appsettings.Store
-	httpClient             *http.Client
-	prompter               hermes.Prompter
-	fallbackWechat         string
-	browserStateDir        string
-	browserBridgeURL       string
-	browserBridgeToken     string
-	taogubaBridgeURL       string
-	taogubaBridgeToken     string
-	browserBridgeClient    *http.Client
-	mu                     sync.Mutex
-	dailySummaryMu         sync.Mutex
-	dailySummaryJobMu      sync.Mutex
-	dailySummaryRunning    bool
-	dailyMarketProvider    DailyMarketProvider
-	dailyValidationMu      sync.Mutex
-	dailyValidationRunning map[string]bool
+	collectionProvider        contracts.BrowserCollectionProvider
+	authorLinksProvider       contracts.AuthorLinksProvider
+	authorizedArticleProvider contracts.AuthorizedArticleProvider
+	store                     *Store
+	importer                  URLImporter
+	settings                  *appsettings.Store
+	httpClient                *http.Client
+	prompter                  hermes.Prompter
+	fallbackWechat            string
+	browserStateDir           string
+	browserBridgeURL          string
+	browserBridgeToken        string
+	taogubaBridgeURL          string
+	taogubaBridgeToken        string
+	browserBridgeClient       *http.Client
+	mu                        sync.Mutex
+	dailySummaryMu            sync.Mutex
+	dailySummaryJobMu         sync.Mutex
+	dailySummaryRunning       bool
+	dailyMarketProvider       DailyMarketProvider
+	dailyValidationMu         sync.Mutex
+	dailyValidationRunning    map[string]bool
 }
 
 // SetDailyMarketProvider wires the optional overnight market snapshot into the
@@ -59,6 +63,30 @@ func (a *Automation) SetDailyMarketProvider(provider DailyMarketProvider) {
 	a.dailyMarketProvider = provider
 }
 
+// SetCollectionSources binds acquisition without changing subscriptions or login state.
+func (a *Automation) SetCollectionSources(browser contracts.BrowserCollectionProvider, links contracts.AuthorLinksProvider, authorized contracts.AuthorizedArticleProvider) {
+	a.collectionProvider = browser
+	a.authorLinksProvider = links
+	a.authorizedArticleProvider = authorized
+}
+func (a *Automation) browserSource() contracts.BrowserCollectionProvider {
+	if a.collectionProvider != nil {
+		return a.collectionProvider
+	}
+	return reviewautomation.NewClient(a.httpClient, a.browserBridgeClient)
+}
+func (a *Automation) linksSource() contracts.AuthorLinksProvider {
+	if a.authorLinksProvider != nil {
+		return a.authorLinksProvider
+	}
+	return reviewautomation.NewClient(a.httpClient, a.browserBridgeClient)
+}
+func (a *Automation) authorizedSource() contracts.AuthorizedArticleProvider {
+	if a.authorizedArticleProvider != nil {
+		return a.authorizedArticleProvider
+	}
+	return reviewautomation.NewClient(a.httpClient, a.browserBridgeClient)
+}
 func NewAutomation(store *Store, importer URLImporter, settings *appsettings.Store, httpClient *http.Client, fallbackWechat string, prompters ...hermes.Prompter) *Automation {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 25 * time.Second}
@@ -308,59 +336,9 @@ func (a *Automation) discover(ctx context.Context, sub Subscription, profile app
 }
 
 func (a *Automation) discoverWechat(ctx context.Context, sub Subscription, profile appsettings.ReviewSourceProfile) ([]string, string, string, error) {
-	base, token := strings.TrimRight(profile.BaseURL, "/"), profile.Credential
-	if base == "" {
-		return nil, "", "", errors.New("请先在设置中配置微信公众号解析服务地址")
-	}
-	fakeID := sub.ExternalID
-	name := sub.Name
-	if fakeID == "" || strings.Contains(fakeID, "/") || strings.HasPrefix(fakeID, "http") {
-		endpoint := base + "/api/public/searchbiz?query=" + url.QueryEscape(firstNonEmpty(name, sub.HomepageURL))
-		var response struct {
-			Success bool `json:"success"`
-			Data    struct {
-				List []struct {
-					FakeID   string `json:"fakeid"`
-					Nickname string `json:"nickname"`
-				} `json:"list"`
-			} `json:"data"`
-			Error string `json:"error"`
-		}
-		if err := a.getJSON(ctx, endpoint, token, &response); err != nil {
-			return nil, "", "", normalizeWechatArticleListError(err)
-		}
-		if !response.Success || len(response.Data.List) == 0 {
-			return nil, "", "", normalizeWechatArticleListError(errors.New(firstNonEmpty(response.Error, "没有搜索到该公众号")))
-		}
-		fakeID = response.Data.List[0].FakeID
-		name = response.Data.List[0].Nickname
-	}
-	endpoint := base + "/api/public/articles?fakeid=" + url.QueryEscape(fakeID) + "&begin=0&count=20"
-	var response struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Articles []struct {
-				Link string `json:"link"`
-				URL  string `json:"url"`
-			} `json:"articles"`
-		} `json:"data"`
-		Error string `json:"error"`
-	}
-	if err := a.getJSON(ctx, endpoint, token, &response); err != nil {
-		return nil, "", "", normalizeWechatArticleListError(err)
-	}
-	if !response.Success {
-		return nil, "", "", normalizeWechatArticleListError(errors.New(firstNonEmpty(response.Error, "公众号文章列表获取失败，请检查扫码登录状态")))
-	}
-	links := []string{}
-	for _, item := range response.Data.Articles {
-		if link := firstNonEmpty(item.Link, item.URL); link != "" {
-			links = append(links, link)
-		}
-	}
-	return uniqueStrings(links), name, fakeID, nil
+	result, err := a.linksSource().DiscoverAuthorLinks(ctx, contracts.AuthorLinksRequest{SourceID: sub.Source, HomepageURL: sub.HomepageURL, Name: sub.Name, ExternalID: sub.ExternalID, BaseURL: profile.BaseURL, Credential: profile.Credential})
+	return result.URLs, result.Name, result.ExternalID, normalizeWechatArticleListError(err)
 }
-
 func normalizeWechatArticleListError(err error) error {
 	if err != nil && isWechatArticleListUnavailableText(err.Error()) {
 		return errors.New(WechatArticleListUnavailableMessage)
@@ -379,19 +357,9 @@ func subscriptionHasUnavailableWechatList(sub Subscription) bool {
 	return sub.Source == "wechat" && isWechatArticleListUnavailableText(sub.LastError)
 }
 
-type hermesXueqiuArticle struct {
-	Title       string `json:"title"`
-	OriginalURL string `json:"original_url"`
-	ContentText string `json:"content_text"`
-	PublishedAt string `json:"published_at"`
-}
+type hermesXueqiuArticle = contracts.BrowserArticle
 
-type hermesXueqiuCollection struct {
-	AuthorName string                `json:"author_name"`
-	ExternalID string                `json:"external_id"`
-	Articles   []hermesXueqiuArticle `json:"articles"`
-	Error      string                `json:"error"`
-}
+type hermesXueqiuCollection = contracts.BrowserCollection
 
 func (a *Automation) collectBrowserSourceWithHermes(ctx context.Context, sub Subscription, profile appsettings.ReviewSourceProfile, statePath string) ([]Post, string, string, error) {
 	bridgeURL, bridgeToken := a.browserBridgeForSource(sub.Source)
@@ -417,48 +385,8 @@ func (a *Automation) browserBridgeForSource(source string) (string, string) {
 }
 
 func (a *Automation) collectFromBrowserBridge(ctx context.Context, sub Subscription, profile appsettings.ReviewSourceProfile, bridgeURL, bridgeToken string) (hermesXueqiuCollection, error) {
-	body, err := json.Marshal(map[string]any{
-		"profile_id":   profile.ID,
-		"homepage_url": sub.HomepageURL,
-		"limit":        5,
-	})
-	if err != nil {
-		return hermesXueqiuCollection{}, err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, bridgeURL+"/v1/"+sub.Source+"/collect", bytes.NewReader(body))
-	if err != nil {
-		return hermesXueqiuCollection{}, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if bridgeToken != "" {
-		request.Header.Set("X-A-Stock-Browser-Token", bridgeToken)
-	}
-	response, err := a.browserBridgeClient.Do(request)
-	if err != nil {
-		return hermesXueqiuCollection{}, fmt.Errorf("连接内置浏览器失败: %w", err)
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
-	if err != nil {
-		return hermesXueqiuCollection{}, err
-	}
-	var payload struct {
-		OK    bool                   `json:"ok"`
-		Data  hermesXueqiuCollection `json:"data"`
-		Error string                 `json:"error"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return hermesXueqiuCollection{}, fmt.Errorf("内置浏览器返回格式无效: %w", err)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || !payload.OK {
-		return hermesXueqiuCollection{}, errors.New(firstNonEmpty(strings.TrimSpace(payload.Error), fmt.Sprintf("内置浏览器返回 HTTP %d", response.StatusCode)))
-	}
-	if len(payload.Data.Articles) == 0 {
-		return hermesXueqiuCollection{}, errors.New("内置浏览器没有读取到" + browserSourceLabel(sub.Source) + "文章")
-	}
-	return payload.Data, nil
+	return a.browserSource().CollectBrowser(ctx, contracts.BrowserCollectionRequest{SourceID: sub.Source, BridgeURL: bridgeURL, Token: bridgeToken, ProfileID: profile.ID, HomepageURL: sub.HomepageURL, Limit: 5})
 }
-
 func (a *Automation) normalizeBrowserBridgeCollection(ctx context.Context, sub Subscription, raw hermesXueqiuCollection) (hermesXueqiuCollection, error) {
 	// Keep already imported articles in the collection for accurate discovery
 	// counts, but only ask the model to normalize metadata for new articles.
@@ -718,41 +646,9 @@ func browserStateLoggedIn(statePath string, sources ...string) bool {
 }
 
 func (a *Automation) discoverHTML(ctx context.Context, sub Subscription, profile appsettings.ReviewSourceProfile) ([]string, string, string, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, sub.HomepageURL, nil)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36")
-	if profile.Credential != "" {
-		req.Header.Set("Cookie", profile.Credential)
-	}
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return nil, "", "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", "", fmt.Errorf("作者主页返回 HTTP %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxArticleBytes))
-	if err != nil {
-		return nil, "", "", err
-	}
-	document := string(body)
-	base, _ := url.Parse(sub.HomepageURL)
-	links := []string{}
-	for _, match := range regexp.MustCompile(`(?is)href=["']([^"']+)["']`).FindAllStringSubmatch(document, -1) {
-		target, err := url.Parse(htmlUnescape(match[1]))
-		if err != nil {
-			continue
-		}
-		absolute := base.ResolveReference(target)
-		host := strings.ToLower(absolute.Hostname())
-		if (strings.HasSuffix(host, "taoguba.com.cn") || strings.HasSuffix(host, "tgb.cn")) && (strings.Contains(absolute.Path, "/a/") || strings.Contains(absolute.Path, "/Article/") || strings.Contains(absolute.Path, "/article/")) {
-			links = append(links, absolute.String())
-		}
-	}
-	name := cleanInline(firstNonEmpty(metaValue(document, "property", "og:title"), matchText(titlePattern, document), sub.Name))
-	return uniqueStrings(links), name, sub.ExternalID, nil
+	result, err := a.linksSource().DiscoverAuthorLinks(ctx, contracts.AuthorLinksRequest{SourceID: sub.Source, HomepageURL: sub.HomepageURL, Name: sub.Name, ExternalID: sub.ExternalID, Credential: profile.Credential})
+	return result.URLs, result.Name, result.ExternalID, err
 }
-
 func (a *Automation) AnalyzePost(ctx context.Context, id string) (Post, error) {
 	post, err := a.store.GetPost(ctx, id)
 	if err != nil {
@@ -875,71 +771,14 @@ func (a *Automation) due(ctx context.Context) bool {
 	return false
 }
 
-func (a *Automation) getJSON(ctx context.Context, endpoint, token string, target any) error {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		var payload struct {
-			Error string `json:"error"`
-			Data  struct {
-				Error string `json:"error"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(body, &payload) == nil {
-			if message := firstNonEmpty(payload.Error, payload.Data.Error); message != "" {
-				return errors.New(message)
-			}
-		}
-		return fmt.Errorf("内容服务返回 HTTP %d", resp.StatusCode)
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, maxArticleBytes)).Decode(target)
-}
 func (a *Automation) importWechat(ctx context.Context, base, token, link string) (Post, error) {
-	body, _ := json.Marshal(map[string]string{"url": link})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/article", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	resp, err := a.httpClient.Do(req)
+	item, err := a.authorizedSource().FetchAuthorizedArticle(ctx, contracts.AuthorizedArticleRequest{SourceID: "wechat", URL: link, BaseURL: base, Token: token})
 	if err != nil {
 		return Post{}, err
 	}
-	defer resp.Body.Close()
-	var payload struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Title        string `json:"title"`
-			PlainContent string `json:"plain_content"`
-			Author       string `json:"author"`
-			PublishTime  int64  `json:"publish_time"`
-		} `json:"data"`
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxArticleBytes)).Decode(&payload); err != nil {
-		return Post{}, err
-	}
-	if !payload.Success {
-		return Post{}, errors.New(firstNonEmpty(payload.Error, "微信文章解析失败"))
-	}
-	if payload.Data.PublishTime <= 0 {
-		return Post{}, errors.New("微信公众号响应没有可靠的发布时间，为避免旧文章被误判为今日内容，本次不导入")
-	}
-	published := time.Unix(payload.Data.PublishTime, 0)
-	content, err := normalizeImportedContent(payload.Data.PlainContent)
-	if err != nil {
-		return Post{}, err
-	}
-	return newPost("wechat", link, payload.Data.Author, payload.Data.Title, content, "", published), nil
+	return acquiredArticlePost(item), nil
 }
+
 func lastPathPart(path string) string {
 	parts := strings.FieldsFunc(strings.Trim(path, "/"), func(r rune) bool { return r == '/' })
 	if len(parts) == 0 {

@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"easy-stock/backend/internal/datasource/service"
 	"easy-stock/backend/internal/foundation"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
@@ -51,7 +52,36 @@ func NewExchangeClient() *Client {
 	return client
 }
 
+// HistoryClient implements EastMoney history only. Cross-source degradation is
+// owned by datasource/service; it never requests the exchange implicitly.
+type HistoryClient struct{ client *Client }
+
+func NewHistoryClient() *HistoryClient { return &HistoryClient{client: NewClient()} }
+func (c *HistoryClient) Trend(ctx context.Context, variety string, limit int) (foundation.MarketFuturesPositionSeries, error) {
+	return c.client.historyTrend(ctx, variety, limit)
+}
+func (c *Client) LatestMembers(ctx context.Context, variety, contract string) (foundation.MarketFuturesMembers, error) {
+	variety = strings.ToUpper(strings.TrimSpace(variety))
+	if !ValidVariety(variety) {
+		return foundation.MarketFuturesMembers{}, fmt.Errorf("invalid futures variety")
+	}
+	return c.latestMembers(ctx, variety, contract)
+}
 func (c *Client) Trend(ctx context.Context, variety string, limit int) (foundation.MarketFuturesPositionSeries, error) {
+	variety = strings.ToUpper(strings.TrimSpace(variety))
+	if !ValidVariety(variety) || limit < 1 || limit > 250 {
+		return foundation.MarketFuturesPositionSeries{}, fmt.Errorf("invalid futures variety or limit")
+	}
+	var history *HistoryClient
+	if !c.exchangeOnly {
+		history = &HistoryClient{client: c}
+	}
+	if history == nil {
+		return service.NewFutures(nil, c, c, c).Trend(ctx, variety, limit)
+	}
+	return service.NewFutures(history, c, c, c).Trend(ctx, variety, limit)
+}
+func (c *Client) historyTrend(ctx context.Context, variety string, limit int) (foundation.MarketFuturesPositionSeries, error) {
 	variety = strings.ToUpper(strings.TrimSpace(variety))
 	if !ValidVariety(variety) || limit < 1 || limit > 250 {
 		return foundation.MarketFuturesPositionSeries{}, fmt.Errorf("invalid futures variety or limit")
@@ -60,14 +90,10 @@ func (c *Client) Trend(ctx context.Context, variety string, limit int) (foundati
 	series := foundation.MarketFuturesPositionSeries{Variety: variety, VarietyName: varieties[variety].name, IndexCode: varieties[variety].index}
 	// Reserve time for the independent exchange fallback; never guess a contract
 	// from the calendar month (rollover can already have happened).
-	primaryCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
+	primaryCtx := ctx
 	var contracts []map[string]json.RawMessage
 	var err error
-	if c.exchangeOnly {
-		err = fmt.Errorf("当前仅提供交易所单日快照")
-	} else {
-		contracts, _, err = c.report(primaryCtx, "RPT_FUTU_POSITIONCODE", fmt.Sprintf(`(TRADE_CODE="%s")(IS_MAINCODE="1")`, variety), 5)
-	}
+	contracts, _, err = c.report(primaryCtx, "RPT_FUTU_POSITIONCODE", fmt.Sprintf(`(TRADE_CODE="%s")(IS_MAINCODE="1")`, variety), 5)
 	if err == nil {
 		for _, row := range contracts {
 			code := rawString(row["SECURITY_CODE"])
@@ -91,55 +117,14 @@ func (c *Client) Trend(ctx context.Context, variety string, limit int) (foundati
 			}
 		}
 	}
-	cancel()
 	if err != nil {
-		// A bounded fallback supplies the latest exchange snapshot, not a made-up
-		// full history. Rank changes use the exchange's published values.
-		members, fallbackErr := c.latestMembers(ctx, variety, series.ContractCode)
-		if fallbackErr != nil {
-			if c.exchangeOnly {
-				return series, fmt.Errorf("中金所最近交易日持仓数据不可用：%w", fallbackErr)
-			}
-			return series, fmt.Errorf("东方财富期指持仓不可用：%v；中金所备用数据不可用：%w", err, fallbackErr)
-		}
-		series.ContractCode = members.ContractCode
-		point := foundation.MarketFuturesPositionRow{TradeDate: members.TradeDate}
-		var longChange, shortChange int64
-		longComplete, shortComplete := true, true
-		for _, member := range members.Members {
-			point.LongPosition += member.LongPosition
-			point.ShortPosition += member.ShortPosition
-			if member.LongChange == nil {
-				longComplete = false
-			} else {
-				longChange += *member.LongChange
-			}
-			if member.ShortChange == nil {
-				shortComplete = false
-			} else {
-				shortChange += *member.ShortChange
-			}
-		}
-		if longComplete {
-			point.LongChange = &longChange
-		}
-		if shortComplete {
-			point.ShortChange = &shortChange
-		}
-		point.NetPosition = point.LongPosition - point.ShortPosition
-		series.Rows = []foundation.MarketFuturesPositionRow{point}
-		series.Meta = members.Meta
-		series.Meta.FallbackReason = "东方财富期指数据不可用，降级为中金所最近交易日快照；仅提供单日持仓，不提供历史走势、指数或基差"
-		if c.exchangeOnly {
-			series.Meta.FallbackReason = "中金所最近交易日快照；仅提供单日持仓，不提供历史走势、指数或基差"
-		}
+		return series, err
 	}
 	series.Meta.TradeDate = series.Rows[len(series.Rows)-1].TradeDate
 	series.Meta.FetchedAt = c.now()
 	series.Meta.LatencyMS = time.Since(start).Milliseconds()
 	return series, nil
 }
-
 func (c *Client) report(ctx context.Context, report, filter string, limit int) ([]map[string]json.RawMessage, string, error) {
 	params := url.Values{"reportName": {report}, "columns": {"ALL"}, "pageSize": {strconv.Itoa(limit)}, "pageNumber": {"1"}, "filter": {filter}, "source": {"WEB"}, "client": {"WEB"}}
 	if report == "RPT_FUTU_NET_POSITION" {

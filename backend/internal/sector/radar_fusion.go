@@ -10,7 +10,6 @@ import (
 
 	"easy-stock/backend/internal/foundation"
 	"easy-stock/backend/internal/narrative"
-	"easy-stock/backend/internal/providers/duanxianxia"
 )
 
 const (
@@ -27,15 +26,15 @@ type radarWindowScores struct {
 
 func (p *RadarProvider) fusedOverviews(
 	ctx context.Context,
-	snapshot duanxianxia.Snapshot,
-	fetchMeta duanxianxia.FetchMeta,
+	snapshot foundation.ThemeSnapshot,
+	fetchMeta foundation.ThemeFetchMeta,
 	snapshotErr error,
 	industries []foundation.MarketIndustryMomentum,
 	industryMeta foundation.SourceMeta,
 	industryErr error,
 ) ([]foundation.ThemeOverview, foundation.SourceMeta, error) {
 	if snapshotErr == nil && len(snapshot.Themes) == 0 {
-		snapshotErr = fmt.Errorf("开盘啦暂无题材快照")
+		snapshotErr = fmt.Errorf("题材源暂无快照")
 	}
 	if industryErr == nil && len(industries) == 0 {
 		industryErr = fmt.Errorf("行业趋势强度暂无数据")
@@ -43,7 +42,7 @@ func (p *RadarProvider) fusedOverviews(
 
 	tradeAge := tradingDayAge(snapshot.TradeDate, p.now())
 	if snapshotErr == nil && tradeAge > 2 {
-		snapshotErr = fmt.Errorf("开盘啦题材快照已超过两个交易日")
+		snapshotErr = fmt.Errorf("题材快照已超过两个交易日")
 	}
 
 	industryItems := []foundation.ThemeOverview{}
@@ -54,13 +53,13 @@ func (p *RadarProvider) fusedOverviews(
 
 	kaipanlaItems := []foundation.ThemeOverview{}
 	if snapshotErr == nil {
-		themes := append([]duanxianxia.Theme(nil), snapshot.Themes...)
+		themes := append([]foundation.ThemeSnapshotItem(nil), snapshot.Themes...)
 		candidateLimit := max(24, p.fallbackFill)
 		if len(themes) > candidateLimit {
 			themes = themes[:candidateLimit]
 		}
 		quoteLookup := p.quoteLookup(ctx, themes)
-		strengthScores := p.realtimeStrengthScores(ctx, themes)
+		strengthScores := p.realtimeStrengthScores(ctx, themes, themeSnapshotMeta(snapshot).Source)
 		kaipanlaItems = p.buildKaipanlaRadarOverviews(snapshot, themes, quoteLookup, strengthScores, tradeAge)
 	}
 
@@ -146,8 +145,8 @@ func buildIndustryRadarOverviews(items []foundation.MarketIndustryMomentum, meta
 }
 
 func (p *RadarProvider) buildKaipanlaRadarOverviews(
-	snapshot duanxianxia.Snapshot,
-	themes []duanxianxia.Theme,
+	snapshot foundation.ThemeSnapshot,
+	themes []foundation.ThemeSnapshotItem,
 	quotes map[string]foundation.Quote,
 	strengths map[string]themeStrengthScore,
 	tradeAge int,
@@ -155,10 +154,10 @@ func (p *RadarProvider) buildKaipanlaRadarOverviews(
 	if len(themes) == 0 {
 		return nil
 	}
-	rankPercentiles := themeMetricPercentiles(themes, func(theme duanxianxia.Theme) float64 {
+	rankPercentiles := themeMetricPercentiles(themes, func(theme foundation.ThemeSnapshotItem) float64 {
 		return -float64(max(theme.Rank, 1))
 	})
-	strengthPercentiles := themeMetricPercentiles(themes, func(theme duanxianxia.Theme) float64 {
+	strengthPercentiles := themeMetricPercentiles(themes, func(theme foundation.ThemeSnapshotItem) float64 {
 		return theme.Strength
 	})
 	hasSourceStrength := false
@@ -240,7 +239,7 @@ func industryMetricPercentiles(
 	return percentileRanks(values, valid)
 }
 
-func themeMetricPercentiles(items []duanxianxia.Theme, metric func(duanxianxia.Theme) float64) []float64 {
+func themeMetricPercentiles(items []foundation.ThemeSnapshotItem, metric func(foundation.ThemeSnapshotItem) float64) []float64 {
 	values := make([]float64, len(items))
 	valid := make([]bool, len(items))
 	for index, item := range items {
@@ -425,7 +424,7 @@ func radarIndustryMatchScore(kaipanla foundation.ThemeOverview, industry foundat
 	if normalizeRadarMatchName(narrative.Canonical(kaipanla.Name)) == normalizeRadarMatchName(narrative.Canonical(industry.Name)) {
 		return 96
 	}
-	mapping, exists := lookupRadarThemeMapping(strings.TrimPrefix(kaipanla.Theme, "kpl:"), kaipanla.Name)
+	mapping, exists := lookupRadarThemeMapping(themeMappingCode(kaipanla.Source, strings.TrimPrefix(kaipanla.Theme, "kpl:")), kaipanla.Name)
 	if !exists {
 		return 0
 	}
@@ -563,7 +562,7 @@ func balancedExclusiveOrder(industry []int, kaipanla []int, items []foundation.T
 			chooseIndustry = true
 		case lastSource == radarIndustrySource && streak >= 2:
 			chooseIndustry = false
-		case lastSource == duanxianxia.SourceID && streak >= 2:
+		case lastSource == legacyThemeSnapshotSource && streak >= 2:
 			chooseIndustry = true
 		case industryCount > kaipanlaCount:
 			chooseIndustry = score(items[industry[i]]) > score(items[kaipanla[k]])+radarScoreGap
@@ -573,7 +572,7 @@ func balancedExclusiveOrder(industry []int, kaipanla []int, items []foundation.T
 			chooseIndustry = score(items[industry[i]]) >= score(items[kaipanla[k]])
 		}
 
-		source := duanxianxia.SourceID
+		source := legacyThemeSnapshotSource
 		if chooseIndustry {
 			result = append(result, industry[i])
 			i++
@@ -610,8 +609,8 @@ func sortRadarIndexes(indexes []int, items []foundation.ThemeOverview, score fun
 
 func fusedRadarMeta(
 	now time.Time,
-	snapshot duanxianxia.Snapshot,
-	fetchMeta duanxianxia.FetchMeta,
+	snapshot foundation.ThemeSnapshot,
+	fetchMeta foundation.ThemeFetchMeta,
 	snapshotErr error,
 	industryMeta foundation.SourceMeta,
 	industryErr error,
@@ -620,7 +619,7 @@ func fusedRadarMeta(
 ) foundation.SourceMeta {
 	source := radarFusionSource
 	if !hasIndustry {
-		source = duanxianxia.SourceID
+		source = themeSnapshotMeta(snapshot).Source
 	} else if !hasKaipanla {
 		source = radarIndustrySource
 	}
@@ -641,11 +640,11 @@ func fusedRadarMeta(
 		reasons = append(reasons, fetchMeta.RefreshError)
 	}
 	if carryForward {
-		reasons = append(reasons, "开盘啦尚未更新，已按交易日衰减")
+		reasons = append(reasons, themeSnapshotLabel(snapshot)+"尚未更新，已按交易日衰减")
 	}
 	return foundation.SourceMeta{
 		Source:         source,
-		SourceURL:      duanxianxia.DefaultBaseURL + "/web/platerotat",
+		SourceURL:      themeSnapshotMeta(snapshot).SourceURL,
 		FetchedAt:      fetchedAt,
 		Stale:          len(reasons) > 0,
 		TradeDate:      tradeDate,

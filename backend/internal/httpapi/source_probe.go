@@ -10,9 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"easy-stock/backend/internal/datasource/registry"
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/duanxianxia"
-	"easy-stock/backend/internal/providers/eastmoney"
 )
 
 const sourceProbeTimeout = 12 * time.Second
@@ -38,7 +37,7 @@ type SourceProbeFuturesProvider interface {
 }
 
 type SourceProbePoolProvider interface {
-	FetchLimitUpPool(context.Context) (duanxianxia.LimitUpPoolSnapshot, error)
+	FetchLimitUpPool(context.Context) (foundation.LimitUpPoolSnapshot, error)
 }
 
 // All providers must request their named upstream directly, with no cache or
@@ -51,15 +50,6 @@ type SourceProbeProviders struct {
 	THS       HotStockProvider
 	CFFEX     SourceProbeFuturesProvider
 	Kaipanla  SourceProbePoolProvider
-}
-
-// Each manual directory probe uses a fresh client: a successful catalog cache
-// from a prior check must not be reported as a new upstream observation.
-type eastMoneyDirectoryProbe struct{}
-
-func newEastMoneyDirectoryProbe() StockDirectoryProvider { return eastMoneyDirectoryProbe{} }
-func (eastMoneyDirectoryProbe) StockCatalog(ctx context.Context) ([]foundation.StockCatalogEntry, error) {
-	return eastmoney.NewClient().StockCatalog(ctx)
 }
 
 type sourceProbe struct {
@@ -231,7 +221,30 @@ type sourceProbeTracker struct {
 }
 
 func newSourceProbeTracker(providers SourceProbeProviders) *sourceProbeTracker {
-	return &sourceProbeTracker{probes: sourceProbeDefinitions(providers), timeout: sourceProbeTimeout}
+	return newSourceProbeTrackerFor(registry.Default(), providers)
+}
+func newSourceProbeTrackerFor(sources *registry.Registry, providers SourceProbeProviders) *sourceProbeTracker {
+	legacy := map[string]sourceProbe{}
+	for _, p := range sourceProbeDefinitions(providers) {
+		legacy[p.id] = p
+	}
+	probes := []sourceProbe{}
+	for _, entry := range sources.Entries() {
+		d := entry.Descriptor
+		if !d.Enabled || !d.Implemented || d.ProbeScope == "" {
+			continue
+		}
+		p := sourceProbe{id: d.ID, scope: d.ProbeScope, check: entry.Probe}
+		if p.check == nil {
+			if old, ok := legacy[d.ID]; ok {
+				p.check = old.check
+			} else {
+				p.check = func(context.Context, time.Time) error { return errSourceProbeUnavailable }
+			}
+		}
+		probes = append(probes, p)
+	}
+	return &sourceProbeTracker{probes: probes, timeout: sourceProbeTimeout}
 }
 
 func (t *sourceProbeTracker) snapshot() []SourceProbeResult {
@@ -339,6 +352,6 @@ func (s *Server) checkSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sources": s.sourceHealth.snapshot(time.Now()), "probes": results, "checked_at": checkedAt,
+		"sources": s.sourceHealth.snapshot(time.Now()), "probes": results, "checked_at": checkedAt, "catalog": s.sourceCatalog(),
 	})
 }

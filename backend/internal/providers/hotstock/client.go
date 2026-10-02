@@ -9,9 +9,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
+
 	"time"
 
+	"easy-stock/backend/internal/datasource/service"
 	"easy-stock/backend/internal/foundation"
 )
 
@@ -66,37 +67,36 @@ func NewTHSClient(options ...Option) *Client {
 	return client
 }
 
-func (client *Client) HotStockRanks(ctx context.Context, limit int) []foundation.HotStockRankList {
+// SourceClient implements one supplier capability without cross-source routing.
+type SourceClient struct {
+	client *Client
+	id     string
+}
+
+func NewTHSRankClient(options ...Option) *SourceClient {
+	return &SourceClient{client: NewClient(options...), id: "ths"}
+}
+func NewEastMoneyRankClient(options ...Option) *SourceClient {
+	return &SourceClient{client: NewClient(options...), id: "eastmoney"}
+}
+func (c *SourceClient) HotRank(ctx context.Context, limit int) foundation.HotStockRankList {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	type result struct {
-		index int
-		list  foundation.HotStockRankList
+	if c.id == "ths" {
+		return c.client.loadTHS(ctx, limit)
 	}
-	loaders := []func(context.Context, int) foundation.HotStockRankList{client.loadTHS}
-	if client.eastMoneyURL != "" {
-		loaders = append(loaders, client.loadEastMoney)
-	}
-	results := make(chan result, len(loaders))
-	var group sync.WaitGroup
-	for index, loader := range loaders {
-		group.Add(1)
-		go func(index int, loader func(context.Context, int) foundation.HotStockRankList) {
-			defer group.Done()
-			results <- result{index: index, list: loader(ctx, limit)}
-		}(index, loader)
-	}
-	group.Wait()
-	close(results)
-
-	lists := make([]foundation.HotStockRankList, len(loaders))
-	for loaded := range results {
-		lists[loaded.index] = loaded.list
-	}
-	return lists
+	return c.client.loadEastMoney(ctx, limit)
 }
 
+// Compatibility facade; default assembly uses the two independent adapters.
+func (client *Client) HotStockRanks(ctx context.Context, limit int) []foundation.HotStockRankList {
+	ths := &SourceClient{client: client, id: "ths"}
+	if client.eastMoneyURL == "" {
+		return service.NewHotRanks(ths).HotStockRanks(ctx, limit)
+	}
+	return service.NewHotRanks(ths, &SourceClient{client: client, id: "eastmoney"}).HotStockRanks(ctx, limit)
+}
 func (client *Client) loadTHS(ctx context.Context, limit int) foundation.HotStockRankList {
 	list := foundation.HotStockRankList{Source: "ths", SourceName: "同花顺"}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.thsURL, nil)

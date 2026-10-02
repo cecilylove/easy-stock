@@ -521,8 +521,8 @@ func analyzeTheme(symbol string, short ShortTermAnalysis, cached []foundation.St
 		route = "short_term"
 	}
 
-	poolCached, hasPoolCached := newestCachedTheme(cached, "kaipanla-limit-up")
-	leaderCached, hasLeaderCached := newestCachedTheme(cached, "kaipanla-theme-leader")
+	poolCached, hasPoolCached := newestCachedTheme(cached, foundation.ThemeAttributionPool)
+	leaderCached, hasLeaderCached := newestCachedTheme(cached, foundation.ThemeAttributionLeader)
 	poolEvent, hasPoolEvent := newestPoolEventTheme(symbol, events)
 	leaderEvent, hasLeaderEvent := newestLeaderEventTheme(symbol, events)
 	limitEvent, hasLimitEvent := newestLimitEventTheme(symbol, events)
@@ -1540,11 +1540,11 @@ func themeMatches(value string, overview foundation.ThemeOverview) bool {
 	return false
 }
 
-func newestCachedTheme(items []foundation.StockThemeAttribution, sourcePart string) (foundation.StockThemeAttribution, bool) {
+func newestCachedTheme(items []foundation.StockThemeAttribution, kind foundation.ThemeAttributionKind) (foundation.StockThemeAttribution, bool) {
 	best := foundation.StockThemeAttribution{}
 	found := false
 	for _, item := range items {
-		if !strings.Contains(item.Source, sourcePart) || strings.TrimSpace(item.Theme) == "" {
+		if foundation.ThemeEvidenceKind(item.Kind, item.Source) != kind || strings.TrimSpace(item.Theme) == "" {
 			continue
 		}
 		if !found || item.TradeDate > best.TradeDate || (item.TradeDate == best.TradeDate && themeRank(item.Rank) < themeRank(best.Rank)) {
@@ -1585,7 +1585,7 @@ func newerThemeCandidate(left themeCandidate, leftOK bool, right themeCandidate,
 
 func newestPoolEventTheme(symbol string, events []foundation.LimitUpEvent) (themeCandidate, bool) {
 	return newestEventTheme(symbol, events, func(event foundation.LimitUpEvent) (themeCandidate, bool) {
-		if !strings.Contains(event.Meta.Source, "kaipanla-limit-up") {
+		if foundation.ThemeEvidenceKind(event.PoolThemeKind, event.Meta.Source) != foundation.ThemeAttributionPool {
 			return themeCandidate{}, false
 		}
 		theme := preferredPoolConcept(event)
@@ -1601,7 +1601,7 @@ func newestPoolEventTheme(symbol string, events []foundation.LimitUpEvent) (them
 
 func newestLeaderEventTheme(symbol string, events []foundation.LimitUpEvent) (themeCandidate, bool) {
 	return newestEventTheme(symbol, events, func(event foundation.LimitUpEvent) (themeCandidate, bool) {
-		if !strings.Contains(event.ThemeSource, "kaipanla-theme-leader") || strings.TrimSpace(event.PrimaryTheme) == "" {
+		if foundation.ThemeEvidenceKind(event.ThemeKind, event.ThemeSource) != foundation.ThemeAttributionLeader || strings.TrimSpace(event.PrimaryTheme) == "" {
 			return themeCandidate{}, false
 		}
 		return themeCandidate{

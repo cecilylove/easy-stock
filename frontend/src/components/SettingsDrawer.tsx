@@ -29,6 +29,7 @@ import { HermesAgentSettingsPanel } from './HermesAgentSettingsPanel';
 import { SourceHealthPanel } from './SourceHealthPanel';
 import type { SourceHealth, SourceProbeResult } from '../lib/backend';
 import { expireSourceHealth, parseSourceRecords } from '../lib/source-health';
+import type { SourceIntegration } from '../lib/source-integrations';
 import { useModalDialog } from '../lib/use-modal-dialog';
 
 type Props = {
@@ -84,7 +85,7 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 	const sourceKey = JSON.stringify([config?.backendUrl, config?.token]);
 	const sourceKeyRef = useRef(sourceKey);
 	sourceKeyRef.current = sourceKey;
-	const [sourceRecords, setSourceRecords] = useState<{ key: string; sources: SourceHealth[]; probes: SourceProbeResult[]; readAt: string } | null>(null);
+	const [sourceRecords, setSourceRecords] = useState<{ key: string; sources: SourceHealth[]; probes: SourceProbeResult[]; catalog: SourceIntegration[]; readAt: string } | null>(null);
 	const [sourceReadState, setSourceReadState] = useState<{ key: string; loading: boolean; error: string }>({ key: '', loading: false, error: '' });
 	const [sourceCheckState, setSourceCheckState] = useState<{ key: string; checking: boolean; error: string }>({ key: '', checking: false, error: '' });
 	const sourceSessionRef = useRef<object | null>(null);
@@ -579,7 +580,7 @@ export function SettingsDrawer({ config, open, onClose, onSaved, initialSection,
 
 						<section className="settings-section" ref={dataSourcesRef} tabIndex={-1} aria-label="行情与内容数据源">
 							<div className="settings-section-title"><Database size={18} /><div><h3>行情与内容数据源</h3><p>来源用途与实际请求观测集中展示；悬停或聚焦问号查看调用说明。</p></div></div>
-							<SourceHealthPanel id="settings-source-observations" sources={expireSourceHealth(visibleSourceRecords?.sources || [], sourceClock)} probes={visibleSourceRecords?.probes || []} now={sourceClock} loading={visibleSourceState.loading} checking={visibleSourceCheck.checking} checkError={visibleSourceCheck.error} error={visibleSourceState.error} readAt={visibleSourceRecords?.readAt} onRefresh={() => void checkSources()} />
+							<SourceHealthPanel id="settings-source-observations" sources={expireSourceHealth(visibleSourceRecords?.sources || [], sourceClock)} catalog={visibleSourceRecords?.catalog} probes={visibleSourceRecords?.probes || []} now={sourceClock} loading={visibleSourceState.loading} checking={visibleSourceCheck.checking} checkError={visibleSourceCheck.error} error={visibleSourceState.error} readAt={visibleSourceRecords?.readAt} onRefresh={() => void checkSources()} />
 						</section>
 
 						<AppUpdatePanel />

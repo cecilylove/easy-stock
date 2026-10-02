@@ -4,10 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -15,46 +13,20 @@ import (
 	"sync"
 	"time"
 
+	"easy-stock/backend/internal/datasource/contracts"
+	"easy-stock/backend/internal/providers/reviewarchive"
 	"easy-stock/backend/internal/runtimelog"
 )
 
 const (
-	DefaultRemoteDailyBaseURL = "https://easy-stock-fs.oss-cn-beijing.aliyuncs.com/reviews/daily"
+	DefaultRemoteDailyBaseURL = reviewarchive.DefaultBaseURL
 	remoteDailySource         = "official"
 	remoteDailySchemaVersion  = 1
-	remoteDailyMaxBodyBytes   = 2 << 20
 )
 
-type RemoteDailyAuthor struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Platform string `json:"platform"`
-	Enabled  bool   `json:"enabled"`
-}
-
-type RemoteDailyAuthorsManifest struct {
-	SchemaVersion int                 `json:"schema_version"`
-	UpdatedAt     time.Time           `json:"updated_at"`
-	Authors       []RemoteDailyAuthor `json:"authors"`
-}
-
-type RemoteDailyArticle struct {
-	SchemaVersion int       `json:"schema_version"`
-	TradeDate     string    `json:"trade_date"`
-	ID            string    `json:"id"`
-	ExternalID    string    `json:"external_id"`
-	AuthorID      string    `json:"author_id"`
-	AuthorName    string    `json:"author_name"`
-	Platform      string    `json:"platform"`
-	Title         string    `json:"title"`
-	Digest        string    `json:"digest"`
-	ContentText   string    `json:"content_text"`
-	ContentSHA256 string    `json:"content_sha256"`
-	SourceURL     string    `json:"source_url,omitempty"`
-	PublishedAt   time.Time `json:"published_at"`
-	RelatedStocks []string  `json:"related_stocks"`
-	RelatedThemes []string  `json:"related_themes"`
-}
+type RemoteDailyAuthor = contracts.ArchiveAuthor
+type RemoteDailyAuthorsManifest = contracts.ArchiveManifest
+type RemoteDailyArticle = contracts.ArchivedArticle
 
 type RemoteDailyAuthorSyncStatus struct {
 	AuthorID   string `json:"author_id"`
@@ -80,6 +52,7 @@ type RemoteDailySyncStatus struct {
 }
 
 type RemoteDailySyncConfig struct {
+	Provider contracts.ArchiveProvider
 	BaseURL  string
 	Interval time.Duration
 	Client   *http.Client
@@ -88,9 +61,8 @@ type RemoteDailySyncConfig struct {
 
 type RemoteDailySync struct {
 	store    *Store
-	baseURL  string
 	interval time.Duration
-	client   *http.Client
+	provider contracts.ArchiveProvider
 	now      func() time.Time
 
 	mu          sync.RWMutex
@@ -100,24 +72,20 @@ type RemoteDailySync struct {
 }
 
 func NewRemoteDailySync(store *Store, cfg RemoteDailySyncConfig) *RemoteDailySync {
-	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
-	if baseURL == "" {
-		baseURL = DefaultRemoteDailyBaseURL
-	}
 	interval := cfg.Interval
 	if interval <= 0 {
 		interval = 30 * time.Minute
 	}
-	client := cfg.Client
-	if client == nil {
-		client = &http.Client{Timeout: 20 * time.Second}
+	provider := cfg.Provider
+	if provider == nil {
+		provider = reviewarchive.NewClient(cfg.BaseURL, cfg.Client)
 	}
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &RemoteDailySync{
-		store: store, baseURL: baseURL, interval: interval, client: client, now: now,
+		store: store, interval: interval, provider: provider, now: now,
 		status: RemoteDailySyncStatus{Status: "idle", Message: "等待检查远程大V每日复盘", Authors: []RemoteDailyAuthorSyncStatus{}},
 	}
 }
@@ -283,39 +251,17 @@ func (s *RemoteDailySync) fetchAuthors(ctx context.Context) ([]RemoteDailyAuthor
 	etag := s.authorsETag
 	cached := append([]RemoteDailyAuthor(nil), s.authors...)
 	s.mu.RUnlock()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/authors.json", nil)
+	result, err := s.provider.FetchAuthors(ctx, contracts.ArchiveAuthorsRequest{ETag: etag})
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "easy-stock-daily-review/2")
-	if etag != "" {
-		request.Header.Set("If-None-Match", etag)
-	}
-	response, err := s.client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotModified {
+	if result.NotModified {
 		return cached, nil
 	}
-	if response.StatusCode == http.StatusNotFound {
+	if !result.Found {
 		return []RemoteDailyAuthor{}, nil
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("作者清单返回 HTTP %d", response.StatusCode)
-	}
-	body, err := readRemoteDailyBody(response.Body)
-	if err != nil {
-		return nil, err
-	}
-	var manifest RemoteDailyAuthorsManifest
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("解析作者清单: %w", err)
-	}
+	manifest := result.Manifest
 	if manifest.SchemaVersion != remoteDailySchemaVersion {
 		return nil, fmt.Errorf("不支持的作者清单协议版本 %d", manifest.SchemaVersion)
 	}
@@ -332,41 +278,22 @@ func (s *RemoteDailySync) fetchAuthors(ctx context.Context) ([]RemoteDailyAuthor
 		authors = append(authors, author)
 	}
 	s.mu.Lock()
-	s.authorsETag = strings.TrimSpace(response.Header.Get("ETag"))
+	s.authorsETag = strings.TrimSpace(result.ETag)
 	s.authors = append([]RemoteDailyAuthor(nil), authors...)
 	s.mu.Unlock()
 	return authors, nil
 }
 
 func (s *RemoteDailySync) fetchArticle(ctx context.Context, tradeDate string, author RemoteDailyAuthor, now time.Time) (Post, string, error) {
-	objectURL := s.baseURL + "/" + url.PathEscape(author.ID) + "/" + tradeDate + ".json"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, objectURL, nil)
+	result, err := s.provider.FetchArchiveArticle(ctx, contracts.ArchiveArticleRequest{AuthorID: author.ID, TradeDate: tradeDate})
 	if err != nil {
 		return Post{}, "error", err
 	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "easy-stock-daily-review/2")
-	response, err := s.client.Do(request)
-	if err != nil {
-		return Post{}, "error", fmt.Errorf("请求文章: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
+	if !result.Found {
 		return Post{}, "not_found", nil
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return Post{}, "error", fmt.Errorf("文章返回 HTTP %d", response.StatusCode)
-	}
-	body, err := readRemoteDailyBody(response.Body)
-	if err != nil {
-		return Post{}, "error", err
-	}
-	var article RemoteDailyArticle
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&article); err != nil {
-		return Post{}, "error", fmt.Errorf("解析文章: %w", err)
-	}
+	article := result.Article
+	objectURL := result.ObjectURL
 	if err := validateRemoteDailyArticle(article, tradeDate, author); err != nil {
 		return Post{}, "error", err
 	}
@@ -441,15 +368,4 @@ func validateRemoteDailyArticle(article RemoteDailyArticle, tradeDate string, au
 
 func remoteDailyExternalID(tradeDate, authorID string) string {
 	return "daily:" + tradeDate + ":" + authorID
-}
-
-func readRemoteDailyBody(reader io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(reader, remoteDailyMaxBodyBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > remoteDailyMaxBodyBytes {
-		return nil, errors.New("远程每日复盘文件超过 2MB 限制")
-	}
-	return body, nil
 }

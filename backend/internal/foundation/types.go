@@ -212,42 +212,45 @@ type StockCatalogEntry struct {
 }
 
 type LimitUpEvent struct {
-	Symbol          string     `json:"symbol"`
-	Name            string     `json:"name"`
-	Date            time.Time  `json:"date"`
-	Price           float64    `json:"price"`
-	ChangePercent   float64    `json:"change_percent"`
-	Amount          float64    `json:"amount"`
-	FloatMarketCap  float64    `json:"float_market_cap"`
-	TurnoverRate    float64    `json:"turnover_rate"`
-	Streak          int        `json:"streak"`
-	FirstLimitTime  string     `json:"first_limit_time"`
-	LastLimitTime   string     `json:"last_limit_time"`
-	OpenCount       int        `json:"open_count"`
-	Industry        string     `json:"industry"`
-	Days            int        `json:"days"`
-	Count           int        `json:"count"`
-	Concepts        []string   `json:"concepts,omitempty"`
-	PrimaryTheme    string     `json:"primary_theme,omitempty"`
-	ThemeSource     string     `json:"theme_source,omitempty"`
-	ThemeRank       int        `json:"theme_rank,omitempty"`
-	ThemeLeaderRole string     `json:"theme_leader_role,omitempty"`
-	StreakLabel     string     `json:"streak_label,omitempty"`
-	BoardType       string     `json:"board_type,omitempty"`
-	Meta            SourceMeta `json:"meta"`
+	Symbol          string               `json:"symbol"`
+	Name            string               `json:"name"`
+	Date            time.Time            `json:"date"`
+	Price           float64              `json:"price"`
+	ChangePercent   float64              `json:"change_percent"`
+	Amount          float64              `json:"amount"`
+	FloatMarketCap  float64              `json:"float_market_cap"`
+	TurnoverRate    float64              `json:"turnover_rate"`
+	Streak          int                  `json:"streak"`
+	FirstLimitTime  string               `json:"first_limit_time"`
+	LastLimitTime   string               `json:"last_limit_time"`
+	OpenCount       int                  `json:"open_count"`
+	Industry        string               `json:"industry"`
+	Days            int                  `json:"days"`
+	Count           int                  `json:"count"`
+	Concepts        []string             `json:"concepts,omitempty"`
+	PrimaryTheme    string               `json:"primary_theme,omitempty"`
+	ThemeSource     string               `json:"theme_source,omitempty"`
+	ThemeKind       ThemeAttributionKind `json:"theme_kind,omitempty"`
+	PoolThemeKind   ThemeAttributionKind `json:"pool_theme_kind,omitempty"`
+	ThemeRank       int                  `json:"theme_rank,omitempty"`
+	ThemeLeaderRole string               `json:"theme_leader_role,omitempty"`
+	StreakLabel     string               `json:"streak_label,omitempty"`
+	BoardType       string               `json:"board_type,omitempty"`
+	Meta            SourceMeta           `json:"meta"`
 }
 
 // StockThemeAttribution is an authoritative or cached per-stock theme label.
-// It keeps source provenance so downstream analysis can prefer Kaipanla data
+// It keeps source provenance and evidence role so downstream analysis can prefer retained data
 // without conflating it with broad industry/catalog fallbacks.
 type StockThemeAttribution struct {
-	Symbol    string   `json:"symbol"`
-	Theme     string   `json:"theme"`
-	Concepts  []string `json:"concepts,omitempty"`
-	Source    string   `json:"source"`
-	TradeDate string   `json:"trade_date,omitempty"`
-	Rank      int      `json:"rank,omitempty"`
-	Role      string   `json:"role,omitempty"`
+	Kind      ThemeAttributionKind `json:"kind,omitempty"`
+	Symbol    string               `json:"symbol"`
+	Theme     string               `json:"theme"`
+	Concepts  []string             `json:"concepts,omitempty"`
+	Source    string               `json:"source"`
+	TradeDate string               `json:"trade_date,omitempty"`
+	Rank      int                  `json:"rank,omitempty"`
+	Role      string               `json:"role,omitempty"`
 }
 
 // StockBusinessProfile describes what the company primarily does. It is kept

@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+
+	"easy-stock/backend/internal/foundation"
 )
 
 const (
@@ -14,10 +16,11 @@ const (
 // Provider and dimension travel with the native code. Code/name-only payloads
 // remain readable, but prefix inference is restricted to this compatibility layer.
 type radarIndustryThemeRef struct {
-	Code      string `json:"c,omitempty"`
-	Name      string `json:"n"`
-	Provider  string `json:"p,omitempty"`
-	Dimension string `json:"d,omitempty"`
+	Code                  string `json:"c,omitempty"`
+	Name                  string `json:"n"`
+	Provider              string `json:"p,omitempty"`
+	Dimension             string `json:"d,omitempty"`
+	ClassificationVersion string `json:"v,omitempty"`
 }
 
 type radarIndustryLeader struct {
@@ -27,11 +30,12 @@ type radarIndustryLeader struct {
 }
 
 type radarFusionThemeRef struct {
-	KaipanlaCode      string `json:"k"`
-	IndustryCode      string `json:"c,omitempty"`
-	IndustryName      string `json:"n"`
-	IndustryProvider  string `json:"p,omitempty"`
-	IndustryDimension string `json:"d,omitempty"`
+	KaipanlaCode          string `json:"k"`
+	IndustryCode          string `json:"c,omitempty"`
+	IndustryName          string `json:"n"`
+	IndustryProvider      string `json:"p,omitempty"`
+	IndustryDimension     string `json:"d,omitempty"`
+	ClassificationVersion string `json:"v,omitempty"`
 }
 
 func normalizeRadarIndustryRef(ref radarIndustryThemeRef) radarIndustryThemeRef {
@@ -39,6 +43,7 @@ func normalizeRadarIndustryRef(ref radarIndustryThemeRef) radarIndustryThemeRef 
 	ref.Name = strings.TrimSpace(ref.Name)
 	ref.Provider = strings.ToLower(strings.TrimSpace(ref.Provider))
 	ref.Dimension = strings.ToLower(strings.TrimSpace(ref.Dimension))
+	ref.ClassificationVersion = strings.TrimSpace(ref.ClassificationVersion)
 	if ref.Provider == "" {
 		switch {
 		case strings.HasPrefix(ref.Code, "pt"):
@@ -74,13 +79,13 @@ func radarFusionThemeID(kaipanlaCode string, industry radarIndustryThemeRef) str
 	industry = normalizeRadarIndustryRef(industry)
 	return encodeRadarThemeRef(radarFusionThemePrefix, radarFusionThemeRef{
 		KaipanlaCode: strings.TrimSpace(kaipanlaCode), IndustryCode: industry.Code,
-		IndustryName: industry.Name, IndustryProvider: industry.Provider, IndustryDimension: industry.Dimension,
+		IndustryName: industry.Name, IndustryProvider: industry.Provider, IndustryDimension: industry.Dimension, ClassificationVersion: industry.ClassificationVersion,
 	})
 }
 
 func (ref radarFusionThemeRef) industryRef() radarIndustryThemeRef {
 	return normalizeRadarIndustryRef(radarIndustryThemeRef{
-		Code: ref.IndustryCode, Name: ref.IndustryName, Provider: ref.IndustryProvider, Dimension: ref.IndustryDimension,
+		Code: ref.IndustryCode, Name: ref.IndustryName, Provider: ref.IndustryProvider, Dimension: ref.IndustryDimension, ClassificationVersion: ref.ClassificationVersion,
 	})
 }
 
@@ -93,6 +98,7 @@ func parseRadarFusionThemeID(id string) (radarFusionThemeRef, bool) {
 	industry := ref.industryRef()
 	ref.IndustryCode, ref.IndustryName = industry.Code, industry.Name
 	ref.IndustryProvider, ref.IndustryDimension = industry.Provider, industry.Dimension
+	ref.ClassificationVersion = industry.ClassificationVersion
 	return ref, ref.KaipanlaCode != "" && ref.IndustryName != "" && industry.Dimension == "industry"
 }
 
@@ -128,4 +134,8 @@ func decodeRadarThemeRef(id string, prefix string, target any) bool {
 		}
 	}
 	return json.Unmarshal(payload, target) == nil
+}
+
+func (ref radarIndustryThemeRef) boardRef() foundation.BoardRef {
+	return foundation.BoardRef{Provider: ref.Provider, NativeCode: ref.Code, Dimension: ref.Dimension, Name: ref.Name, ClassificationVersion: ref.ClassificationVersion}
 }

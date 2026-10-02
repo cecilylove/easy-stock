@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"easy-stock/backend/internal/datasource/registry"
 	"easy-stock/backend/internal/foundation"
 )
 
@@ -32,20 +33,30 @@ type sourceObservation struct {
 }
 
 type sourceHealthTracker struct {
+	sources      *registry.Registry
 	mu           sync.RWMutex
 	items        map[string]sourceObservation
 	capabilities map[string]map[string]sourceObservation
 }
 
 func newSourceHealthTracker() *sourceHealthTracker {
-	return &sourceHealthTracker{items: make(map[string]sourceObservation), capabilities: make(map[string]map[string]sourceObservation)}
+	return newSourceHealthTrackerFor(registry.Default())
+}
+func newSourceHealthTrackerFor(sources *registry.Registry) *sourceHealthTracker {
+	return &sourceHealthTracker{sources: sources, items: make(map[string]sourceObservation), capabilities: make(map[string]map[string]sourceObservation)}
+}
+func (t *sourceHealthTracker) sourceID(value string) string {
+	if t == nil {
+		return ""
+	}
+	return t.sources.SourceID(value)
 }
 
 func (t *sourceHealthTracker) success(meta foundation.SourceMeta) {
 	if t == nil || meta.Stale || meta.FetchedAt.IsZero() {
 		return
 	}
-	id := sourceID(meta.Source)
+	id := t.sourceID(meta.Source)
 	if meta.Capability != "" {
 		t.recordCapability(id, meta.Capability, meta.FetchedAt, false)
 	}
@@ -74,7 +85,7 @@ func (t *sourceHealthTracker) observe(event foundation.SourceObservation) {
 	}
 	id := event.SourceID
 	if id == "" {
-		id = sourceID(event.Meta.Source)
+		id = t.sourceID(event.Meta.Source)
 	}
 	at := event.AttemptAt
 	if !event.Failed && !event.Meta.FetchedAt.IsZero() {
@@ -99,7 +110,7 @@ func (t *sourceHealthTracker) observe(event foundation.SourceObservation) {
 }
 
 func (t *sourceHealthTracker) recordCapability(id, capability string, at time.Time, failed bool) {
-	if t == nil || sourceID(id) == "" || capability == "" || at.IsZero() {
+	if t == nil || t.sourceID(id) == "" || capability == "" || at.IsZero() {
 		return
 	}
 	t.mu.Lock()
@@ -155,7 +166,7 @@ func (t *sourceHealthTracker) cacheFailure(meta foundation.SourceMeta, source st
 	// A composed provider's previous source says nothing about which upstream
 	// failed in the current refresh. Only a known single-provider route may
 	// attribute the failure to that same source.
-	if source != "" && sourceID(meta.Source) == source {
+	if source != "" && t.sourceID(meta.Source) == source {
 		t.markFailure(source, "实时更新失败，已回退到缓存快照")
 	}
 }
@@ -172,7 +183,7 @@ func (t *sourceHealthTracker) markFailure(id, message string) {
 }
 
 func (t *sourceHealthTracker) markFailureAt(id, message string, at time.Time) {
-	if t == nil || sourceID(id) == "" || at.IsZero() {
+	if t == nil || t.sourceID(id) == "" || at.IsZero() {
 		return
 	}
 	t.mu.Lock()
@@ -206,30 +217,21 @@ func (t *sourceHealthTracker) fallback(meta foundation.SourceMeta) {
 	case strings.Contains(meta.FallbackReason, "新浪资金榜不可用"):
 		primary = "sina"
 	}
-	if primary != "" && primary != sourceID(meta.Source) {
+	if primary != "" && primary != t.sourceID(meta.Source) {
 		t.markFailure(primary, "主数据源请求失败，已切换备用来源")
 	}
 }
 
-func sourceID(value string) string {
-	id, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(value)), ":")
-	switch id {
-	case "duanxianxia", "eastmoney", "sina", "tencent", "cls", "ths", "cffex":
-		return id
-	default:
-		return ""
-	}
-}
+func sourceID(value string) string { return registry.Default().SourceID(value) }
 
 func (t *sourceHealthTracker) snapshot(now time.Time) []foundation.SourceHealth {
-	catalog := []foundation.SourceHealth{
-		{ID: "duanxianxia", Name: "短线侠 / 开盘啦", Category: "theme,leaders,limit-up,concept"},
-		{ID: "eastmoney", Name: "东方财富", Category: "auction,stock-directory,concept,business,fundamentals,sector,money-flow,limit-up,market-pools,margin,billboard,announcement,report,hot-ranks,futures"},
-		{ID: "sina", Name: "新浪财经", Category: "quote,kline,historical-intraday,money-flow,stock-directory"},
-		{ID: "tencent", Name: "腾讯财经", Category: "index,kline,sector,sector-stocks,us-sector"},
-		{ID: "cls", Name: "财联社", Category: "news"},
-		{ID: "ths", Name: "同花顺", Category: "hot-ranks"},
-		{ID: "cffex", Name: "中国金融期货交易所", Category: "futures,futures-members,futures-consensus"},
+	sources := registry.Default()
+	if t != nil && t.sources != nil {
+		sources = t.sources
+	}
+	catalog := []foundation.SourceHealth{}
+	for _, d := range sources.Catalog() {
+		catalog = append(catalog, foundation.SourceHealth{ID: d.ID, Name: d.Name, Category: strings.Join(d.Capabilities, ",")})
 	}
 	for i := range catalog {
 		catalog[i].Status = "unknown"

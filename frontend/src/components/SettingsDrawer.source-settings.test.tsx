@@ -73,6 +73,18 @@ afterEach(async () => {
 });
 
 describe('implemented data-source settings', () => {
+	it('loads a registry catalog and accepts probes for its newly registered provider only', async () => {
+		const catalog = [{ id: 'new_vendor', name: '新的行情供应商', mode: 'public', kinds: ['market'], usage: '报价', configuration: '自动取数', capabilities: ['quote'], probeScope: '报价代表接口', implemented: true, enabled: true }];
+		sourceResponse = () => Promise.resolve({ sources: [], probes: [], catalog });
+		await act(async () => vi.advanceTimersByTimeAsync(30_000));
+		expect(host.querySelectorAll('[data-source]')).toHaveLength(1);
+		expect(host.querySelector('[data-source="new_vendor"]')!.textContent).toContain('新的行情供应商');
+		expect(host.querySelector('[data-source="sina"]')).toBeNull();
+		probeResponse = () => Promise.resolve({ sources: [], catalog, checked_at: new Date().toISOString(), probes: [{ id: 'new_vendor', status: 'available', checked_at: new Date().toISOString(), scope: '报价代表接口', message: '有效报价', latency_ms: 1 }] });
+		await act(async () => refreshButton().click());
+		expect(host.querySelector('.source-check-error')).toBeNull();
+		expect(host.querySelector('[data-source="new_vendor"] .source-probe-status')!.textContent).toBe('代表接口返回有效数据');
+	});
 	it('shows all sources checking immediately, prevents duplicate posts, and then shows individual results', async () => {
 		let finish!: (value: unknown) => void;
 		probeResponse = () => new Promise(resolve => { finish = resolve; });

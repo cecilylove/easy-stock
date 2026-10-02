@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/duanxianxia"
 )
 
 type delayedRadarSource struct {
@@ -15,18 +14,18 @@ type delayedRadarSource struct {
 	release chan struct{}
 }
 
-func (s delayedRadarSource) Snapshot(ctx context.Context) (duanxianxia.Snapshot, duanxianxia.FetchMeta, error) {
+func (s delayedRadarSource) Snapshot(ctx context.Context) (foundation.ThemeSnapshot, foundation.ThemeFetchMeta, error) {
 	select {
 	case <-s.release:
 		return s.fakeRadarSource.Snapshot(ctx)
 	case <-ctx.Done():
-		return duanxianxia.Snapshot{}, duanxianxia.FetchMeta{}, ctx.Err()
+		return foundation.ThemeSnapshot{}, foundation.ThemeFetchMeta{}, ctx.Err()
 	}
 }
 
 func TestProgressiveOverviewPublishesIndustryBeforeSlowMembership(t *testing.T) {
 	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	source := delayedRadarSource{fakeRadarSource: fakeRadarSource{snapshot: duanxianxia.Snapshot{ID: "snapshot", TradeDate: "2026-09-17", FetchedAt: now, Themes: []duanxianxia.Theme{{Code: "1", Name: "通信", Rank: 1, Leaders: []duanxianxia.Leader{{Symbol: "000001.SZ", Name: "测试", Rank: 1}}}}}}, release: make(chan struct{})}
+	source := delayedRadarSource{fakeRadarSource: fakeRadarSource{snapshot: foundation.ThemeSnapshot{ID: "snapshot", TradeDate: "2026-09-17", FetchedAt: now, Themes: []foundation.ThemeSnapshotItem{{Code: "1", Name: "通信", Rank: 1, Leaders: []foundation.ThemeLeader{{Symbol: "000001.SZ", Name: "测试", Rank: 1}}}}}}, release: make(chan struct{})}
 	provider := NewRadarProvider(source, fakeRadarFallback{}, nil, RadarProviderConfig{Now: func() time.Time { return now }, IndustryMomentum: fakeIndustryMomentumSource{items: []foundation.MarketIndustryMomentum{{Code: "i1", Name: "通信", Score: 80, LeaderSymbol: "000001.SZ", LeaderName: "测试"}}}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -75,8 +74,8 @@ func TestProgressiveCachedKaipanlaFailureDoesNotRenewObservation(t *testing.T) {
 	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
 	attempt := now.Add(-time.Minute)
 	source := fakeRadarSource{
-		snapshot: duanxianxia.Snapshot{ID: "old", TradeDate: "2026-09-17", FetchedAt: attempt, Themes: []duanxianxia.Theme{{Code: "1", Name: "通信"}}},
-		meta:     duanxianxia.FetchMeta{LastAttemptAt: attempt, RefreshError: "prior failure", FromCache: true},
+		snapshot: foundation.ThemeSnapshot{ID: "old", TradeDate: "2026-09-17", FetchedAt: attempt, Themes: []foundation.ThemeSnapshotItem{{Code: "1", Name: "通信"}}},
+		meta:     foundation.ThemeFetchMeta{LastAttemptAt: attempt, RefreshError: "prior failure", FromCache: true},
 	}
 	provider := NewRadarProvider(source, fakeRadarFallback{}, nil, RadarProviderConfig{Now: func() time.Time { return now }, IndustryMomentum: fakeIndustryMomentumSource{items: []foundation.MarketIndustryMomentum{{Code: "i1", Name: "通信"}}}})
 	var observations []foundation.SourceObservation
@@ -84,7 +83,7 @@ func TestProgressiveCachedKaipanlaFailureDoesNotRenewObservation(t *testing.T) {
 		observations = append(observations, value.Observations...)
 	})
 	for _, observation := range observations {
-		if observation.SourceID == "duanxianxia" || observation.Meta.Source == duanxianxia.SourceID {
+		if observation.SourceID == "duanxianxia" || observation.Meta.Source == legacyThemeSnapshotSource {
 			t.Fatalf("cached snapshot was reported as a fresh observation: %+v", observation)
 		}
 	}
@@ -93,8 +92,8 @@ func TestProgressiveCachedKaipanlaFailureDoesNotRenewObservation(t *testing.T) {
 func TestProgressiveKaipanlaPartialRefreshKeepsSuccessAndFailure(t *testing.T) {
 	now := time.Now()
 	source := fakeRadarSource{
-		snapshot: duanxianxia.Snapshot{ID: "fresh", TradeDate: now.Format("2006-01-02"), FetchedAt: now, Themes: []duanxianxia.Theme{{Code: "1", Name: "通信"}}},
-		meta:     duanxianxia.FetchMeta{Refreshed: true, Attempted: true, LastAttemptAt: now.Add(-time.Second), RefreshError: "涨停池刷新失败"},
+		snapshot: foundation.ThemeSnapshot{ID: "fresh", TradeDate: now.Format("2006-01-02"), FetchedAt: now, Themes: []foundation.ThemeSnapshotItem{{Code: "1", Name: "通信"}}},
+		meta:     foundation.ThemeFetchMeta{Refreshed: true, Attempted: true, LastAttemptAt: now.Add(-time.Second), RefreshError: "涨停池刷新失败"},
 	}
 	provider := NewRadarProvider(source, fakeRadarFallback{}, nil, RadarProviderConfig{Now: func() time.Time { return now }, IndustryMomentum: fakeIndustryMomentumSource{items: []foundation.MarketIndustryMomentum{{Code: "i1", Name: "通信"}}}})
 	var observations []foundation.SourceObservation
@@ -103,7 +102,7 @@ func TestProgressiveKaipanlaPartialRefreshKeepsSuccessAndFailure(t *testing.T) {
 	})
 	var succeeded, failed bool
 	for _, item := range observations {
-		succeeded = succeeded || item.Meta.Source == duanxianxia.SourceID && !item.Failed
+		succeeded = succeeded || item.Meta.Source == legacyThemeSnapshotSource && !item.Failed
 		failed = failed || item.SourceID == "duanxianxia" && item.Failed
 	}
 	if !succeeded || !failed {
@@ -119,14 +118,14 @@ func TestProgressiveKaipanlaPartialRefreshKeepsSuccessAndFailure(t *testing.T) {
 func TestProgressiveKaipanlaPoolSuccessWithThemeFailure(t *testing.T) {
 	now := time.Now()
 	source := fakeRadarSource{
-		snapshot: duanxianxia.Snapshot{ID: "old", TradeDate: now.Format("2006-01-02"), FetchedAt: now.Add(-time.Minute), Themes: []duanxianxia.Theme{{Code: "1", Name: "通信"}}},
-		meta:     duanxianxia.FetchMeta{FromCache: true, Attempted: true, LastAttemptAt: now.Add(-time.Second), RefreshError: "题材刷新失败", PoolRefreshed: true, PoolFetchedAt: now},
+		snapshot: foundation.ThemeSnapshot{ID: "old", TradeDate: now.Format("2006-01-02"), FetchedAt: now.Add(-time.Minute), Themes: []foundation.ThemeSnapshotItem{{Code: "1", Name: "通信"}}},
+		meta:     foundation.ThemeFetchMeta{FromCache: true, Attempted: true, LastAttemptAt: now.Add(-time.Second), RefreshError: "题材刷新失败", PoolRefreshed: true, PoolFetchedAt: now},
 	}
 	provider := NewRadarProvider(source, fakeRadarFallback{}, nil, RadarProviderConfig{Now: func() time.Time { return now }, IndustryMomentum: fakeIndustryMomentumSource{items: []foundation.MarketIndustryMomentum{{Code: "i1", Name: "通信"}}}})
 	var success, failure bool
 	provider.ProgressiveOverviews(context.Background(), func(value foundation.ThemeProgress) {
 		for _, item := range value.Observations {
-			success = success || item.Meta.Source == duanxianxia.SourceID && !item.Failed
+			success = success || item.Meta.Source == legacyThemeSnapshotSource && !item.Failed
 			failure = failure || item.SourceID == "duanxianxia" && item.Failed
 		}
 	})
@@ -138,8 +137,8 @@ func TestProgressiveKaipanlaPoolSuccessWithThemeFailure(t *testing.T) {
 func TestProgressiveKaipanlaAttemptWithCachedSnapshotRecordsFailure(t *testing.T) {
 	now := time.Date(2026, 9, 17, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
 	source := fakeRadarSource{
-		snapshot: duanxianxia.Snapshot{ID: "old", TradeDate: "2026-09-17", FetchedAt: now.Add(-time.Minute), Themes: []duanxianxia.Theme{{Code: "1", Name: "通信"}}},
-		meta:     duanxianxia.FetchMeta{FromCache: true, Attempted: true, LastAttemptAt: now, RefreshError: "本轮抓取失败"},
+		snapshot: foundation.ThemeSnapshot{ID: "old", TradeDate: "2026-09-17", FetchedAt: now.Add(-time.Minute), Themes: []foundation.ThemeSnapshotItem{{Code: "1", Name: "通信"}}},
+		meta:     foundation.ThemeFetchMeta{FromCache: true, Attempted: true, LastAttemptAt: now, RefreshError: "本轮抓取失败"},
 	}
 	provider := NewRadarProvider(source, fakeRadarFallback{}, nil, RadarProviderConfig{Now: func() time.Time { return now }, IndustryMomentum: fakeIndustryMomentumSource{items: []foundation.MarketIndustryMomentum{{Code: "i1", Name: "通信"}}}})
 	var failures int
@@ -156,7 +155,7 @@ func TestProgressiveKaipanlaAttemptWithCachedSnapshotRecordsFailure(t *testing.T
 }
 
 func TestLeaderPreviewDoesNotWaitForRemoteData(t *testing.T) {
-	source := fakeRadarSource{snapshot: duanxianxia.Snapshot{ID: "s", TradeDate: "2026-09-17", Themes: []duanxianxia.Theme{{Code: "1", Name: "通信", Leaders: []duanxianxia.Leader{{Symbol: "000001.SZ", Name: "测试", Rank: 1}}}}}}
+	source := fakeRadarSource{snapshot: foundation.ThemeSnapshot{ID: "s", TradeDate: "2026-09-17", Themes: []foundation.ThemeSnapshotItem{{Code: "1", Name: "通信", Leaders: []foundation.ThemeLeader{{Symbol: "000001.SZ", Name: "测试", Rank: 1}}}}}}
 	provider := NewRadarProvider(source, forbiddenRadarFallback{}, forbiddenRadarQuotes{}, RadarProviderConfig{})
 	result, err := provider.BuildLeaders(context.Background(), "kpl:1", "s")
 	if err != nil || len(result.Groups[0].Nodes[0].Stocks) != 1 {

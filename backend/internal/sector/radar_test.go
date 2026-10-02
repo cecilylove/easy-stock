@@ -8,19 +8,18 @@ import (
 	"time"
 
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/duanxianxia"
 )
 
 type fakeRadarSource struct {
-	snapshot duanxianxia.Snapshot
-	meta     duanxianxia.FetchMeta
+	snapshot foundation.ThemeSnapshot
+	meta     foundation.ThemeFetchMeta
 }
 
-func (f fakeRadarSource) Snapshot(ctx context.Context) (duanxianxia.Snapshot, duanxianxia.FetchMeta, error) {
+func (f fakeRadarSource) Snapshot(ctx context.Context) (foundation.ThemeSnapshot, foundation.ThemeFetchMeta, error) {
 	return f.snapshot, f.meta, nil
 }
 
-func (f fakeRadarSource) SnapshotByID(ctx context.Context, id string) (duanxianxia.Snapshot, bool, error) {
+func (f fakeRadarSource) SnapshotByID(ctx context.Context, id string) (foundation.ThemeSnapshot, bool, error) {
 	return f.snapshot, id == f.snapshot.ID, nil
 }
 
@@ -111,10 +110,10 @@ func (f fakeRadarFallback) Build(ctx context.Context, themeID string) (foundatio
 
 func TestRadarProviderFusesIndustryAndKaipanlaWithoutLocalTrend(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-current", TradeDate: "2026-08-07", FetchedAt: now,
-		Themes: []duanxianxia.Theme{
-			{Code: "801001", Name: "芯片", Rank: 1, Strength: 9800, History: []duanxianxia.RankPoint{{TradeDate: "2026-08-07", Rank: 1}}},
+		Themes: []foundation.ThemeSnapshotItem{
+			{Code: "801001", Name: "芯片", Rank: 1, Strength: 9800, History: []foundation.ThemeRankPoint{{TradeDate: "2026-08-07", Rank: 1}}},
 			{Code: "803023", Name: "AI应用", Rank: 2, Strength: 8600},
 		},
 	}
@@ -283,7 +282,7 @@ func TestDailyAndFiveDayStrengthUseTheSameConstituentFormula(t *testing.T) {
 func TestRealtimeStrengthCachesBothWindowsForAtLeastTenMinutes(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	current := now
-	theme := duanxianxia.Theme{Code: "801001", Name: "芯片", Rank: 1}
+	theme := foundation.ThemeSnapshotItem{Code: "801001", Name: "芯片", Rank: 1}
 	fallback := &fakeRadarStrengthFallback{stocks: map[string][]foundation.BoardStock{
 		"semiconductor": {{Symbol: "600001.SH", Name: "芯片股", Price: 10, ChangePercent: 4, FiveDayChangePercent: 6}},
 	}}
@@ -292,15 +291,15 @@ func TestRealtimeStrengthCachesBothWindowsForAtLeastTenMinutes(t *testing.T) {
 		RadarProviderConfig{Now: func() time.Time { return current }, RealtimeStrengthTTL: time.Minute},
 	)
 
-	first := provider.realtimeStrengthScores(context.Background(), []duanxianxia.Theme{theme})
+	first := provider.realtimeStrengthScores(context.Background(), []foundation.ThemeSnapshotItem{theme})
 	current = current.Add(2 * time.Minute)
-	second := provider.realtimeStrengthScores(context.Background(), []duanxianxia.Theme{theme})
+	second := provider.realtimeStrengthScores(context.Background(), []foundation.ThemeSnapshotItem{theme})
 	if fallback.calls != 1 || first[theme.Code].daily == 0 || first[theme.Code].fiveDay == 0 || second[theme.Code] != first[theme.Code] {
 		t.Fatalf("cache before ten minutes failed: calls=%d first=%v second=%v", fallback.calls, first, second)
 	}
 
 	current = now.Add(10 * time.Minute)
-	provider.realtimeStrengthScores(context.Background(), []duanxianxia.Theme{theme})
+	provider.realtimeStrengthScores(context.Background(), []foundation.ThemeSnapshotItem{theme})
 	if fallback.calls != 2 {
 		t.Fatalf("refresh calls=%d want=2", fallback.calls)
 	}
@@ -309,17 +308,17 @@ func TestRealtimeStrengthCachesBothWindowsForAtLeastTenMinutes(t *testing.T) {
 func TestRealtimeStrengthKeepsBothWindowsWhenRefreshFails(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	current := now
-	theme := duanxianxia.Theme{Code: "801001", Name: "芯片", Rank: 1}
+	theme := foundation.ThemeSnapshotItem{Code: "801001", Name: "芯片", Rank: 1}
 	fallback := &fakeRadarStrengthFallback{stocks: map[string][]foundation.BoardStock{
 		"semiconductor": {{Symbol: "600001.SH", Name: "芯片股", Price: 10, ChangePercent: 6, FiveDayChangePercent: 8}},
 	}}
 	provider := NewRadarProvider(fakeRadarSource{}, fallback, nil, RadarProviderConfig{Now: func() time.Time { return current }})
 
-	first := provider.realtimeStrengthScores(context.Background(), []duanxianxia.Theme{theme})
+	first := provider.realtimeStrengthScores(context.Background(), []foundation.ThemeSnapshotItem{theme})
 	fallback.err = errors.New("eastmoney unavailable")
 	current = now.Add(10 * time.Minute)
-	second := provider.realtimeStrengthScores(context.Background(), []duanxianxia.Theme{theme})
-	third := provider.realtimeStrengthScores(context.Background(), []duanxianxia.Theme{theme})
+	second := provider.realtimeStrengthScores(context.Background(), []foundation.ThemeSnapshotItem{theme})
+	third := provider.realtimeStrengthScores(context.Background(), []foundation.ThemeSnapshotItem{theme})
 	if first[theme.Code].daily == 0 || first[theme.Code].fiveDay == 0 || second[theme.Code] != first[theme.Code] || third[theme.Code] != first[theme.Code] {
 		t.Fatalf("failed refresh did not preserve cache: first=%v second=%v third=%v", first, second, third)
 	}
@@ -329,7 +328,7 @@ func TestRealtimeStrengthKeepsBothWindowsWhenRefreshFails(t *testing.T) {
 }
 
 func TestRealtimeStrengthDeduplicatesQuotesAcrossThemes(t *testing.T) {
-	themes := []duanxianxia.Theme{
+	themes := []foundation.ThemeSnapshotItem{
 		{Code: "801001", Name: "芯片", Rank: 1},
 		{Code: "801807", Name: "算力", Rank: 2},
 	}
@@ -361,9 +360,9 @@ func TestRealtimeStrengthDeduplicatesQuotesAcrossThemes(t *testing.T) {
 
 func TestRadarProviderDoesNotDuplicateYesterdayTheme(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-yesterday", TradeDate: "2026-08-06", FetchedAt: now.Add(-time.Hour),
-		Themes: []duanxianxia.Theme{{Code: "801159", Name: "机器人概念", Rank: 1}},
+		Themes: []foundation.ThemeSnapshotItem{{Code: "801159", Name: "机器人概念", Rank: 1}},
 	}
 	provider := NewRadarProvider(
 		fakeRadarSource{snapshot: snapshot},
@@ -382,9 +381,9 @@ func TestRadarProviderDoesNotDuplicateYesterdayTheme(t *testing.T) {
 
 func TestRadarProviderDoesNotInsertMappedFallbackThemeAsProvisional(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-yesterday", TradeDate: "2026-08-06", FetchedAt: now.Add(-time.Hour),
-		Themes: []duanxianxia.Theme{{Code: "801001", Name: "芯片", Rank: 1}},
+		Themes: []foundation.ThemeSnapshotItem{{Code: "801001", Name: "芯片", Rank: 1}},
 	}
 	provider := NewRadarProvider(
 		fakeRadarSource{snapshot: snapshot},
@@ -406,9 +405,9 @@ func TestRadarProviderDoesNotInsertMappedFallbackThemeAsProvisional(t *testing.T
 
 func TestRadarProviderNeverUsesLocalTrendAsCandidate(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-yesterday", TradeDate: "2026-08-06", FetchedAt: now.Add(-time.Hour),
-		Themes: []duanxianxia.Theme{
+		Themes: []foundation.ThemeSnapshotItem{
 			{Code: "801660", Name: "通信", Rank: 1},
 			{Code: "801001", Name: "芯片", Rank: 2},
 		},
@@ -430,9 +429,9 @@ func TestRadarProviderNeverUsesLocalTrendAsCandidate(t *testing.T) {
 
 func TestRadarProviderInterleavesIndustryAndKaipanlaCandidates(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-current", TradeDate: "2026-08-07", FetchedAt: now,
-		Themes: []duanxianxia.Theme{
+		Themes: []foundation.ThemeSnapshotItem{
 			{Code: "1", Name: "并购重组", Rank: 1, Strength: 9000},
 			{Code: "2", Name: "低空经济", Rank: 2, Strength: 8000},
 			{Code: "3", Name: "数据要素", Rank: 3, Strength: 7000},
@@ -463,7 +462,7 @@ func TestRadarProviderInterleavesIndustryAndKaipanlaCandidates(t *testing.T) {
 	for _, item := range items[:4] {
 		if item.Source == radarIndustrySource {
 			industryCount++
-		} else if item.Source == duanxianxia.SourceID {
+		} else if item.Source == legacyThemeSnapshotSource {
 			kaipanlaCount++
 		}
 	}
@@ -486,11 +485,11 @@ func findRadarOverview(items []foundation.ThemeOverview, name string) (foundatio
 
 func TestRadarProviderBuildsLeaderMapFromSnapshot(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-current", TradeDate: "2026-08-07", FetchedAt: now,
-		Themes: []duanxianxia.Theme{{
+		Themes: []foundation.ThemeSnapshotItem{{
 			Code: "801807", Name: "算力", Rank: 1,
-			Leaders: []duanxianxia.Leader{{Rank: 1, Role: "龙一", Symbol: "603629.SH", Name: "利通电子"}},
+			Leaders: []foundation.ThemeLeader{{Rank: 1, Role: "龙一", Symbol: "603629.SH", Name: "利通电子"}},
 		}},
 	}
 	provider := NewRadarProvider(fakeRadarSource{snapshot: snapshot}, fakeRadarFallback{}, nil, RadarProviderConfig{Now: func() time.Time { return now }})
@@ -506,11 +505,11 @@ func TestRadarProviderBuildsLeaderMapFromSnapshot(t *testing.T) {
 
 func TestRadarProviderMapsKaipanlaThemeAndMergesFallbackStocks(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-current", TradeDate: "2026-08-07", FetchedAt: now,
-		Themes: []duanxianxia.Theme{{
+		Themes: []foundation.ThemeSnapshotItem{{
 			Code: "801001", Name: "芯片", Rank: 1, LeadersLoaded: true,
-			Leaders: []duanxianxia.Leader{{Rank: 1, Role: "龙一", Symbol: "603629.SH", Name: "利通电子"}},
+			Leaders: []foundation.ThemeLeader{{Rank: 1, Role: "龙一", Symbol: "603629.SH", Name: "利通电子"}},
 		}},
 	}
 	builtThemeIDs := []string{}
@@ -541,11 +540,11 @@ func TestRadarProviderMapsKaipanlaThemeAndMergesFallbackStocks(t *testing.T) {
 
 func TestRadarProviderFusedScreenMergesLeaderMappedAndIndustryStocks(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.FixedZone("CST", 8*60*60))
-	snapshot := duanxianxia.Snapshot{
+	snapshot := foundation.ThemeSnapshot{
 		ID: "snapshot-current", TradeDate: "2026-08-07", FetchedAt: now,
-		Themes: []duanxianxia.Theme{{
+		Themes: []foundation.ThemeSnapshotItem{{
 			Code: "801660", Name: "通信", Rank: 1, LeadersLoaded: true,
-			Leaders: []duanxianxia.Leader{{Rank: 1, Role: "龙一", Symbol: "002792.SZ", Name: "通宇通讯"}},
+			Leaders: []foundation.ThemeLeader{{Rank: 1, Role: "龙一", Symbol: "002792.SZ", Name: "通宇通讯"}},
 		}},
 	}
 	industry := radarIndustryThemeRef{Code: "pt01801047", Name: "通信"}

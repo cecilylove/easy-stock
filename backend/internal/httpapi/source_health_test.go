@@ -55,6 +55,28 @@ func TestSourceHealthUnknownUntilRealObservation(t *testing.T) {
 	}
 }
 
+func TestDetailQuoteObservesRealFetchWithoutRenewingOnCacheHit(t *testing.T) {
+	server := NewServer(Config{Realtime: &observedRealtimeProvider{}})
+	defer server.Close()
+	fetch := func() {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/quotes/realtime?symbols=000001.SZ&detail=1", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("quote failed: %d %s", response.Code, response.Body.String())
+		}
+	}
+	fetch()
+	first := sourceByID(t, server.sourceHealth.snapshot(time.Now()), "sina")
+	if first.Status != "available" || first.CheckedAt == nil || first.LastSuccess == nil {
+		t.Fatalf("real detail fetch was not observed: %+v", first)
+	}
+	fetch()
+	cached := sourceByID(t, server.sourceHealth.snapshot(time.Now()), "sina")
+	if !cached.CheckedAt.Equal(*first.CheckedAt) || !cached.LastSuccess.Equal(*first.LastSuccess) {
+		t.Fatalf("cached detail fetch renewed health: first=%+v cached=%+v", first, cached)
+	}
+}
+
 func TestSourceHealthTracksFreshFallbackFailureAndExpiry(t *testing.T) {
 	tracker := newSourceHealthTracker()
 	now := time.Now()

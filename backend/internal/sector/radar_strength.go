@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/duanxianxia"
 )
 
 const realtimeStrengthQuoteBatchSize = 120
@@ -29,9 +28,17 @@ type stockStrengthChange struct {
 	fiveDayValid bool
 }
 
-func (p *RadarProvider) realtimeStrengthScores(ctx context.Context, themes []duanxianxia.Theme) map[string]themeStrengthScore {
+func (p *RadarProvider) realtimeStrengthScores(ctx context.Context, themes []foundation.ThemeSnapshotItem, source ...string) map[string]themeStrengthScore {
 	p.strengthMu.Lock()
 	defer p.strengthMu.Unlock()
+	provider := themeMappingProvider(firstStrengthSource(source))
+	if p.strengthSource != provider {
+		// A retained historical snapshot may be published before the replacement
+		// supplier refresh completes. Do not reuse its same-code score afterward.
+		p.strengthSource = provider
+		p.strengthAttemptAt = time.Time{}
+		p.strengthCache = map[string]themeStrengthScore{}
+	}
 
 	now := p.now()
 	if !p.strengthAttemptAt.IsZero() && now.Before(p.strengthAttemptAt.Add(p.strengthTTL)) {
@@ -42,7 +49,7 @@ func (p *RadarProvider) realtimeStrengthScores(ctx context.Context, themes []dua
 	// cannot trigger a recalculation on every page request.
 	previousAttempt := p.strengthAttemptAt
 	p.strengthAttemptAt = now
-	scores, err := p.calculateRealtimeStrengthScores(ctx, themes)
+	scores, err := p.calculateRealtimeStrengthScores(ctx, themes, source...)
 	if ctx.Err() != nil {
 		p.strengthAttemptAt = previousAttempt
 		return cloneThemeStrengthScores(p.strengthCache)
@@ -69,9 +76,9 @@ func (p *RadarProvider) realtimeStrengthScores(ctx context.Context, themes []dua
 	return cloneThemeStrengthScores(p.strengthCache)
 }
 
-func (p *RadarProvider) calculateRealtimeStrengthScores(ctx context.Context, themes []duanxianxia.Theme) (map[string]themeStrengthScore, error) {
+func (p *RadarProvider) calculateRealtimeStrengthScores(ctx context.Context, themes []foundation.ThemeSnapshotItem, source ...string) (map[string]themeStrengthScore, error) {
 	start := time.Now()
-	pools, poolErr := p.loadRealtimeStrengthPools(ctx, themes)
+	pools, poolErr := p.loadRealtimeStrengthPools(ctx, themes, source...)
 	log.Printf("event=theme_stage stage=strength_pools duration_ms=%d themes=%d", time.Since(start).Milliseconds(), len(themes))
 	symbols := uniqueSortedThemeSymbols(pools)
 	start = time.Now()
@@ -136,13 +143,13 @@ func (p *RadarProvider) strengthChangeLookup(
 	return result
 }
 
-func (p *RadarProvider) loadRealtimeStrengthPools(ctx context.Context, themes []duanxianxia.Theme) (map[string][]foundation.BoardStock, error) {
+func (p *RadarProvider) loadRealtimeStrengthPools(ctx context.Context, themes []foundation.ThemeSnapshotItem, source ...string) (map[string][]foundation.BoardStock, error) {
 	result := make(map[string][]foundation.BoardStock, len(themes))
 	mappedByCode := make(map[string]string, len(themes))
 	uniqueThemeIDs := make([]string, 0, len(themes))
 	seenThemeIDs := map[string]struct{}{}
 	for _, theme := range themes {
-		themeID, _ := mappedFallbackThemeID(theme.Code, theme.Name)
+		themeID, _ := mappedFallbackThemeID(themeMappingCode(firstStrengthSource(source), theme.Code), theme.Name)
 		mappedByCode[theme.Code] = themeID
 		if _, exists := seenThemeIDs[themeID]; !exists {
 			seenThemeIDs[themeID] = struct{}{}
@@ -175,6 +182,13 @@ func (p *RadarProvider) loadRealtimeStrengthPools(ctx context.Context, themes []
 		result[theme.Code] = uniqueBoardStocks(stocks)
 	}
 	return result, loadErr
+}
+
+func firstStrengthSource(sources []string) string {
+	if len(sources) > 0 {
+		return sources[0]
+	}
+	return ""
 }
 
 func (p *RadarProvider) realtimeStrengthQuoteLookup(ctx context.Context, symbols []string) map[string]foundation.Quote {

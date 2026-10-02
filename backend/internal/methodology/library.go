@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -19,32 +18,47 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"easy-stock/backend/internal/datasource/contracts"
+	"easy-stock/backend/internal/providers/githubknowledge"
 )
 
 const (
-	defaultTreeURL    = "https://api.github.com/repos/zhouqinglong520/trading-mastery/git/trees/main?recursive=1"
-	defaultRawBaseURL = "https://raw.githubusercontent.com/zhouqinglong520/trading-mastery/main/"
-	defaultSourceURL  = "https://github.com/zhouqinglong520/trading-mastery/tree/main/%E6%B8%B8%E8%B5%84%E5%BF%83%E6%B3%95"
+	defaultTreeURL    = githubknowledge.DefaultTreeURL
+	defaultRawBaseURL = githubknowledge.DefaultRawBaseURL
+	defaultSourceURL  = githubknowledge.DefaultSourceURL
 	manifestVersion   = 4
 	skillName         = "a-stock-short-term-masters"
 )
 
 type Config struct {
-	CacheDir        string
-	HermesHome      string
-	HTTPClient      *http.Client
-	TreeURL         string
-	RawBaseURL      string
-	SourceURL       string
-	RefreshInterval time.Duration
-	BuiltinFS       fs.FS
-	DisableBuiltin  bool
+	CacheDir          string
+	HermesHome        string
+	HTTPClient        *http.Client
+	TreeURL           string
+	RawBaseURL        string
+	SourceURL         string
+	RefreshInterval   time.Duration
+	BuiltinFS         fs.FS
+	DisableBuiltin    bool
+	KnowledgeProvider contracts.KnowledgeProvider
 }
 
 type Library struct {
-	config Config
-	mu     sync.Mutex
-	cache  *manifest
+	config         Config
+	mu             sync.Mutex
+	cache          *manifest
+	refreshPending bool
+	sourceChecked  bool
+}
+
+// SetKnowledgeProvider binds acquisition while retaining local knowledge.
+func (l *Library) SetKnowledgeProvider(provider contracts.KnowledgeProvider) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.config.KnowledgeProvider = provider
+	l.refreshPending = true
+	l.sourceChecked = false
 }
 
 type Snapshot struct {
@@ -86,11 +100,13 @@ type Document struct {
 }
 
 type manifest struct {
-	Version   int              `json:"version"`
-	FetchedAt time.Time        `json:"fetched_at"`
-	Commit    string           `json:"commit"`
-	SourceURL string           `json:"source_url"`
-	Documents []cachedDocument `json:"documents"`
+	Version         int              `json:"version"`
+	FetchedAt       time.Time        `json:"fetched_at"`
+	Commit          string           `json:"commit"`
+	SourceURL       string           `json:"source_url"`
+	SourceID        string           `json:"source_id,omitempty"`
+	TreeFingerprint string           `json:"tree_fingerprint,omitempty"`
+	Documents       []cachedDocument `json:"documents"`
 }
 
 type cachedDocument struct {
@@ -106,15 +122,6 @@ type cachedDocument struct {
 	PlaceholderCount int      `json:"placeholder_count"`
 	Tags             []string `json:"tags,omitempty"`
 	Quote            string   `json:"quote,omitempty"`
-}
-
-type githubTree struct {
-	SHA       string `json:"sha"`
-	Truncated bool   `json:"truncated"`
-	Tree      []struct {
-		Path string `json:"path"`
-		Type string `json:"type"`
-	} `json:"tree"`
 }
 
 func NewLibrary(cfg Config) *Library {
@@ -136,6 +143,9 @@ func NewLibrary(cfg Config) *Library {
 	if cfg.BuiltinFS == nil && !cfg.DisableBuiltin {
 		cfg.BuiltinFS = builtinMasteryFS
 	}
+	if cfg.KnowledgeProvider == nil {
+		cfg.KnowledgeProvider = githubknowledge.NewClient(githubknowledge.Config{HTTPClient: cfg.HTTPClient, TreeURL: cfg.TreeURL, RawBaseURL: cfg.RawBaseURL, SourceURL: cfg.SourceURL})
+	}
 	return &Library{config: cfg}
 }
 
@@ -149,7 +159,7 @@ func (l *Library) Snapshot(ctx context.Context, force bool) (Snapshot, error) {
 			current = seeded
 		}
 	}
-	if current != nil && !force && time.Since(current.FetchedAt) < l.config.RefreshInterval && l.manifestFilesReady(current) {
+	if current != nil && !force && !l.refreshPending && l.cacheMatchesProvider(current) && time.Since(current.FetchedAt) < l.config.RefreshInterval && l.manifestFilesReady(current) {
 		l.cache = current
 		return l.snapshotFromManifest(current, false)
 	}
@@ -168,7 +178,39 @@ func (l *Library) Snapshot(ctx context.Context, force bool) (Snapshot, error) {
 		return snapshot, nil
 	}
 	l.cache = refreshed
+	l.refreshPending = false
+	l.sourceChecked = true
 	return l.snapshotFromManifest(refreshed, false)
+}
+
+func (l *Library) cacheMatchesProvider(current *manifest) bool {
+	provider, ok := l.config.KnowledgeProvider.(contracts.KnowledgeIdentityProvider)
+	if !ok {
+		// An unidentified injected provider must verify its tree once per process.
+		return l.sourceChecked
+	}
+	identity := provider.KnowledgeIdentity()
+	previousID := current.SourceID
+	if previousID == "" && current.SourceURL == defaultSourceURL {
+		// Old and bundled manifests predate source identity but name this source.
+		previousID = "githubknowledge"
+	}
+	return identity.SourceID != "" && previousID == identity.SourceID && (identity.SourceURL == "" || current.SourceURL == identity.SourceURL)
+}
+
+func knowledgeTreeFingerprint(tree contracts.KnowledgeTree) string {
+	entries := append([]contracts.KnowledgeTreeEntry(nil), tree.Entries...)
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Path != entries[j].Path {
+			return entries[i].Path < entries[j].Path
+		}
+		if entries[i].SourceURL != entries[j].SourceURL {
+			return entries[i].SourceURL < entries[j].SourceURL
+		}
+		return !entries[i].File && entries[j].File
+	})
+	body, _ := json.Marshal(entries)
+	return fmt.Sprintf("%x", sha256.Sum256(body))
 }
 
 func (l *Library) seedBuiltinCache() (*manifest, error) {
@@ -357,14 +399,16 @@ func (l *Library) refresh(ctx context.Context, previous *manifest) (*manifest, e
 	if err := os.MkdirAll(filepath.Join(l.config.CacheDir, "documents"), 0o755); err != nil {
 		return nil, fmt.Errorf("创建游资心法缓存目录: %w", err)
 	}
-	tree, err := l.fetchTree(ctx)
+	tree, err := l.config.KnowledgeProvider.Tree(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if tree.Truncated {
-		return nil, errors.New("GitHub 返回的游资心法目录不完整")
+	if !tree.Complete {
+		return nil, errors.New("远程返回的游资心法目录不完整")
 	}
-	if previous != nil && previous.Commit == tree.SHA && l.manifestFilesReady(previous) {
+	sourceURL := firstNonEmpty(tree.SourceURL, l.config.SourceURL)
+	treeFingerprint := knowledgeTreeFingerprint(tree)
+	if previous != nil && !l.refreshPending && tree.Revision != "" && previous.Commit == tree.Revision && previous.SourceID == tree.SourceID && previous.SourceURL == sourceURL && previous.TreeFingerprint == treeFingerprint && l.manifestFilesReady(previous) {
 		previous.FetchedAt = time.Now()
 		if err := l.saveManifest(previous); err != nil {
 			return nil, err
@@ -373,8 +417,8 @@ func (l *Library) refresh(ctx context.Context, previous *manifest) (*manifest, e
 	}
 
 	documents := make([]cachedDocument, 0, 48)
-	for _, entry := range tree.Tree {
-		if entry.Type != "blob" || !strings.HasPrefix(entry.Path, "游资心法/") || !strings.HasSuffix(strings.ToLower(entry.Path), ".md") {
+	for _, entry := range tree.Entries {
+		if !entry.File || !strings.HasPrefix(entry.Path, "游资心法/") || !strings.HasSuffix(strings.ToLower(entry.Path), ".md") {
 			continue
 		}
 		parts := strings.Split(entry.Path, "/")
@@ -391,12 +435,12 @@ func (l *Library) refresh(ctx context.Context, previous *manifest) (*manifest, e
 			Title:        title,
 			Kind:         documentKind(title),
 			RelativePath: entry.Path,
-			SourceURL:    sourceFileURL(entry.Path),
+			SourceURL:    entry.SourceURL,
 			CacheFile:    filepath.Join("documents", documentID+".md"),
 		})
 	}
 	if len(documents) == 0 {
-		return nil, errors.New("GitHub 目录中没有找到游资心法 Markdown")
+		return nil, errors.New("远程目录中没有找到游资心法 Markdown")
 	}
 	sort.Slice(documents, func(i, j int) bool {
 		if documents[i].TraderName != documents[j].TraderName {
@@ -421,11 +465,13 @@ func (l *Library) refresh(ctx context.Context, previous *manifest) (*manifest, e
 	}
 
 	next := &manifest{
-		Version:   manifestVersion,
-		FetchedAt: time.Now(),
-		Commit:    tree.SHA,
-		SourceURL: l.config.SourceURL,
-		Documents: documents,
+		Version:         manifestVersion,
+		FetchedAt:       time.Now(),
+		Commit:          tree.Revision,
+		SourceURL:       sourceURL,
+		SourceID:        tree.SourceID,
+		TreeFingerprint: treeFingerprint,
+		Documents:       documents,
 	}
 	if err := l.saveManifest(next); err != nil {
 		return nil, err
@@ -433,34 +479,12 @@ func (l *Library) refresh(ctx context.Context, previous *manifest) (*manifest, e
 	return next, nil
 }
 
-func (l *Library) fetchTree(ctx context.Context) (githubTree, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, l.config.TreeURL, nil)
-	if err != nil {
-		return githubTree{}, err
-	}
-	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "easy-stock")
-	response, err := l.config.HTTPClient.Do(request)
-	if err != nil {
-		return githubTree{}, fmt.Errorf("读取 GitHub 游资心法目录: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return githubTree{}, fmt.Errorf("读取 GitHub 游资心法目录返回 HTTP %d", response.StatusCode)
-	}
-	var tree githubTree
-	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&tree); err != nil {
-		return githubTree{}, fmt.Errorf("解析 GitHub 游资心法目录: %w", err)
-	}
-	return tree, nil
-}
-
 func (l *Library) downloadDocuments(ctx context.Context, documents []cachedDocument) error {
 	semaphore := make(chan struct{}, 6)
 	errorsByPath := make(chan error, len(documents))
 	var wait sync.WaitGroup
-	for _, item := range documents {
-		item := item
+	for index := range documents {
+		index := index
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
@@ -471,7 +495,7 @@ func (l *Library) downloadDocuments(ctx context.Context, documents []cachedDocum
 				return
 			}
 			defer func() { <-semaphore }()
-			if err := l.downloadDocument(ctx, item); err != nil {
+			if err := l.downloadDocument(ctx, &documents[index]); err != nil {
 				errorsByPath <- err
 			}
 		}()
@@ -486,31 +510,19 @@ func (l *Library) downloadDocuments(ctx context.Context, documents []cachedDocum
 	return nil
 }
 
-func (l *Library) downloadDocument(ctx context.Context, item cachedDocument) error {
-	rawURL, err := joinEscapedURL(l.config.RawBaseURL, item.RelativePath)
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("User-Agent", "easy-stock")
-	response, err := l.config.HTTPClient.Do(request)
+func (l *Library) downloadDocument(ctx context.Context, item *cachedDocument) error {
+	document, err := l.config.KnowledgeProvider.Document(ctx, item.RelativePath)
 	if err != nil {
 		return fmt.Errorf("下载 %s: %w", item.RelativePath, err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("下载 %s 返回 HTTP %d", item.RelativePath, response.StatusCode)
-	}
-	content, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
-	if err != nil {
-		return fmt.Errorf("下载 %s: %w", item.RelativePath, err)
-	}
+	content := document.Content
 	if len(strings.TrimSpace(string(content))) < 20 {
 		return fmt.Errorf("下载 %s 得到空内容", item.RelativePath)
 	}
+	// Content-addressed files never overwrite documents referenced by the old
+	// manifest when another download or the new manifest write fails.
+	contentHash := sha256.Sum256(content)
+	item.CacheFile = filepath.Join("documents", item.ID+"-"+fmt.Sprintf("%x", contentHash[:])+".md")
 	return atomicWrite(filepath.Join(l.config.CacheDir, item.CacheFile), content, 0o644)
 }
 
@@ -538,7 +550,7 @@ func (l *Library) summaries(current *manifest) []TraderSummary {
 			summary = &TraderSummary{
 				ID:        item.TraderID,
 				Name:      item.TraderName,
-				SourceURL: traderSourceURL(item.TraderName),
+				SourceURL: strings.TrimRight(firstNonEmpty(current.SourceURL, l.config.SourceURL), "/") + "/" + url.PathEscape(item.TraderName),
 			}
 			byID[item.TraderID] = summary
 		}
@@ -713,31 +725,6 @@ func stableID(value string) string {
 
 func traderID(name string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(name))
-}
-
-func sourceFileURL(relativePath string) string {
-	return "https://github.com/zhouqinglong520/trading-mastery/blob/main/" + escapePath(relativePath)
-}
-
-func traderSourceURL(name string) string {
-	return defaultSourceURL + "/" + url.PathEscape(name)
-}
-
-func escapePath(value string) string {
-	parts := strings.Split(value, "/")
-	for index := range parts {
-		parts[index] = url.PathEscape(parts[index])
-	}
-	return strings.Join(parts, "/")
-}
-
-func joinEscapedURL(baseURL, relativePath string) (string, error) {
-	base, err := url.Parse(baseURL)
-	if err != nil {
-		return "", err
-	}
-	base.Path = strings.TrimRight(base.Path, "/") + "/" + relativePath
-	return base.String(), nil
 }
 
 func deriveTags(content string) []string {

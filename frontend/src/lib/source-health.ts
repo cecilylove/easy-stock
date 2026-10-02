@@ -1,5 +1,5 @@
 import type { SourceHealth, SourceProbeResult } from './backend';
-import { sourceIntegrations } from './source-integrations';
+import { sourceIntegrations, type SourceIntegration } from './source-integrations';
 
 export function sourceProbeExpired(probe: SourceProbeResult, now: number) {
 	const checkedAt = Date.parse(probe.checked_at);
@@ -16,29 +16,45 @@ function isSourceProbe(value: unknown): value is SourceProbeResult {
 		&& typeof probe.latency_ms === 'number' && Number.isFinite(probe.latency_ms) && probe.latency_ms >= 0;
 }
 
+function isSourceIntegration(value: unknown): value is SourceIntegration {
+	if (!value || typeof value !== 'object') return false;
+	const source = value as Partial<SourceIntegration>;
+	return typeof source.id === 'string' && /^[a-z][a-z0-9_-]*$/.test(source.id)
+		&& typeof source.name === 'string' && source.name.trim().length > 0
+		&& ['public', 'credential', 'browser', 'archive'].includes(source.mode || '')
+		&& Array.isArray(source.kinds) && source.kinds.length > 0 && source.kinds.every(kind => kind === 'market' || kind === 'information')
+		&& typeof source.usage === 'string' && typeof source.configuration === 'string'
+		&& Array.isArray(source.capabilities) && source.capabilities.every(capability => typeof capability === 'string')
+		&& typeof source.probeScope === 'string' && typeof source.implemented === 'boolean' && typeof source.enabled === 'boolean';
+}
+
 // Settings routes use {data}, but source routes have their own top-level envelope.
-export function parseSourceRecords(payload: unknown, requireProbes = false): { sources: SourceHealth[]; probes: SourceProbeResult[] } {
+export function parseSourceRecords(payload: unknown, requireProbes = false): { sources: SourceHealth[]; probes: SourceProbeResult[]; catalog: SourceIntegration[] } {
 	if (!payload || typeof payload !== 'object' || !('sources' in payload) || !Array.isArray(payload.sources)) throw new Error('数据源观测响应格式异常');
+	const catalog = 'catalog' in payload ? payload.catalog : sourceIntegrations;
+	if (!Array.isArray(catalog) || ('catalog' in payload && !catalog.every(isSourceIntegration)) || new Set(catalog.map(source => source.id)).size !== catalog.length) throw new Error('数据源目录响应格式异常');
 	const probes = 'probes' in payload ? payload.probes : undefined;
 	if ((requireProbes && !Array.isArray(probes)) || (probes !== undefined && (!Array.isArray(probes) || !probes.every(isSourceProbe)))) throw new Error('数据源检测响应格式异常');
-	if (requireProbes && sourceIntegrations.some(source => !Array.isArray(probes) || probes.filter(probe => probe.id === source.id).length !== 1)) throw new Error('数据源检测响应缺少完整且唯一的来源结果');
+	const probeRecords: SourceProbeResult[] = Array.isArray(probes) ? probes : [];
+	const probeSources = catalog.filter(source => source.implemented !== false && source.enabled !== false && source.probeScope !== '');
+	if (requireProbes && (probeSources.some(source => probeRecords.filter(probe => probe.id === source.id).length !== 1) || probeRecords.some(probe => !probeSources.some(source => source.id === probe.id)))) throw new Error('数据源检测响应缺少完整且唯一的来源结果');
 	if (requireProbes && (!('checked_at' in payload) || typeof payload.checked_at !== 'string' || !Number.isFinite(Date.parse(payload.checked_at)))) throw new Error('数据源检测响应格式异常');
-	return { sources: payload.sources, probes: probes || [] };
+	return { sources: payload.sources, probes: probeRecords, catalog };
 }
 
 // The implemented catalog defines capabilities; API records only describe
 // observed requests. Older servers may still return placeholder providers.
-export function normalizeSourceHealth(sources: SourceHealth[]): SourceHealth[] {
+export function normalizeSourceHealth(sources: SourceHealth[], catalog: readonly SourceIntegration[] = sourceIntegrations): SourceHealth[] {
 	const observations = new Map(sources.map(source => [source.id, source]));
-	return sourceIntegrations.map(source => {
+	return catalog.map(source => {
 		const observed = observations.get(source.id);
 		if (observed && observed.status !== 'unconfigured') return { ...observed, name: source.name };
 		return { id: source.id, name: source.name, category: '', ok: false, status: 'unknown' };
 	});
 }
 
-export function sourceHealthCounts(sources: SourceHealth[]) {
-	const implemented = normalizeSourceHealth(sources);
+export function sourceHealthCounts(sources: SourceHealth[], catalog: readonly SourceIntegration[] = sourceIntegrations) {
+	const implemented = normalizeSourceHealth(sources, catalog.filter(source => source.implemented !== false && source.enabled !== false));
 	return {
 		total: implemented.length,
 		available: implemented.filter(source => source.status === 'available').length,

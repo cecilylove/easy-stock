@@ -39,7 +39,9 @@ func TestDefaultServerRestoresEastMoneyCapabilities(t *testing.T) {
 	if _, ok := s.kLineFallback.(*tencent.PriceKLineClient); !ok || s.kLineFallbackSourceID != "tencent" {
 		t.Fatalf("K fallback=%T %s", s.kLineFallback, s.kLineFallbackSourceID)
 	}
-	for name, provider := range map[string]any{"auction": s.auctionProvider, "directory": s.stockDirectory, "business": s.stockBusiness, "concept": s.stockConcepts, "market-pools": s.marketPools, "limit-up": s.limitUpProvider} {
+	entry, _ := s.dataSources.Lookup("eastmoney")
+	caps := entry.Capabilities
+	for name, provider := range map[string]any{"auction": caps.Auction, "directory": caps.Directory, "business": caps.Business, "concept": caps.Directory, "market-pools": caps.Pools, "limit-up": caps.LimitUp} {
 		if _, ok := provider.(*eastmoney.Client); !ok {
 			t.Errorf("%s=%T, want EastMoney", name, provider)
 		}

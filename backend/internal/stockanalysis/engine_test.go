@@ -447,6 +447,31 @@ func TestAnalyzeThemeTrendRoutePrefersKaipanlaLeaderAttribution(t *testing.T) {
 	}
 }
 
+func TestReplacementThemeSourceUsesEvidenceRoleAcrossCachedAndEventRoutes(t *testing.T) {
+	cached := []foundation.StockThemeAttribution{
+		{Kind: foundation.ThemeAttributionPool, Symbol: "600000.SH", Theme: "数据中心", Source: "replacement:limit-up", TradeDate: "2026-08-07"},
+		{Kind: foundation.ThemeAttributionLeader, Symbol: "600000.SH", Theme: "算力租赁", Source: "replacement:theme-leader", TradeDate: "2026-08-07", Role: "龙一"},
+	}
+	events := []foundation.LimitUpEvent{{Symbol: "600000.SH", Date: time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC), Concepts: []string{"数据中心"}, PrimaryTheme: "算力租赁", ThemeSource: "replacement:theme-leader", ThemeKind: foundation.ThemeAttributionLeader, PoolThemeKind: foundation.ThemeAttributionPool, ThemeLeaderRole: "龙一", Meta: foundation.SourceMeta{Source: "replacement:limit-up"}}}
+	for _, eventOnly := range []bool{false, true} {
+		inputCached, inputEvents := cached, []foundation.LimitUpEvent(nil)
+		if eventOnly {
+			inputCached, inputEvents = nil, events
+		}
+		for _, shortRoute := range []bool{false, true} {
+			short := ShortTermAnalysis{ExactLimitUpData: shortRoute}
+			theme := analyzeTheme("600000.SH", short, inputCached, nil, "银行", nil, inputEvents)
+			wantTheme, wantSource := "算力租赁", "replacement:theme-leader"
+			if shortRoute {
+				wantTheme, wantSource = "数据中心", "replacement:limit-up"
+			}
+			if theme.Primary != wantTheme || theme.Source != wantSource {
+				t.Fatalf("eventOnly=%t short=%t theme=%+v", eventOnly, shortRoute, theme)
+			}
+		}
+	}
+}
+
 func TestAnalyzeThemeUsesBusinessWhenNoHotAttribution(t *testing.T) {
 	theme := analyzeTheme(
 		"003032.SZ",

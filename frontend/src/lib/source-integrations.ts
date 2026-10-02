@@ -1,6 +1,19 @@
 export type SourceKind = 'market' | 'information';
-export type SourceIntegration = { id: string; name: string; mode: 'public'; kinds: SourceKind[]; usage: string; configuration: string };
+export type SourceIntegration = {
+	id: string;
+	name: string;
+	mode: 'public' | 'credential' | 'browser' | 'archive';
+	kinds: SourceKind[];
+	usage: string;
+	configuration: string;
+	capabilities?: string[];
+	probeScope?: string;
+	implemented?: boolean;
+	enabled?: boolean;
+};
 
+// Compatibility catalog for servers predating the registry response. Current
+// servers supply their catalog; this list must not override that response.
 export const sourceIntegrations: SourceIntegration[] = [
 	{ id: 'duanxianxia', name: '短线侠 / 开盘啦', mode: 'public', kinds: ['market'], usage: '题材榜、龙头和涨停池', configuration: '内置公共接口，自动使用；至少 5 分钟刷新一次，无需填写凭据。' },
 	{ id: 'eastmoney', name: '东方财富', mode: 'public', kinds: ['market', 'information'], usage: '集合竞价、目录与概念归属、资金补充、涨跌停与连板梯队、基本面、融资、龙虎榜、公告和研报、人气榜及期指持仓历史；已停用个股K、复权和指数取数', configuration: '仅剩余能力自动调用，无需填写 Cookie 或 Token；手动检测使用新客户端读取目录，不检测已停用价格接口。代表接口成功/失败都不代表所有行情与资讯功能。' },
@@ -12,15 +25,19 @@ export const sourceIntegrations: SourceIntegration[] = [
 ];
 
 export function sourceIntegrationLabel(mode: SourceIntegration['mode']) {
-	return mode === 'public' ? '已内置 · 自动使用' : '';
+	return { public: '已内置 · 自动使用', credential: '凭据接入', browser: '浏览器登录', archive: '归档内容' }[mode];
 }
 
 export function sourceKindLabel(kind: SourceKind) {
 	return kind === 'market' ? '行情数据' : '资讯信息';
 }
 
-export function sourceName(sourceId: string): string {
-	return [...new Set(sourceId.split('+').map(id => sourceIntegrations.find(source => source.id === id.trim().split(':')[0])?.name || id.trim()).filter(Boolean))].join(' + ');
+export function sourceName(sourceId: string, catalog: readonly SourceIntegration[] = sourceIntegrations): string {
+	return [...new Set(sourceId.split('+').map(id => {
+		const provider = id.trim().split(':')[0];
+		// Retain historical aliases when an old report references a removed source.
+		return catalog.find(source => source.id === provider)?.name || sourceIntegrations.find(source => source.id === provider)?.name || id.trim();
+	}).filter(Boolean))].join(' + ');
 }
 
 export const sourceFallbackPolicies = [

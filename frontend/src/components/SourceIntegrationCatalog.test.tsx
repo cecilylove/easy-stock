@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { SourceIntegrationCatalog } from './SourceIntegrationCatalog';
-import { sourceIntegrations, sourceKindLabel, sourceName } from '../lib/source-integrations';
+import { sourceIntegrations, sourceKindLabel, sourceName, type SourceIntegration } from '../lib/source-integrations';
 
 describe('source integration settings', () => {
 	it('lists only implemented automatic sources with their actual capability labels', () => {
@@ -34,5 +34,22 @@ describe('source integration settings', () => {
 		expect(sourceName('tencent:industry-momentum+duanxianxia+sina:kline')).toBe('腾讯财经 + 短线侠 / 开盘啦 + 新浪财经');
 		expect(sourceName('cffex:daily')).toBe('中国金融期货交易所');
 		expect(sourceName('eastmoney:history+unknown')).toBe('东方财富 + unknown');
+	});
+	it('renders a supplied registry and uses its display names without restoring removed providers', () => {
+		const catalog: SourceIntegration[] = [{ id: 'new_vendor', name: '新的行情供应商', mode: 'public', kinds: ['market'], usage: '报价', configuration: '自动取数', capabilities: ['quote'], probeScope: '报价代表接口', implemented: true, enabled: true }];
+		const html = renderToStaticMarkup(<SourceIntegrationCatalog catalog={catalog} sources={[{ id: 'new_vendor', name: 'raw name', category: 'quote', ok: true, status: 'available' }]} />);
+		expect(html).toContain('<strong>新的行情供应商</strong>'); expect(html).toContain('最近可用');
+		expect(html.match(/<article /g)).toHaveLength(1); expect(html).not.toContain('新浪财经');
+		expect(sourceName('new_vendor:quote+sina:kline', catalog)).toBe('新的行情供应商 + 新浪财经');
+	});
+	it('does not claim a disabled or unimplemented source is being checked', () => {
+		const catalog: SourceIntegration[] = [{ id: 'disabled', name: '停用来源', mode: 'credential', kinds: ['market'], usage: '报价', configuration: '凭据接入', capabilities: ['quote'], probeScope: '报价', implemented: true, enabled: false }, { id: 'planned', name: '规划来源', mode: 'archive', kinds: ['information'], usage: '文章', configuration: '', capabilities: [], probeScope: '', implemented: false, enabled: false }];
+		const html = renderToStaticMarkup(<SourceIntegrationCatalog catalog={catalog} checking />);
+		expect(html).toContain('当前未启用'); expect(html).toContain('尚未实现'); expect(html).not.toContain('检测中…');
+		expect(html).toContain('凭据接入'); expect(html).toContain('规划能力');
+	});
+	it('shows an empty registry explicitly', () => {
+		const html = renderToStaticMarkup(<SourceIntegrationCatalog catalog={[]} />);
+		expect(html).toContain('当前服务没有注册数据源'); expect(html).not.toContain('<article');
 	});
 });

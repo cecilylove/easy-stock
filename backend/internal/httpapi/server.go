@@ -14,19 +14,18 @@ import (
 	"time"
 
 	"easy-stock/backend/internal/appsettings"
+	"easy-stock/backend/internal/datasource/assembly"
+	"easy-stock/backend/internal/datasource/contracts"
+	"easy-stock/backend/internal/datasource/registry"
+	"easy-stock/backend/internal/datasource/service"
 	"easy-stock/backend/internal/foundation"
 	"easy-stock/backend/internal/hermes"
 	"easy-stock/backend/internal/marketemotion"
 	"easy-stock/backend/internal/methodology"
 	"easy-stock/backend/internal/portfolioinspection"
-	"easy-stock/backend/internal/providers/cls"
+
 	"easy-stock/backend/internal/providers/duanxianxia"
-	"easy-stock/backend/internal/providers/eastmoney"
-	futurespositionprovider "easy-stock/backend/internal/providers/futuresposition"
-	"easy-stock/backend/internal/providers/hotstock"
-	marketoverviewprovider "easy-stock/backend/internal/providers/marketoverview"
-	"easy-stock/backend/internal/providers/sina"
-	"easy-stock/backend/internal/providers/tencent"
+
 	"easy-stock/backend/internal/review"
 	"easy-stock/backend/internal/runtimelog"
 	"easy-stock/backend/internal/sector"
@@ -35,81 +34,88 @@ import (
 )
 
 type Server struct {
-	ladderThemeAI           *ladderThemeAI
-	mux                     *http.ServeMux
-	token                   string
-	allowedOrigins          []string
-	enforceLoopbackHost     bool
-	realtimeProvider        RealtimeProvider
-	detailQuotes            *detailPollCache[[]foundation.Quote]
-	detailKLines            *detailPollCache[[]foundation.KLine]
-	stockIntraday           *detailPollCache[stockIntradayData]
-	intradayProvider        KLineProvider
-	historyIntradayProvider HistoryIntradayProvider
-	intradaySourceID        string
-	intradayContext         context.Context
-	intradayCancel          context.CancelFunc
-	detailAuctions          *detailPollCache[foundation.AuctionTrace]
-	auctionProvider         AuctionProvider
-	auctionSourceID         string
-	realtimeSourceID        string
-	kLinePrimary            KLineProvider
-	kLinePrimarySourceID    string
-	kLineFallback           KLineProvider
-	kLineFallbackSourceID   string
-	kLineStrictTencent      AdjustedKLineProvider
-	kLineRoutes             *klineRouteState
-	newsProvider            NewsProvider
-	newsSourceID            string
-	sectorMap               SectorMapProvider
-	themeOverview           ThemeOverviewProvider
-	limitUpProvider         LimitUpProvider
-	marketPools             MarketPoolProvider
-	stockConcepts           StockConceptProvider
-	stockBusiness           StockBusinessProfileProvider
-	stockDirectory          StockDirectoryProvider
-	stockDirectorySourceID  string
-	hotStockProvider        HotStockProvider
-	futuresPosition         FuturesPositionProvider
-	futuresSourceID         string
-	futuresExchangeSourceID string
-	marketOverview          MarketOverviewProvider
-	marketFailureSourceID   string
-	marketIndexSourceID     string
-	marketIndustrySourceID  string
-	marketFlowSourceID      string
-	inflection              InflectionEvaluator
-	themeSnapshots          *themeSnapshotCache
-	limitUpSnapshots        *limitUpLadderCache
-	limitUpProgress         *shortTermCache[limitUpLadderData]
-	emotionProgress         *shortTermCache[marketemotion.History]
-	stockDirectories        *stockDirectoryCache
-	hotStockRanks           *hotStockRankCache
-	marketSnapshots         *marketOverviewCache
-	sourceHealth            *sourceHealthTracker
-	sourceProbes            *sourceProbeTracker
-	marketEmotion           *marketEmotionEngine
-	marketEmotionIntraday   *marketEmotionIntradayCache
-	reviewStore             *review.Store
-	portfolioStore          *portfolioinspection.Store
-	portfolioInspection     *portfolioinspection.Service
-	portfolioExpectation    *portfolioinspection.ExpectationService
-	stockResearchStore      *stockanalysis.ResearchStore
-	stockResearch           *stockanalysis.ResearchService
-	reviewImporter          ReviewImporter
-	wechatAPIURL            string
-	settingsStore           *appsettings.Store
-	reviewAutomation        *review.Automation
-	remoteDailySync         *review.RemoteDailySync
-	hermesGateway           hermes.Gateway
-	usageGateway            hermes.Gateway
-	masteryLibrary          *methodology.Library
-	marketEmotionStore      *marketemotion.Store
-	themeRadarStore         *duanxianxia.Store
-	themeProgress           *themeProgressCache
-	startupError            error
-	logger                  *log.Logger
-	tokenUsage              *tokenUsageStore
+	dataSources              *registry.Registry
+	contentSources           *registry.Registry
+	defaultStrictPriceSource string
+	priceRoutes              []service.PriceRoute
+	strictPriceSources       map[string]contracts.AdjustedKLineProvider
+	ladderThemeAI            *ladderThemeAI
+	mux                      *http.ServeMux
+	token                    string
+	allowedOrigins           []string
+	enforceLoopbackHost      bool
+	realtimeProvider         RealtimeProvider
+	detailQuotes             *detailPollCache[[]foundation.Quote]
+	detailKLines             *detailPollCache[[]foundation.KLine]
+	stockIntraday            *detailPollCache[stockIntradayData]
+	intradayProvider         KLineProvider
+	historyIntradayProvider  HistoryIntradayProvider
+	intradaySourceID         string
+	intradayContext          context.Context
+	intradayCancel           context.CancelFunc
+	detailAuctions           *detailPollCache[foundation.AuctionTrace]
+	auctionProvider          AuctionProvider
+	auctionSourceID          string
+	realtimeSourceID         string
+	kLinePrimary             KLineProvider
+	kLinePrimarySourceID     string
+	kLineFallback            KLineProvider
+	kLineFallbackSourceID    string
+	kLineStrictTencent       AdjustedKLineProvider
+	kLineRoutes              *klineRouteState
+	newsProvider             NewsProvider
+	newsSourceID             string
+	sectorMap                SectorMapProvider
+	themeOverview            ThemeOverviewProvider
+	limitUpProvider          LimitUpProvider
+	marketPools              MarketPoolProvider
+	stockConcepts            StockConceptProvider
+	stockBusiness            StockBusinessProfileProvider
+	stockDirectory           StockDirectoryProvider
+	stockDirectorySourceID   string
+	hotStockProvider         HotStockProvider
+	futuresPosition          FuturesPositionProvider
+	futuresSourceID          string
+	futuresExchangeSourceID  string
+	futuresMembersSourceID   string
+	futuresConsensusSourceID string
+	marketOverview           MarketOverviewProvider
+	marketFailureSourceID    string
+	marketIndexSourceID      string
+	marketIndustrySourceID   string
+	marketFlowSourceID       string
+	inflection               InflectionEvaluator
+	themeSnapshots           *themeSnapshotCache
+	limitUpSnapshots         *limitUpLadderCache
+	limitUpProgress          *shortTermCache[limitUpLadderData]
+	emotionProgress          *shortTermCache[marketemotion.History]
+	stockDirectories         *stockDirectoryCache
+	hotStockRanks            *hotStockRankCache
+	marketSnapshots          *marketOverviewCache
+	sourceHealth             *sourceHealthTracker
+	sourceProbes             *sourceProbeTracker
+	marketEmotion            *marketEmotionEngine
+	marketEmotionIntraday    *marketEmotionIntradayCache
+	reviewStore              *review.Store
+	portfolioStore           *portfolioinspection.Store
+	portfolioInspection      *portfolioinspection.Service
+	portfolioExpectation     *portfolioinspection.ExpectationService
+	stockResearchStore       *stockanalysis.ResearchStore
+	stockResearch            *stockanalysis.ResearchService
+	reviewImporter           ReviewImporter
+	wechatAPIURL             string
+	settingsStore            *appsettings.Store
+	reviewAutomation         *review.Automation
+	remoteDailySync          *review.RemoteDailySync
+	hermesGateway            hermes.Gateway
+	usageGateway             hermes.Gateway
+	masteryLibrary           *methodology.Library
+	marketEmotionStore       *marketemotion.Store
+	themeRadarStore          *duanxianxia.Store
+	themeProgress            *themeProgressCache
+	startupError             error
+	logger                   *log.Logger
+	tokenUsage               *tokenUsageStore
 }
 
 func NewServer(config any) *Server {
@@ -120,53 +126,81 @@ func NewServer(config any) *Server {
 		cfg.Logger = log.Default()
 	}
 	var startupErrors []error
-	sinaClient := sina.NewClient()
-	if cfg.Intraday == nil && cfg.HistoryIntraday == nil {
-		cfg.HistoryIntraday = sina.NewHistoryIntradayClient(sinaClient)
+	sources := cfg.DataSources
+	if sources == nil {
+		sources = assembly.Default(cfg.DuanxianxiaBaseURL)
 	}
+	routes := assembly.DefaultRoutes()
+	if cfg.DataSourceRoutes != nil {
+		routes = *cfg.DataSourceRoutes
+	}
+	if err := routes.Validate(sources); err != nil {
+		startupErrors = append(startupErrors, err)
+	}
+	capability := func(id string) registry.Capabilities { return assembly.Capabilities(sources, id) }
+	access := func(id string) *service.Access { return service.NewAccess(id, capability(id)) }
 	intradaySourceID := ""
-	if cfg.Intraday == nil {
-		cfg.Intraday = sinaClient
-		intradaySourceID = "sina"
+	if cfg.Intraday == nil && cfg.HistoryIntraday == nil {
+		cfg.HistoryIntraday = access(routes.HistoryIntraday)
 	}
-	eastMoneyClient := eastmoney.NewClient()
-	tencentClient := tencent.NewClient()
-	clsClient := cls.NewClient()
+	if cfg.Intraday == nil {
+		cap := capability(routes.Intraday)
+		cap.KLine = cap.Intraday
+		cfg.Intraday = service.NewAccess(routes.Intraday, cap)
+		intradaySourceID = routes.Intraday
+	}
 	realtimeSourceID, primarySourceID, fallbackSourceID, newsSourceID := "", "", "", ""
 	if cfg.Realtime == nil {
-		cfg.Realtime = sinaClient
-		realtimeSourceID = "sina"
+		cfg.Realtime = access(routes.Realtime)
+		realtimeSourceID = routes.Realtime
 	}
 	auctionSourceID := ""
 	if cfg.Auction == nil {
-		cfg.Auction = eastMoneyClient
-		auctionSourceID = "eastmoney"
+		cfg.Auction = access(routes.Auction)
+		auctionSourceID = routes.Auction
 	}
-	// Strict stock adjustment uses only Tencent's own convention; the default
-	// route remains Sina then Tencent without any EastMoney price request.
 	if cfg.KLineStrictTencent == nil {
-		cfg.KLineStrictTencent = tencent.NewStockKLineClient(tencentClient)
+		cfg.KLineStrictTencent = capability("tencent").AdjustedKLine
 	}
-	if cfg.KLinePrimary == nil {
-		cfg.KLinePrimary = sinaClient
-		primarySourceID = "sina"
+	if cfg.DataSourceRoutes != nil {
+		allowed := false
+		for _, id := range routes.Strict {
+			if id == "tencent" {
+				allowed = true
+			}
+		}
+		if !allowed {
+			cfg.KLineStrictTencent = nil
+		}
 	}
-	if cfg.KLineFallback == nil {
-		cfg.KLineFallback = tencent.NewPriceKLineClient(tencentClient)
-		fallbackSourceID = "tencent"
+	if cfg.KLinePrimary == nil && len(routes.KLine) > 0 {
+		primarySourceID = routes.KLine[0]
+		cfg.KLinePrimary = capability(primarySourceID).KLine
+	}
+	if cfg.KLineFallback == nil && len(routes.KLine) > 1 {
+		fallbackSourceID = routes.KLine[1]
+		cfg.KLineFallback = capability(fallbackSourceID).KLine
 	}
 	if cfg.News == nil {
-		cfg.News = clsClient
-		newsSourceID = "cls"
+		cfg.News = capability(routes.News).News
+		newsSourceID = routes.News
 	}
-	kaipanlaClient := duanxianxia.NewClient(duanxianxia.ClientConfig{BaseURL: cfg.DuanxianxiaBaseURL})
+	kaipanlaClient := capability(routes.Theme).Theme
+	if kaipanlaClient != nil {
+		kaipanlaClient = service.NewThemes(routes.Theme, kaipanlaClient)
+	}
 	var kaipanlaService *duanxianxia.Service
+	var radarStore *duanxianxia.Store
 	if strings.TrimSpace(cfg.ThemeRadarDBPath) != "" {
 		if store, err := duanxianxia.OpenStore(cfg.ThemeRadarDBPath); err == nil {
-			kaipanlaService = duanxianxia.NewService(kaipanlaClient, store, duanxianxia.ServiceConfig{
-				RefreshInterval:  5 * time.Minute,
-				LeaderThemeLimit: 3,
-			})
+			radarStore = store
+			if kaipanlaClient != nil {
+				kaipanlaService = duanxianxia.NewService(kaipanlaClient, store, duanxianxia.ServiceConfig{
+					SourceID:         routes.Theme,
+					RefreshInterval:  5 * time.Minute,
+					LeaderThemeLimit: 3,
+				})
+			}
 		} else if cfg.StrictPersistence {
 			startupErrors = append(startupErrors, fmt.Errorf("open theme radar database: %w", err))
 		}
@@ -174,38 +208,45 @@ func NewServer(config any) *Server {
 	usingDefaultLimitUp := cfg.LimitUp == nil
 	if usingDefaultLimitUp {
 		if kaipanlaService != nil {
-			cfg.LimitUp = duanxianxia.NewLimitUpProvider(kaipanlaService, eastMoneyClient)
+			cfg.LimitUp = service.NewLimitUpProvider(kaipanlaService, access(routes.LimitUp))
 		} else {
-			cfg.LimitUp = eastMoneyClient
+			cfg.LimitUp = access(routes.LimitUp)
 		}
 	}
 	if cfg.MarketPools == nil {
-		cfg.MarketPools = eastMoneyClient
+		cfg.MarketPools = access(routes.Pools)
 	}
 	if cfg.StockConcept == nil && usingDefaultLimitUp {
-		cfg.StockConcept = eastMoneyClient
+		cfg.StockConcept = access(routes.Directory)
 	}
 	if cfg.StockBusiness == nil {
-		cfg.StockBusiness = eastMoneyClient
+		businessCap := capability(routes.Business)
+		businessCap.Fundamentals = capability(routes.Fundamentals).Fundamentals
+		cfg.StockBusiness = service.NewAccess(routes.Business, businessCap)
 	}
 	stockDirectorySourceID := ""
 	if cfg.StockDirectory == nil {
-		cfg.StockDirectory = eastMoneyClient
-		stockDirectorySourceID = "eastmoney"
+		cfg.StockDirectory = access(routes.Directory)
+		stockDirectorySourceID = routes.Directory
 	}
 	marketFailureSourceID := ""
 	marketIndexSourceID, marketIndustrySourceID, marketFlowSourceID := "", "", ""
 	if cfg.MarketOverview == nil {
-		cfg.MarketOverview = marketoverviewprovider.New(eastMoneyClient, tencentClient, tencentClient, sinaClient)
-		marketFailureSourceID = "eastmoney"
-		marketIndexSourceID, marketIndustrySourceID, marketFlowSourceID = "tencent", "tencent", "sina"
+		marketConfig := service.MarketConfig{Index: capability(routes.Index).Index, Industry: capability(routes.Industry).Industry, IndustryFallback: capability(routes.IndustryFallback).Industry, FundFlow: capability(routes.FundFlow).FundFlow, FundFlowFallback: capability(routes.FundFlowFallback).FundFlow, Margin: capability(routes.Margin).Margin, Billboard: capability(routes.Billboard).Billboard, Announcements: capability(routes.Announcements).Announcements, Reports: capability(routes.Reports).Reports, USSector: capability(routes.USSector).USSector, USSectorFallback: capability(routes.USSectorFallback).USSector, MarginSourceID: routes.Margin, BillboardSourceID: routes.Billboard, AnnouncementsSourceID: routes.Announcements, ReportsSourceID: routes.Reports, USSectorSourceID: routes.USSector, USSectorFallbackSourceID: routes.USSectorFallback, IndexSourceID: routes.Index, IndustrySourceID: routes.Industry, IndustryFallbackSourceID: routes.IndustryFallback, FundFlowSourceID: routes.FundFlow, FundFlowFallbackSourceID: routes.FundFlowFallback}
+		if cfg.MarketCapabilities != nil {
+			marketConfig = *cfg.MarketCapabilities
+		}
+		cfg.MarketOverview = service.NewMarket(marketConfig)
+		// Registered capability services emit their own source observations.
+		// A missing capability must not inherit an unrelated supplier identity.
+		marketIndexSourceID, marketIndustrySourceID, marketFlowSourceID = marketConfig.IndexSourceID, marketConfig.IndustrySourceID, marketConfig.FundFlowSourceID
 	}
 	if cfg.SectorMap == nil {
 		mapper := sector.NewMapper(
-			eastMoneyClient,
-			sector.WithQuoteProvider(sinaClient),
+			access(routes.Boards),
+			sector.WithQuoteProvider(cfg.Realtime),
 			sector.WithLimitUpProvider(cfg.LimitUp),
-			sector.WithStockCatalogProvider(eastMoneyClient),
+			sector.WithStockCatalogProvider(cfg.StockDirectory),
 		)
 		var defaultSectorMap SectorMapProvider = mapper
 		var defaultThemeOverview ThemeOverviewProvider = mapper
@@ -217,9 +258,15 @@ func NewServer(config any) *Server {
 		if kaipanlaService != nil {
 			radarSource = kaipanlaService
 		}
+		memberSources := []contracts.BoardMemberProvider{}
+		for _, id := range routes.BoardMembers {
+			if p := capability(id).BoardMembers; p != nil {
+				memberSources = append(memberSources, p)
+			}
+		}
 		radar := sector.NewRadarProvider(radarSource, radarFallback, cfg.Realtime, sector.RadarProviderConfig{
 			IndustryMomentum:  cfg.MarketOverview,
-			IndustryStocks:    tencentClient,
+			BoardMembers:      service.NewBoardMembers(memberSources...),
 			FallbackFillLimit: 16,
 		})
 		defaultSectorMap = radar
@@ -290,21 +337,33 @@ func NewServer(config any) *Server {
 		}
 	}
 	if cfg.HotStocks == nil {
-		cfg.HotStocks = hotstock.NewClient()
+		rankSources := []contracts.HotRankProvider{}
+		for _, id := range routes.HotRanks {
+			if p := capability(id).HotRank; p != nil {
+				rankSources = append(rankSources, p)
+			}
+		}
+		cfg.HotStocks = service.NewHotRanks(rankSources...)
 	}
 	futuresSourceID := ""
 	futuresExchangeSourceID := ""
+	futuresMembersSourceID, futuresConsensusSourceID := "", ""
 	if cfg.FuturesPosition == nil {
-		cfg.FuturesPosition = futurespositionprovider.NewClient()
-		futuresSourceID = "eastmoney"
-		futuresExchangeSourceID = "cffex"
+		cfg.FuturesPosition = service.NewFuturesCapabilities(service.FuturesConfig{
+			HistoryID: routes.FuturesHistory, SnapshotID: routes.FuturesSnapshotSource(), MembersID: routes.FuturesMembersSource(), ConsensusID: routes.FuturesConsensusSource(),
+			History: capability(routes.FuturesHistory).FuturesTrend, Snapshot: capability(routes.FuturesSnapshotSource()).FuturesSnapshot,
+			Members: capability(routes.FuturesMembersSource()).FuturesMembers, Consensus: capability(routes.FuturesConsensusSource()).FuturesConsensus,
+		})
+		futuresSourceID = routes.FuturesHistory
+		futuresExchangeSourceID = routes.FuturesSnapshotSource()
+		futuresMembersSourceID, futuresConsensusSourceID = routes.FuturesMembersSource(), routes.FuturesConsensusSource()
 	}
 	probeProviders := cfg.SourceProbeProviders
 	if probeProviders == nil {
 		probeProviders = &SourceProbeProviders{
-			Sina: cfg.Realtime, Tencent: tencentClient, CLS: cfg.News,
-			EastMoney: newEastMoneyDirectoryProbe(), THS: hotstock.NewTHSClient(),
-			CFFEX: futurespositionprovider.NewExchangeClient(), Kaipanla: kaipanlaClient,
+			Sina: capability("sina").Realtime, Tencent: capability("tencent").Index, CLS: capability("cls").News,
+			EastMoney: capability("eastmoney").ProbeDirectory, THS: service.NewHotRanks(capability("ths").HotRank),
+			CFFEX: capability("cffex").FuturesTrend, Kaipanla: capability("duanxianxia").Theme,
 		}
 	}
 	if cfg.HermesGateway != nil && (!cfg.StrictPersistence || len(startupErrors) == 0) {
@@ -332,95 +391,140 @@ func NewServer(config any) *Server {
 		}
 	}
 	usageGateway := newTokenUsageGateway(cfg.HermesGateway, tokenUsage)
+	contentSources := cfg.ContentSources
+	if contentSources == nil {
+		contentSources = assembly.Content(cfg.ReviewHTTP, cfg.WeChatAPIURL, cfg.RemoteDailyReviewURL)
+	}
+	for _, entry := range contentSources.Entries() {
+		if _, exists := sources.Lookup(entry.Descriptor.ID); exists {
+			startupErrors = append(startupErrors, fmt.Errorf("duplicate source across public and content registries: %s", entry.Descriptor.ID))
+		}
+	}
+	if cfg.MasteryLibrary != nil && cfg.ContentSources != nil {
+		knowledgeID := cfg.KnowledgeSourceID
+		if knowledgeID == "" {
+			knowledgeID = "githubknowledge"
+		}
+		cfg.MasteryLibrary.SetKnowledgeProvider(service.NewKnowledge(knowledgeID, assembly.Capabilities(contentSources, knowledgeID).Knowledge))
+	}
 	if cfg.ReviewImporter == nil {
-		cfg.ReviewImporter = review.NewImporter(cfg.ReviewHTTP, cfg.WeChatAPIURL)
+		articleRoutes := []service.ArticleRoute{}
+		for _, entry := range contentSources.Entries() {
+			if entry.Descriptor.Enabled && entry.Descriptor.Implemented && entry.Capabilities.Article != nil {
+				articleRoutes = append(articleRoutes, service.ArticleRoute{SourceID: entry.Descriptor.ID, Hosts: entry.Descriptor.ArticleHosts, Provider: entry.Capabilities.Article})
+			}
+		}
+		cfg.ReviewImporter = review.NewImporterWithSource(service.NewArticleRoutes(articleRoutes...))
 	}
 	if cfg.ReviewAutomation == nil {
 		cfg.ReviewAutomation = review.NewAutomation(cfg.ReviewStore, cfg.ReviewImporter, cfg.SettingsStore, cfg.ReviewHTTP, cfg.WeChatAPIURL, usageGateway)
+		collections := service.NewCollections(contentSources)
+		cfg.ReviewAutomation.SetCollectionSources(collections, collections, collections)
 	}
 	if dailyMarketProvider := newReviewDailyMarketProvider(cfg.MarketOverview); dailyMarketProvider != nil {
 		cfg.ReviewAutomation.SetDailyMarketProvider(dailyMarketProvider)
 	}
 	if cfg.RemoteDailySync == nil {
-		cfg.RemoteDailySync = review.NewRemoteDailySync(cfg.ReviewStore, review.RemoteDailySyncConfig{
+		archiveID := cfg.ArchiveSourceID
+		if archiveID == "" {
+			archiveID = "official"
+		}
+		archiveCap := assembly.Capabilities(contentSources, archiveID)
+		cfg.RemoteDailySync = review.NewRemoteDailySync(cfg.ReviewStore, review.RemoteDailySyncConfig{Provider: service.NewArchive(archiveID, archiveCap.Archive),
 			BaseURL: cfg.RemoteDailyReviewURL,
 			Client:  cfg.ReviewHTTP,
 		})
 	}
 	s := &Server{
-		mux:                     http.NewServeMux(),
-		token:                   cfg.Token,
-		allowedOrigins:          append([]string(nil), cfg.AllowedOrigins...),
-		enforceLoopbackHost:     cfg.EnforceLoopbackHost,
-		realtimeProvider:        cfg.Realtime,
-		detailQuotes:            newDetailPollCache[[]foundation.Quote](),
-		detailKLines:            newDetailPollCache[[]foundation.KLine](),
-		stockIntraday:           newDetailPollCache[stockIntradayData](),
-		intradayProvider:        cfg.Intraday,
-		historyIntradayProvider: cfg.HistoryIntraday,
-		intradaySourceID:        intradaySourceID,
-		intradayContext:         intradayContext,
-		intradayCancel:          intradayCancel,
-		detailAuctions:          newDetailPollCache[foundation.AuctionTrace](),
-		auctionProvider:         cfg.Auction,
-		auctionSourceID:         auctionSourceID,
-		realtimeSourceID:        realtimeSourceID,
-		kLinePrimary:            cfg.KLinePrimary,
-		kLinePrimarySourceID:    primarySourceID,
-		kLineFallback:           cfg.KLineFallback,
-		kLineFallbackSourceID:   fallbackSourceID,
-		kLineStrictTencent:      cfg.KLineStrictTencent,
-		kLineRoutes:             newKLineRouteState(),
-		newsProvider:            cfg.News,
-		newsSourceID:            newsSourceID,
-		sectorMap:               cfg.SectorMap,
-		themeOverview:           cfg.ThemeOverview,
-		limitUpProvider:         cfg.LimitUp,
-		marketPools:             cfg.MarketPools,
-		stockConcepts:           cfg.StockConcept,
-		stockBusiness:           cfg.StockBusiness,
-		stockDirectory:          cfg.StockDirectory,
-		stockDirectorySourceID:  stockDirectorySourceID,
-		hotStockProvider:        cfg.HotStocks,
-		futuresPosition:         cfg.FuturesPosition,
-		futuresSourceID:         futuresSourceID,
-		futuresExchangeSourceID: futuresExchangeSourceID,
-		marketOverview:          cfg.MarketOverview,
-		marketFailureSourceID:   marketFailureSourceID,
-		marketIndexSourceID:     marketIndexSourceID,
-		marketIndustrySourceID:  marketIndustrySourceID,
-		marketFlowSourceID:      marketFlowSourceID,
-		inflection:              cfg.Inflection,
-		themeSnapshots:          newThemeSnapshotCache(30 * time.Second),
-		themeProgress:           newThemeProgressCache(),
-		limitUpSnapshots:        newLimitUpLadderCache(30 * time.Second),
-		limitUpProgress:         &shortTermCache[limitUpLadderData]{},
-		emotionProgress:         &shortTermCache[marketemotion.History]{},
-		stockDirectories:        newStockDirectoryCache(6 * time.Hour),
-		hotStockRanks:           newHotStockRankCache(2 * time.Minute),
-		marketSnapshots:         newMarketOverviewCache(45 * time.Second),
-		sourceHealth:            newSourceHealthTracker(),
-		sourceProbes:            newSourceProbeTracker(*probeProviders),
-		marketEmotionIntraday:   newMarketEmotionIntradayCache(marketEmotionIntradayTTL),
-		reviewStore:             cfg.ReviewStore,
-		portfolioStore:          cfg.PortfolioStore,
-		stockResearchStore:      cfg.StockResearchStore,
-		reviewImporter:          cfg.ReviewImporter,
-		wechatAPIURL:            strings.TrimSpace(cfg.WeChatAPIURL),
-		settingsStore:           cfg.SettingsStore,
-		ladderThemeAI:           newLadderThemeAI(cfg.SettingsPath),
-		reviewAutomation:        cfg.ReviewAutomation,
-		remoteDailySync:         cfg.RemoteDailySync,
-		hermesGateway:           cfg.HermesGateway,
-		usageGateway:            usageGateway,
-		masteryLibrary:          cfg.MasteryLibrary,
-		marketEmotionStore:      cfg.MarketEmotionStore,
-		startupError:            errors.Join(startupErrors...),
-		logger:                  cfg.Logger,
-		tokenUsage:              tokenUsage,
+		dataSources: sources, contentSources: contentSources, defaultStrictPriceSource: routes.DefaultStrict,
+		mux:                      http.NewServeMux(),
+		token:                    cfg.Token,
+		allowedOrigins:           append([]string(nil), cfg.AllowedOrigins...),
+		enforceLoopbackHost:      cfg.EnforceLoopbackHost,
+		realtimeProvider:         cfg.Realtime,
+		detailQuotes:             newDetailPollCache[[]foundation.Quote](),
+		detailKLines:             newDetailPollCache[[]foundation.KLine](),
+		stockIntraday:            newDetailPollCache[stockIntradayData](),
+		intradayProvider:         cfg.Intraday,
+		historyIntradayProvider:  cfg.HistoryIntraday,
+		intradaySourceID:         intradaySourceID,
+		intradayContext:          intradayContext,
+		intradayCancel:           intradayCancel,
+		detailAuctions:           newDetailPollCache[foundation.AuctionTrace](),
+		auctionProvider:          cfg.Auction,
+		auctionSourceID:          auctionSourceID,
+		realtimeSourceID:         realtimeSourceID,
+		kLinePrimary:             cfg.KLinePrimary,
+		kLinePrimarySourceID:     primarySourceID,
+		kLineFallback:            cfg.KLineFallback,
+		kLineFallbackSourceID:    fallbackSourceID,
+		kLineStrictTencent:       cfg.KLineStrictTencent,
+		kLineRoutes:              newKLineRouteState(),
+		newsProvider:             cfg.News,
+		newsSourceID:             newsSourceID,
+		sectorMap:                cfg.SectorMap,
+		themeOverview:            cfg.ThemeOverview,
+		limitUpProvider:          cfg.LimitUp,
+		marketPools:              cfg.MarketPools,
+		stockConcepts:            cfg.StockConcept,
+		stockBusiness:            cfg.StockBusiness,
+		stockDirectory:           cfg.StockDirectory,
+		stockDirectorySourceID:   stockDirectorySourceID,
+		hotStockProvider:         cfg.HotStocks,
+		futuresPosition:          cfg.FuturesPosition,
+		futuresSourceID:          futuresSourceID,
+		futuresExchangeSourceID:  futuresExchangeSourceID,
+		futuresMembersSourceID:   futuresMembersSourceID,
+		futuresConsensusSourceID: futuresConsensusSourceID,
+		marketOverview:           cfg.MarketOverview,
+		marketFailureSourceID:    marketFailureSourceID,
+		marketIndexSourceID:      marketIndexSourceID,
+		marketIndustrySourceID:   marketIndustrySourceID,
+		marketFlowSourceID:       marketFlowSourceID,
+		inflection:               cfg.Inflection,
+		themeSnapshots:           newThemeSnapshotCache(30 * time.Second),
+		themeProgress:            newThemeProgressCache(),
+		limitUpSnapshots:         newLimitUpLadderCache(30 * time.Second),
+		limitUpProgress:          &shortTermCache[limitUpLadderData]{},
+		emotionProgress:          &shortTermCache[marketemotion.History]{},
+		stockDirectories:         newStockDirectoryCache(6 * time.Hour),
+		hotStockRanks:            newHotStockRankCache(2 * time.Minute),
+		marketSnapshots:          newMarketOverviewCache(45 * time.Second),
+		sourceHealth:             newSourceHealthTrackerFor(sources),
+		sourceProbes:             newSourceProbeTrackerFor(sources, *probeProviders),
+		marketEmotionIntraday:    newMarketEmotionIntradayCache(marketEmotionIntradayTTL),
+		reviewStore:              cfg.ReviewStore,
+		portfolioStore:           cfg.PortfolioStore,
+		stockResearchStore:       cfg.StockResearchStore,
+		reviewImporter:           cfg.ReviewImporter,
+		wechatAPIURL:             strings.TrimSpace(cfg.WeChatAPIURL),
+		settingsStore:            cfg.SettingsStore,
+		ladderThemeAI:            newLadderThemeAI(cfg.SettingsPath),
+		reviewAutomation:         cfg.ReviewAutomation,
+		remoteDailySync:          cfg.RemoteDailySync,
+		hermesGateway:            cfg.HermesGateway,
+		usageGateway:             usageGateway,
+		masteryLibrary:           cfg.MasteryLibrary,
+		marketEmotionStore:       cfg.MarketEmotionStore,
+		startupError:             errors.Join(startupErrors...),
+		logger:                   cfg.Logger,
+		tokenUsage:               tokenUsage,
 	}
-	if kaipanlaService != nil {
-		s.themeRadarStore = kaipanlaService.Store()
+	s.newsProvider = service.NewNews(newsSourceID, cfg.News, s.sourceHealth.observe)
+	if cfg.DataSourceRoutes != nil {
+		for _, id := range routes.KLine {
+			s.priceRoutes = append(s.priceRoutes, service.PriceRoute{SourceID: id, Provider: capability(id).KLine})
+		}
+		if len(routes.KLine) == 0 {
+			s.priceRoutes = []service.PriceRoute{}
+		}
+		s.strictPriceSources = map[string]contracts.AdjustedKLineProvider{}
+		for _, id := range routes.Strict {
+			s.strictPriceSources[id] = capability(id).AdjustedKLine
+		}
+	}
+	if radarStore != nil {
+		s.themeRadarStore = radarStore
 		if payload, err := s.themeRadarStore.LoadOverview(context.Background()); err == nil && len(payload) > 0 {
 			var cached foundation.ThemeProgress
 			if json.Unmarshal(payload, &cached) == nil {
@@ -443,12 +547,16 @@ func NewServer(config any) *Server {
 			}
 		}
 	}
+	var emotionPrices KLineProvider
+	if s.kLinePrimary != nil || len(s.priceRoutes) > 0 {
+		emotionPrices = kLineAccess(s.loadKLine)
+	}
 	s.marketEmotion = newMarketEmotionEngine(
 		cfg.MarketEmotionStore,
 		s.limitUpProvider,
 		s.marketPools,
-		s.kLinePrimary,
-		s.kLineFallback,
+		emotionPrices,
+		nil,
 		s.stockConcepts,
 	)
 	s.stockResearch = stockanalysis.NewResearchService(cfg.StockResearchStore, s.runStockResearch)
@@ -691,8 +799,12 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) sourceCatalog() []registry.Descriptor {
+	return append(s.dataSources.Catalog(), s.contentSources.Catalog()...)
+}
+
 func (s *Server) sources(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"sources": s.sourceHealth.snapshot(time.Now()), "probes": s.sourceProbes.snapshot()})
+	writeJSON(w, http.StatusOK, map[string]any{"sources": s.sourceHealth.snapshot(time.Now()), "probes": s.sourceProbes.snapshot(), "catalog": s.sourceCatalog()})
 }
 
 func (s *Server) realtime(w http.ResponseWriter, r *http.Request) {
@@ -771,7 +883,7 @@ func (s *Server) kline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "东方财富个股K与指定复权入口已退役；请明确选择腾讯口径")
 		return
 	}
-	if providerName != "source" && providerName != "tencent" {
+	if providerName != "source" && s.priceDataService().StrictProvider(providerName) == nil {
 		writeError(w, http.StatusBadRequest, "provider must be source or tencent")
 		return
 	}
@@ -796,7 +908,10 @@ func (s *Server) kline(w http.ResponseWriter, r *http.Request) {
 	strictRequest := providerName != "source" || (adjustment != "" && adjustment != "source")
 	strictProvider := providerName
 	if strictProvider == "source" {
-		strictProvider = "tencent"
+		strictProvider = s.defaultStrictPriceSource
+		if strictProvider == "" && s.strictPriceSources == nil {
+			strictProvider = "tencent"
+		}
 	}
 	strictAdjustment := adjustment
 	if strictAdjustment == "" || strictAdjustment == "source" {
@@ -811,7 +926,7 @@ func (s *Server) kline(w http.ResponseWriter, r *http.Request) {
 		if checkPeriod == "year" {
 			checkPeriod = "month"
 		}
-		if strictProvider == "tencent" && !tencent.SupportsStockKLine(symbol, checkPeriod, strictAdjustment) {
+		if !s.priceDataService().SupportsAdjusted(strictProvider, symbol, checkPeriod, strictAdjustment) {
 			writeError(w, http.StatusBadRequest, "Tencent stock source does not support this instrument or period")
 			return
 		}
@@ -928,85 +1043,21 @@ func (s *Server) klineBatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": data, "errors": errorsBySymbol})
 }
 
-func (s *Server) loadKLine(ctx context.Context, symbol string, period string, limit int) ([]foundation.KLine, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	period = canonicalKLinePeriod(period)
-	if period == "" {
-		return nil, fmt.Errorf("unsupported kline period")
-	}
-	if period == "year" {
-		// Neither configured source has a portable calendar-year period.
-		// Fetch an extra year of monthly history to avoid a truncated leading year.
-		limit = min(max(limit, 1), 50)
-		months, err := s.loadKLine(ctx, symbol, "month", (limit+1)*12)
-		if err != nil {
-			return nil, err
-		}
-		years := aggregateYearKLines(months, limit)
-		if len(years) == 0 {
-			return nil, fmt.Errorf("monthly source returned no usable bars for year aggregation")
-		}
-		for index := range years {
-			years[index].Meta.Period = "year"
-		}
-		return years, nil
-	}
-	return s.loadDefaultKLineRoutes(ctx, symbol, period, limit)
+func (s *Server) loadKLine(ctx context.Context, symbol, period string, limit int) ([]foundation.KLine, error) {
+	return s.priceDataService().KLine(ctx, symbol, period, limit)
 }
-
 func normalizeKLinePeriod(lines []foundation.KLine, period string) []foundation.KLine {
-	if strings.TrimSpace(period) != "1" || len(lines) == 0 {
-		return lines
-	}
-
-	chinaTime := time.FixedZone("Asia/Shanghai", 8*60*60)
-	latestTime := time.Time{}
-	for _, line := range lines {
-		if !line.Time.IsZero() && line.Time.After(latestTime) {
-			latestTime = line.Time
-		}
-	}
-	if latestTime.IsZero() {
-		return lines
-	}
-
-	latestDate := latestTime.In(chinaTime).Format("2006-01-02")
-	previousTime := time.Time{}
-	previousClose := 0.0
-	for _, line := range lines {
-		if line.Time.IsZero() || line.Time.In(chinaTime).Format("2006-01-02") == latestDate {
-			continue
-		}
-		if line.Close > 0 && line.Time.Before(latestTime) && line.Time.After(previousTime) {
-			previousTime = line.Time
-			previousClose = line.Close
-		}
-	}
-
-	filtered := make([]foundation.KLine, 0, len(lines))
-	for _, line := range lines {
-		if line.Time.IsZero() || line.Time.In(chinaTime).Format("2006-01-02") != latestDate {
-			continue
-		}
-		if line.PreviousClose <= 0 && previousClose > 0 {
-			line.PreviousClose = previousClose
-		}
-		filtered = append(filtered, line)
-	}
-	if len(filtered) == 0 {
-		return lines
-	}
-	return filtered
+	return service.NormalizeKLinePeriod(lines, period)
 }
-
 func (s *Server) news(w http.ResponseWriter, r *http.Request) {
 	source := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
 	if source == "" {
-		source = "cls"
+		source = s.newsSourceID
+		if source == "" {
+			source = "cls"
+		}
 	}
-	if source != "cls" {
+	if source != s.newsSourceID && !(s.newsSourceID == "" && source == "cls") {
 		writeError(w, http.StatusBadRequest, "unsupported news source")
 		return
 	}
@@ -1021,14 +1072,8 @@ func (s *Server) news(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.newsProvider.LatestNews(r.Context(), limit)
 	if err != nil {
-		if shouldObserveFailure(r.Context()) {
-			s.sourceHealth.failure(s.newsSourceID, err)
-		}
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
-	}
-	for _, item := range items {
-		s.sourceHealth.success(item.Meta)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items})
 }

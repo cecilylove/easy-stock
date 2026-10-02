@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"easy-stock/backend/internal/foundation"
-	"easy-stock/backend/internal/providers/duanxianxia"
 )
 
 type unavailableMemberMapping struct{}
@@ -60,7 +59,7 @@ func TestIndustryIdentityCompatibilityAndProviderRouting(t *testing.T) {
 
 func TestFusionSharesTencentMemberResolverWhenMappingFails(t *testing.T) {
 	now := time.Now()
-	snapshot := duanxianxia.Snapshot{ID: "fixture", TradeDate: now.Format("2006-01-02"), FetchedAt: now, Themes: []duanxianxia.Theme{{Code: "801001", Name: "芯片", LeadersLoaded: true, Leaders: []duanxianxia.Leader{{Symbol: "600001.SH", Name: "领涨"}}}}}
+	snapshot := foundation.ThemeSnapshot{ID: "fixture", TradeDate: now.Format("2006-01-02"), FetchedAt: now, Themes: []foundation.ThemeSnapshotItem{{Code: "801001", Name: "芯片", LeadersLoaded: true, Leaders: []foundation.ThemeLeader{{Symbol: "600001.SH", Name: "领涨"}}}}}
 	members := &recordingIndustryMembers{stocks: []foundation.BoardStock{{Symbol: "688001.SH", Name: "原生成员"}}}
 	provider := NewRadarProvider(fakeRadarSource{snapshot: snapshot}, unavailableMemberMapping{}, nil, RadarProviderConfig{IndustryStocks: members})
 	ref := radarIndustryThemeRef{Code: "pt01801081", Name: "半导体", Provider: "tencent", Dimension: "industry"}
@@ -102,7 +101,7 @@ func TestIndustryKnownEmptyFieldsDoNotProduceStrength(t *testing.T) {
 func TestNativeMembersRemainSeparateFromCatalogCandidates(t *testing.T) {
 	result := foundation.SectorMap{Groups: []foundation.SectorMapGroup{{Nodes: []foundation.SectorMapNode{{Name: "半导体", StockSource: "eastmoney:stock-selection", Stocks: []foundation.BoardStock{{Symbol: "600001.SH", Name: "概念候选"}}}}}}}
 	meta := foundation.SourceMeta{Source: "tencent:industry-constituents", MemberSet: &foundation.MemberSetMeta{Kind: "native", Complete: true, Total: 1, Returned: 1}}
-	mergeIndustryConstituents("pt1", []foundation.BoardStock{{Symbol: "688001.SH", Name: "真实成员"}}, meta, false, &result)
+	mergeIndustryConstituents(foundation.BoardRef{Provider: "tencent", NativeCode: "pt1", Dimension: "industry"}, []foundation.BoardStock{{Symbol: "688001.SH", Name: "真实成员"}}, meta, false, &result)
 	if len(result.Groups) != 2 || len(result.Groups[0].Nodes[0].Stocks) != 1 || result.Groups[0].Nodes[0].Stocks[0].Symbol != "688001.SH" {
 		t.Fatalf("candidate contaminated native set: %+v", result)
 	}
@@ -126,5 +125,51 @@ func TestPriceDoesNotProveFiveDayReturnAndKnownZeroIsValid(t *testing.T) {
 	}
 	if industryFieldAvailable(foundation.SourceMeta{FieldsKnown: true}, "change_percent") {
 		t.Fatal("known-empty fields treated as all valid")
+	}
+}
+
+type capabilityMemberFixture struct {
+	seen      foundation.BoardRef
+	supported bool
+}
+
+func (f *capabilityMemberFixture) SupportsMembers(ref foundation.BoardRef) bool {
+	return f.supported && ref.Provider == "fixture" && ref.Dimension == "industry" && ref.NativeCode == "native-7" && ref.ClassificationVersion == "2026-v2"
+}
+func (f *capabilityMemberFixture) Members(_ context.Context, ref foundation.BoardRef, _ int) ([]foundation.BoardStock, foundation.SourceMeta, error) {
+	f.seen = ref
+	stocks := []foundation.BoardStock{{Symbol: "600001.SH", Name: "native member"}}
+	return stocks, foundation.SourceMeta{Source: "fixture:members", MemberSet: &foundation.MemberSetMeta{Kind: "native", Complete: true, Total: 1, Returned: 1, BoardRef: ref}}, nil
+}
+func TestRadarRoutesMembersByCapabilityAndFullIdentity(t *testing.T) {
+	members := &capabilityMemberFixture{supported: true}
+	ref := radarIndustryThemeRef{Code: "native-7", Name: "fixture", Provider: "fixture", Dimension: "industry", ClassificationVersion: "2026-v2"}
+	id := radarIndustryRefID(ref)
+	parsed, ok := parseRadarIndustryThemeID(id)
+	if !ok || parsed.ClassificationVersion != ref.ClassificationVersion {
+		t.Fatalf("identity=%+v", parsed)
+	}
+	fusion, ok := parseRadarFusionThemeID(radarFusionThemeID("801001", ref))
+	if !ok || fusion.industryRef().ClassificationVersion != ref.ClassificationVersion {
+		t.Fatalf("fusion=%+v", fusion)
+	}
+	provider := NewRadarProvider(nil, unavailableMemberMapping{}, nil, RadarProviderConfig{BoardMembers: members})
+	result, err := provider.Build(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if members.seen != ref.boardRef() || result.Groups[0].Nodes[0].BoardRef == nil || *result.Groups[0].Nodes[0].BoardRef != ref.boardRef() {
+		t.Fatalf("identity lost: request=%+v result=%+v", members.seen, result)
+	}
+	if result.Groups[0].Nodes[0].StockSource != "fixture:members" || result.Groups[0].Nodes[0].Stocks[0].Symbol != "600001.SH" {
+		t.Fatalf("members=%+v", result)
+	}
+	members.supported = false
+	members.seen = foundation.BoardRef{}
+	if _, err := provider.Build(context.Background(), id); err == nil {
+		t.Fatal("unsupported members unexpectedly succeeded")
+	}
+	if members.seen.Provider != "" {
+		t.Fatalf("unsupported identity dispatched: %+v", members.seen)
 	}
 }
