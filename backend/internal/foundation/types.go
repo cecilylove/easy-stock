@@ -356,24 +356,27 @@ type StockThemeAttribution struct {
 // separate from market concepts because a broad concept membership is not
 // evidence that the stock is currently being traded as that theme.
 type StockBusinessProfile struct {
-	Symbol       string     `json:"symbol"`
-	Name         string     `json:"name,omitempty"`
-	MainBusiness string     `json:"main_business"`
-	Industry     string     `json:"industry,omitempty"`
-	IndustryPath string     `json:"industry_path,omitempty"`
-	Description  string     `json:"description,omitempty"`
-	Meta         SourceMeta `json:"meta"`
+	Symbol        string     `json:"symbol"`
+	Name          string     `json:"name,omitempty"`
+	MainBusiness  string     `json:"main_business"`
+	Industry      string     `json:"industry,omitempty"`
+	IndustryPath  string     `json:"industry_path,omitempty"`
+	Description   string     `json:"description,omitempty"`
+	BusinessScope string     `json:"business_scope,omitempty"`
+	Meta          SourceMeta `json:"meta"`
 }
 
 // StockFundamentals contains the latest reported financial snapshot used by
-// the non-short-term stock route. Values follow EastMoney's published F10
-// units: amounts are CNY and percentage fields are percentage points. Providers
+// the non-short-term stock route. Canonical units are CNY for amounts and
+// percentage points for percentage fields; the period is consolidated cumulative. Providers
 // should set Meta.FieldsKnown and list only valid numeric JSON field names in
 // Meta.AvailableFields; numeric zero placeholders alone do not prove validity.
 type StockFundamentals struct {
 	Symbol                                 string     `json:"symbol"`
 	ReportDate                             string     `json:"report_date"`
 	ReportName                             string     `json:"report_name"`
+	PublishedAt                            time.Time  `json:"published_at,omitempty"`
+	NotApplicableFields                    []string   `json:"not_applicable_fields,omitempty"`
 	Revenue                                float64    `json:"revenue"`
 	RevenueYearOverYear                    float64    `json:"revenue_yoy"`
 	NetProfit                              float64    `json:"net_profit"`

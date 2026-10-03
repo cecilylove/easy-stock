@@ -20,11 +20,12 @@ type Routes struct {
 	BoardMembers                                                                                                                         []string
 	Theme                                                                                                                                string
 	BillboardLabels                                                                                                                      string // Optional enrichment; empty disables labels without disabling raw details.
+	BusinessFallback, FundamentalsFallback                                                                                               string // Explicit whole-snapshot fallback; empty disables it.
 }
 
 func DefaultRoutes() Routes {
 	return Routes{
-		Realtime: "sina", Auction: "eastmoney", Intraday: "sina", HistoryIntraday: "sina", News: "cls", Directory: "eastmoney", Business: "eastmoney", Fundamentals: "eastmoney", LimitUp: "eastmoney", Pools: "eastmoney", Boards: "eastmoney", Theme: "duanxianxia",
+		Realtime: "sina", Auction: "eastmoney", Intraday: "sina", HistoryIntraday: "sina", News: "cls", Directory: "eastmoney", Business: "sina", Fundamentals: "sina", BusinessFallback: "eastmoney", FundamentalsFallback: "eastmoney", LimitUp: "eastmoney", Pools: "eastmoney", Boards: "eastmoney", Theme: "duanxianxia",
 		KLine: []string{"sina", "tencent"}, Strict: []string{"tencent"}, DefaultStrict: "tencent", Index: "tencent", Industry: "tencent", IndustryFallback: "eastmoney", FundFlow: "sina", FundFlowFallback: "eastmoney", Margin: "eastmoney", Billboard: "eastmoney", BillboardLabels: "ths", Announcements: "eastmoney", Reports: "eastmoney", USSectorFallback: "tencent", HotRanks: []string{"ths", "eastmoney"}, FuturesHistory: "eastmoney", FuturesExchange: "cffex", BoardMembers: []string{"tencent"},
 	}
 }
@@ -70,6 +71,8 @@ func (r Routes) Validate(sources *registry.Registry) error {
 		{r.Directory, "stock-directory", func(c registry.Capabilities) bool { return c.Directory != nil }},
 		{r.Business, "business", func(c registry.Capabilities) bool { return c.Business != nil }},
 		{r.Fundamentals, "fundamentals", func(c registry.Capabilities) bool { return c.Fundamentals != nil }},
+		{r.BusinessFallback, "business-fallback", func(c registry.Capabilities) bool { return c.Business != nil }},
+		{r.FundamentalsFallback, "fundamentals-fallback", func(c registry.Capabilities) bool { return c.Fundamentals != nil }},
 		{r.Index, "index", func(c registry.Capabilities) bool { return c.Index != nil }},
 		{r.Industry, "industry", func(c registry.Capabilities) bool { return c.Industry != nil }},
 		{r.IndustryFallback, "industry-fallback", func(c registry.Capabilities) bool { return c.Industry != nil }},

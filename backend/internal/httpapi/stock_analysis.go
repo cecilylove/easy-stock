@@ -354,6 +354,7 @@ func (s *Server) collectStockResearch(ctx context.Context, canonicalSymbol strin
 		Business:        business.MainBusiness,
 		BusinessDetail:  business.Description,
 		BusinessSource:  business.Meta.Source,
+		BusinessMeta:    foundation.CloneSourceMeta(business.Meta),
 		Fundamentals:    &fundamentals,
 		Reports:         reports,
 		Announcements:   announcements,

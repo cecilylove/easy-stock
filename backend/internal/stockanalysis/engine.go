@@ -266,6 +266,11 @@ func analyzeFundamentals(item *foundation.StockFundamentals) FundamentalAnalysis
 	}
 	formatMetric := func(field, format string, number float64) string {
 		if !item.FieldAvailable(field) {
+			for _, unavailable := range item.NotApplicableFields {
+				if unavailable == field {
+					return "不适用"
+				}
+			}
 			return "未知"
 		}
 		return fmt.Sprintf(format, number)
@@ -301,7 +306,7 @@ func analyzeFundamentals(item *foundation.StockFundamentals) FundamentalAnalysis
 		RecurringNetProfitAvailable: hasDeductedProfit, RecurringNetProfitYearOverYearAvailable: hasDeductedGrowth, RecurringNetProfit: recurringProfit, RecurringNetProfitYearOverYear: recurringGrowth,
 		NonRecurringProfit: nonRecurringProfit, NonRecurringProfitRatio: nonRecurringRatio, Sustainability: sustainability, SustainabilityFlags: uniqueStrings(sustainabilityFlags, 5),
 		EPS: eps, ROE: roe, GrossMargin: grossMargin, DebtRatio: debtRatio, OperatingCashFlowPerShare: cashFlow,
-		Summary: summary, Source: item.Meta.Source,
+		Summary: summary, Source: item.Meta.Source, PublishedAt: item.PublishedAt, FallbackReason: item.Meta.FallbackReason, NotApplicableFields: append([]string(nil), item.NotApplicableFields...),
 	}
 }
 
@@ -1268,7 +1273,7 @@ func buildDataQuality(input Input, profile Profile, lines []foundation.KLine, sh
 	case theme.IsHot:
 		quality = append(quality, DataQuality{Key: "theme", Status: "limited", Message: fmt.Sprintf("已识别事实题材%s，等待题材成分股盘面验证", theme.Primary)})
 	case theme.Resonance.State == "价格未确认":
-		quality = append(quality, DataQuality{Key: "theme", Status: "ready", Message: fmt.Sprintf("近期热点关联未通过个股涨幅验证，当前按东方财富F10主营业务%s定位", theme.Primary)})
+		quality = append(quality, DataQuality{Key: "theme", Status: "ready", Message: fmt.Sprintf("近期热点关联未通过个股涨幅验证，当前按已取得公司主营业务%s定位", theme.Primary)})
 	case theme.Resonance.State == "事实已确认":
 		quality = append(quality, DataQuality{Key: "theme", Status: "ready", Message: fmt.Sprintf("已确认%d项公司事实题材，当前尚未形成主炒作共振", len(theme.ConfirmedThemes))})
 	case theme.Resonance.State == "映射待确认":
@@ -1352,7 +1357,7 @@ func fundamentalQualityStatus(fundamental *FundamentalAnalysis) (string, string)
 		}
 	}
 	if !fundamental.RecurringNetProfitAvailable {
-		return "limited", "已接入最新东方财富F10，但扣非净利润缺失，收益持续性待确认"
+		return "limited", "已接入最新财务快照，但扣非净利润缺失，收益持续性待确认"
 	}
 	return "ready", "已接入最新财务指标；扣非利润仅剔除非经常性损益，不代表风险已排除"
 }

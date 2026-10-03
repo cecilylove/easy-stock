@@ -869,6 +869,9 @@ export type StockAIFundamental = {
 	sustainability_flags?: string[];
 	report_date: string;
 	report_name: string;
+	published_at?: string;
+	fallback_reason?: string;
+	not_applicable_fields?: string[];
 	revenue: number;
 	revenue_yoy: number;
 	net_profit: number;

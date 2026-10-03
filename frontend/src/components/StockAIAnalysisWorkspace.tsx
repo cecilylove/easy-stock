@@ -889,14 +889,14 @@ function normalizeStockAITheme(theme?: StockAIAnalysis['theme']): NonNullable<St
 export function FundamentalPanel({ analysis }: { analysis: StockAIAnalysis }) {
 	const item = analysis.fundamental;
 	const has = (field: string) => !!item && (item.fields_known ? (item.available_fields || []).includes(field) : field.startsWith('recurring_') || field.startsWith('non_recurring_') ? !!item.recurring_net_profit_available : true);
-	const number = (field: string, value: number | undefined, format: (value: number) => string) => has(field) && typeof value === 'number' && Number.isFinite(value) ? format(value) : '--';
+	const number = (field: string, value: number | undefined, format: (value: number) => string) => item?.not_applicable_fields?.includes(field) ? '不适用' : has(field) && typeof value === 'number' && Number.isFinite(value) ? format(value) : '--';
 	const percent = (value: number) => `${value.toFixed(1)}%`;
 	const growth = (field: string, value: number | undefined) => has(field) && typeof value === 'number' ? `同比 ${signedPercent(value)}` : '同比未提供';
 	const tone = (field: string, value: number | undefined) => has(field) && typeof value === 'number' ? (value >= 0 ? 'positive' : 'negative') : '';
 	return <section className="stock-ai-panel stock-ai-fundamental-panel">
 		<header><div><span>公司质量</span><h3>基本面 · 最新财报</h3></div><Building2 size={19} /></header>
 		{item?.available ? <>
-			<div className="stock-ai-fundamental-summary"><strong>{!item.fields_known || item.score_available ? item.score : '--'} · {item.quality}</strong><span>{item.report_name || item.report_date} · 收益持续性{item.sustainability || '待确认'}</span><p>{item.summary}</p>{(item.sustainability_flags || []).map((flag) => <small key={flag} className="stock-ai-fundamental-warning">{flag}</small>)}</div>
+			<div className="stock-ai-fundamental-summary"><strong>{!item.fields_known || item.score_available ? item.score : '--'} · {item.quality}</strong><span>{item.report_name || item.report_date} · 收益持续性{item.sustainability || '待确认'}</span><small>来源：{sourceName(item.source || '未知')} · 报告期：{item.report_date} · 披露日期：{item.published_at && !item.published_at.startsWith('0001-') ? item.published_at.slice(0, 10) : '未知'}{item.fallback_reason ? ` · ${item.fallback_reason}` : ''}</small><p>{item.summary}</p>{(item.sustainability_flags || []).map((flag) => <small key={flag} className="stock-ai-fundamental-warning">{flag}</small>)}</div>
 			<div className="stock-ai-fundamental-metrics">
 				<FundamentalMetric label="营业总收入" value={number('revenue', item.revenue, formatCompactAmount)} detail={growth('revenue_yoy', item.revenue_yoy)} tone={tone('revenue_yoy', item.revenue_yoy)} />
 				<FundamentalMetric label="归母净利润" value={number('net_profit', item.net_profit, formatCompactAmount)} detail={growth('net_profit_yoy', item.net_profit_yoy)} tone={tone('net_profit_yoy', item.net_profit_yoy)} />

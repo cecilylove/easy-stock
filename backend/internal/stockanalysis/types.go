@@ -21,6 +21,7 @@ type Input struct {
 	Business           string
 	BusinessDetail     string
 	BusinessSource     string
+	BusinessMeta       foundation.SourceMeta
 	Fundamentals       *foundation.StockFundamentals
 	Reports            []foundation.MarketResearchItem
 	Announcements      []foundation.MarketResearchItem
@@ -332,33 +333,36 @@ type ThemeResonance struct {
 // including any zero placeholder. Recurring* fields contain deducted profit,
 // never a parent-profit fallback; ScoreAvailable gates score consumption.
 type FundamentalAnalysis struct {
-	Available                               bool     `json:"available"`
-	FieldsKnown                             bool     `json:"fields_known"`
-	AvailableFields                         []string `json:"available_fields"`
-	ScoreAvailable                          bool     `json:"score_available"`
-	Score                                   int      `json:"score"`
-	Quality                                 string   `json:"quality"`
-	Sustainability                          string   `json:"sustainability"`
-	SustainabilityFlags                     []string `json:"sustainability_flags,omitempty"`
-	ReportDate                              string   `json:"report_date"`
-	ReportName                              string   `json:"report_name"`
-	Revenue                                 float64  `json:"revenue"`
-	RevenueYearOverYear                     float64  `json:"revenue_yoy"`
-	NetProfit                               float64  `json:"net_profit"`
-	NetProfitYearOverYear                   float64  `json:"net_profit_yoy"`
-	RecurringNetProfitAvailable             bool     `json:"recurring_net_profit_available"`
-	RecurringNetProfitYearOverYearAvailable bool     `json:"recurring_net_profit_yoy_available"`
-	RecurringNetProfit                      float64  `json:"recurring_net_profit"`
-	RecurringNetProfitYearOverYear          float64  `json:"recurring_net_profit_yoy"`
-	NonRecurringProfit                      float64  `json:"non_recurring_profit"`
-	NonRecurringProfitRatio                 float64  `json:"non_recurring_profit_ratio"`
-	EPS                                     float64  `json:"eps"`
-	ROE                                     float64  `json:"roe"`
-	GrossMargin                             float64  `json:"gross_margin"`
-	DebtRatio                               float64  `json:"debt_ratio"`
-	OperatingCashFlowPerShare               float64  `json:"operating_cash_flow_per_share"`
-	Summary                                 string   `json:"summary"`
-	Source                                  string   `json:"source"`
+	Available                               bool      `json:"available"`
+	FieldsKnown                             bool      `json:"fields_known"`
+	AvailableFields                         []string  `json:"available_fields"`
+	ScoreAvailable                          bool      `json:"score_available"`
+	Score                                   int       `json:"score"`
+	Quality                                 string    `json:"quality"`
+	Sustainability                          string    `json:"sustainability"`
+	SustainabilityFlags                     []string  `json:"sustainability_flags,omitempty"`
+	ReportDate                              string    `json:"report_date"`
+	ReportName                              string    `json:"report_name"`
+	PublishedAt                             time.Time `json:"published_at,omitempty"`
+	FallbackReason                          string    `json:"fallback_reason,omitempty"`
+	NotApplicableFields                     []string  `json:"not_applicable_fields,omitempty"`
+	Revenue                                 float64   `json:"revenue"`
+	RevenueYearOverYear                     float64   `json:"revenue_yoy"`
+	NetProfit                               float64   `json:"net_profit"`
+	NetProfitYearOverYear                   float64   `json:"net_profit_yoy"`
+	RecurringNetProfitAvailable             bool      `json:"recurring_net_profit_available"`
+	RecurringNetProfitYearOverYearAvailable bool      `json:"recurring_net_profit_yoy_available"`
+	RecurringNetProfit                      float64   `json:"recurring_net_profit"`
+	RecurringNetProfitYearOverYear          float64   `json:"recurring_net_profit_yoy"`
+	NonRecurringProfit                      float64   `json:"non_recurring_profit"`
+	NonRecurringProfitRatio                 float64   `json:"non_recurring_profit_ratio"`
+	EPS                                     float64   `json:"eps"`
+	ROE                                     float64   `json:"roe"`
+	GrossMargin                             float64   `json:"gross_margin"`
+	DebtRatio                               float64   `json:"debt_ratio"`
+	OperatingCashFlowPerShare               float64   `json:"operating_cash_flow_per_share"`
+	Summary                                 string    `json:"summary"`
+	Source                                  string    `json:"source"`
 }
 
 type ResearchAnalysis struct {

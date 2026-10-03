@@ -14,6 +14,11 @@ const fundamentals: StockAIFundamental = { available: true, fields_known: true, 
 const partial: MarketMarginPoint = { trade_date: '2026-09-30', markets: ['007'], missing_markets: ['001','002'], coverage_known: true, coverage_complete: false, change_available: false, financing_balance: 100, securities_lending_balance: 10, margin_balance: 110, margin_balance_change: -1293577201676, financing_buy_amount: 0, financing_repay_amount: 0, financing_net_buy_amount: 0, securities_lending_sell_volume: 0, securities_lending_repay_volume: 0, meta: { source: 'eastmoney:margin-balance', fetched_at: '', stale: false, latency_ms: 0, partial: true, fields_known: true, available_fields: ['margin_balance','financing_balance','securities_lending_balance'] } };
 
 describe('financial evidence quality contracts', () => {
+ it('shows actual financial source publication and explicit whole-snapshot fallback', () => {
+  const finance={...fundamentals,source:'sina:financials',published_at:'2026-08-15T00:00:00+08:00',fallback_reason:'备用未恢复，仅主源部分覆盖',not_applicable_fields:['gross_margin']};
+  const html=renderToStaticMarkup(<FundamentalPanel analysis={{fundamental:finance} as StockAIAnalysis} />);
+  expect(html).toContain('新浪财经');expect(html).toContain('2026-08-15');expect(html).toContain('备用未恢复');expect(html).toContain('不适用');
+ });
  it('does not display legacy parent-profit fallback as deducted-profit growth', () => {
   const legacy={...fundamentals,fields_known:undefined,available_fields:undefined,recurring_net_profit_available:false,recurring_net_profit_yoy:123.4};
   const host=document.createElement('div');host.innerHTML=renderToStaticMarkup(<FundamentalPanel analysis={{fundamental:legacy} as StockAIAnalysis} />);

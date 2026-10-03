@@ -42,6 +42,30 @@ Current live checks:
 | `TestLiveSinaKLineReturnsBars` | `000001.SZ` daily K-line from Sina returns at least one bar with positive close. |
 | `TestLiveCLSNewsReturnsItems` | CLS latest news returns at least one item. |
 
+## Company-source migration check
+
+The opt-in company check uses the current registered Sina business/fundamental
+adapters and default company routes, with in-memory stores and deterministic
+fixtures for unrelated price/news/theme data. It verifies quick-analysis HTTP,
+research disclosure evidence and the holding shared analyzer without invoking AI
+or reading personal settings. It permits only the Sina official hosts, bounds
+requests and spaces them by at least 1.2 seconds; ordinary tests skip it.
+
+```powershell
+# repository root; this is an explicit public-network sample, not SLA certification
+$env:A_STOCK_LIVE_COMPANY_TEST = '1'
+try {
+  & ./.runtime/tools/go/bin/go.exe -C backend test ./internal/httpapi -run '^TestLiveSinaCompanyMigrationReachesHTTPResearchAndHolding$' -count=1 -v
+} finally {
+  Remove-Item Env:A_STOCK_LIVE_COMPANY_TEST
+}
+```
+
+Optional `A_STOCK_COMPANY_EVIDENCE_DIR` names an existing ignored directory for
+public sample output; do not point it at installed-version user data. This check
+validates company-source wiring, not the unrelated synthetic price data, AI
+synthesis quality, every security's coverage or long-term availability.
+
 ## Notes
 
 External financial endpoints can fail because of network restrictions, rate limits, anti-bot changes, or upstream schema changes. A live test failure should be treated as a data-source health signal, not necessarily as a deterministic code regression.

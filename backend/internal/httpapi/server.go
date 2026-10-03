@@ -219,10 +219,13 @@ func NewServer(config any) *Server {
 	if cfg.StockConcept == nil && usingDefaultLimitUp {
 		cfg.StockConcept = access(routes.Directory)
 	}
-	if cfg.StockBusiness == nil {
-		businessCap := capability(routes.Business)
-		businessCap.Fundamentals = capability(routes.Fundamentals).Fundamentals
-		cfg.StockBusiness = service.NewAccess(routes.Business, businessCap)
+	usingDefaultCompany := cfg.StockBusiness == nil
+	if usingDefaultCompany {
+		cfg.StockBusiness = service.NewCompany(service.CompanyConfig{
+			Business: capability(routes.Business).Business, BusinessFallback: capability(routes.BusinessFallback).Business,
+			Fundamentals: capability(routes.Fundamentals).Fundamentals, FundamentalsFallback: capability(routes.FundamentalsFallback).Fundamentals,
+			BusinessID: routes.Business, BusinessFallbackID: routes.BusinessFallback, FundamentalsID: routes.Fundamentals, FundamentalsFallbackID: routes.FundamentalsFallback,
+		})
 	}
 	stockDirectorySourceID := ""
 	if cfg.StockDirectory == nil {
@@ -511,6 +514,11 @@ func NewServer(config any) *Server {
 		tokenUsage:               tokenUsage,
 	}
 	s.newsProvider = service.NewNews(newsSourceID, cfg.News, s.sourceHealth.observe)
+	if usingDefaultCompany {
+		if company, ok := s.stockBusiness.(*service.Company); ok {
+			company.SetObserver(s.sourceHealth.observe)
+		}
+	}
 	if cfg.DataSourceRoutes != nil {
 		for _, id := range routes.KLine {
 			s.priceRoutes = append(s.priceRoutes, service.PriceRoute{SourceID: id, Provider: capability(id).KLine})

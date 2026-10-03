@@ -4,11 +4,19 @@
 
 按能力选择来源，不整体关闭东方财富。保留涨跌停/炸板池、目录概念字段、基本面、公告/研报、融资、龙虎榜等仍可取数的能力；mootdx 未通过本机报价/K验证，不加入正式链路。已存在的用户未提交改动在本轮保留，无新增Token/付费要求。
 
-## 最新范围：价格链路已退役东财
+## 最新范围：价格退役，第一批公司资料/财务迁至新浪
 
-用户进一步授权逐步替换全部东财能力，本轮先移除三类价格能力：默认股票K新浪→腾讯、明确none/qfq/hfq统一腾讯、指数快照/日周月历史Tencent独立。以下阶段描述反映当前实现；历史公网采样证据保留不改写。尚未找到等价替代的竞价和专属研究/资讯继续保留，并明确它们不是本轮已移除项。
+价格三类已迁出：默认股票K新浪→腾讯、明确none/qfq/hfq腾讯、指数快照/历史腾讯独立。2026-10-03第一批公司主营/简介和已披露财务新增新浪适配并设主源，东财仅作显式整份备用；主源完整无东财请求，失败/覆盖不足才回退，不混报告期或字段。实网四股样本与隔离消费者投影结果见本页下方及数据源说明。以下价格阶段及历史采样证据保留不改写。竞价、原始目录/分类、事件池、公告/研报等仍保留，并非本批已替代。
 
 架构迁移后，能力契约与默认注册/路由位于 `backend/internal/datasource/`，单源协议仍在 `providers`。默认策略与本页历史公网证据保持；新增适配器须注册、配置路由并验证口径。详细当前职责见 [数据架构](../backend/docs/architecture.md)，完成与保留项见 [改造清单](data-source-refactor-checklist.md)。显式价格接口可接受注册且启用的严格复权源 ID，默认仍为腾讯；不会恢复东财价格/指数能力。
+
+## 第一批公司资料/财务迁移验证（2026-10-03）
+
+- 新浪官方财务端点 `quotes.sina.cn/.../CompanyFinanceService.getFinanceReport2022`，公司资料 `vip.stock.finance.sina.com.cn/corp/go.php/vCI_CorpInfo/stockid/{code}.phtml`；匿名公开请求，不读取Cookie、模型凭据或登录态。
+- 新注册适配器+Company路由实网四股：600519.SH/000001.SZ/920002.BJ/920045.BJ，资料和财务均为新浪、无东财网络请求；中报有效指标11/10/11/11，银行毛利不适用；披露日8/15、8/15、8/3、8/21，来源/日期保留到分析和研究快照。原始公开证据仅存Git忽略 `.runtime/sina-company-migration-20261003/`。
+- 显式公司live测试使用真新浪资料、其它能力脱网夹具及内存库，6次新浪请求打通快速分析HTTP/研究证据/持仓共享入口；不调用AI、不运行全市场刷新。命令和范围见 [live tests](../backend/docs/live-tests.md)。
+- 失败/缺字段/旧季度/未知披露日/银行不适用/取消/预算/禁用fallback/历史报告与截止证据均有离线回归；完整主源不请求东财，部分数据按整份选择，绝不跨源拼字段。
+- 官网公开成功不是授权SLA或稳定性保证；当前官方日期为日粒度，不冒精确盘中披露时间，非历史PIT/修订仓库。公告研报及其它东财功能本批不替换。回滚仅调整Business/Fundamentals及其fallback路由，不改用户库或历史报告。
 
 ## 阶段1：默认路由和失败边界
 
@@ -57,6 +65,15 @@
 - 竞价候选：腾讯普通分时起始交易时段、新浪minute非独立盘前轨迹；东财盘前连接关闭，未宣布替代成功。
 
 原始证据在Git忽略目录 `.runtime/price-source-validation.md`、`.runtime/price-kline-evidence-20261001-174756/`、`.runtime/price-sina-evidence-20261001-180128/`、`.runtime/price-board-unit-evidence-20261001-182112/`、`.runtime/sector-source-evidence.json`、`.runtime/index-auction-evidence.json`。早期PowerShell解析提示失败保留为工具错误，不归类为上游故障。
+
+## 2026-10-03 公司资料与财务第一批迁移验收
+
+- 官方目标仅新浪，本批没有替换腾讯或新增供应商。主营/简介：[新浪公司资料](https://vip.stock.finance.sina.com.cn/corp/go.php/vCI_CorpInfo/stockid/600519.phtml)；财务：[新浪结构化接口](https://quotes.sina.cn/cn/api/openapi.php/CompanyFinanceService.getFinanceReport2022?paperCode=sh600519&source=gjzb&type=0&page=1&num=1)。两端点本轮直接官网读取HTTP200，字段含自身公司身份、明确主营/简介，以及报告期20260630/披露20260815/合并累计CNY。
+- 注册适配器+默认 `Company` 路由 fresh 实网四股600519.SH、000001.SZ、920002.BJ、920045.BJ，共8次官方请求；资料来源均sina:business、财务均sina:financials；非银行11项有效指标，银行10项+毛利N/A。报告披露日期依次8/15、8/15、8/3、8/21，无东财网络请求或回退。
+- 显式live衔接检查 `TestLiveSinaCompanyMigrationReachesHTTPResearchAndHolding` 通过，茅台6次新浪官方请求经真实HTTP快速分析、研究快照及持仓共用分析器传递；财务来源/披露日期和公司原文链接保留。无关价格/题材/资讯为确定夹具、库为内存，不调用模型、不使用密钥/登录态，不把这些夹具当行情验证。
+- 回退离线覆盖：新浪失败或必要指标不足才整份东财备用、主源完整无备用请求、旧报告不覆盖有效新报告、取消不回退、父预算内给备用预留、bank N/A不当0、未知披露不静默退旧季度；披露晚于截止时间时证据和评分基线共同排除。未知资料更新时间/旧东财披露日期不伪造。
+- 本机忽略证据 `.runtime/sina-company-migration-20261003/official-final-samples.json`、`http-holding.json`；每次公开样本成功仅证明当次覆盖，不承诺SLA/盘中稳定/完整历史PIT修订库。
+- 后端全量与vet通过；前端58文件/394项和生产构建通过（现有大chunk警告保留）；未运行CGO race、桌面打包/启动或全工作区布局回归。最终审核及提交推送结果以交付回复为准。
 
 ## 验收
 

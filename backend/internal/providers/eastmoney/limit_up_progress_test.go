@@ -14,6 +14,7 @@ import (
 func TestProgressiveHistoryPublishesRecentDayBeforeSlowHistory(t *testing.T) {
 	gate := make(chan struct{})
 	var calls, active, peak atomic.Int32
+	started := make(chan struct{}, 8)
 	now := time.Now().In(time.FixedZone("Asia/Shanghai", 8*60*60))
 	latest := now
 	for !foundation.IsAStockTradingDay(latest) {
@@ -35,6 +36,7 @@ func TestProgressiveHistoryPublishesRecentDayBeforeSlowHistory(t *testing.T) {
 				break
 			}
 		}
+		started <- struct{}{}
 		if r.URL.Query().Get("date") != latest.Format("20060102") {
 			select {
 			case <-gate:
@@ -61,6 +63,17 @@ func TestProgressiveHistoryPublishesRecentDayBeforeSlowHistory(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("fast current day blocked on old history")
+	}
+	// Do not release blocked history until another worker actually entered.
+	// Callback scheduling alone does not prove the transport has overlapped yet.
+	if expectedDays >= 2 {
+		for entered := 0; entered < min(3, expectedDays); entered++ {
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("parallel history worker did not start")
+			}
+		}
 	}
 	close(gate)
 	if err := <-done; err != nil {
