@@ -86,6 +86,79 @@ func (s *Access) RecentLimitUps(ctx context.Context, days int) ([]foundation.Lim
 	}
 	return s.cap.LimitUp.RecentLimitUps(ctx, days)
 }
+
+// RecentLimitUpHistory forwards neutral coverage, falling back conservatively
+// for old suppliers without inferring empty dates from an empty event slice.
+func (s *Access) RecentLimitUpHistory(ctx context.Context, days int) (foundation.LimitUpHistory, error) {
+	if err := ctx.Err(); err != nil {
+		return foundation.LimitUpHistory{}, err
+	}
+	if s.cap.LimitUp == nil {
+		return foundation.LimitUpHistory{}, s.unsupported("limit-up")
+	}
+	if provider, ok := s.cap.LimitUp.(contracts.LimitUpHistoryProvider); ok {
+		history, err := provider.RecentLimitUpHistory(ctx, days)
+		return foundation.CloneLimitUpHistory(history), err
+	}
+	events, err := s.cap.LimitUp.RecentLimitUps(ctx, days)
+	return foundation.LimitUpHistoryFromEvents(events, err), err
+}
+
+func (s *Access) ProgressiveRecentLimitUpHistory(ctx context.Context, days int, publish func(foundation.LimitUpHistory)) (foundation.LimitUpHistory, error) {
+	if err := ctx.Err(); err != nil {
+		return foundation.LimitUpHistory{}, err
+	}
+	if s.cap.LimitUp == nil {
+		return foundation.LimitUpHistory{}, s.unsupported("limit-up")
+	}
+	if provider, ok := s.cap.LimitUp.(contracts.ProgressiveLimitUpHistoryProvider); ok {
+		history, err := provider.ProgressiveRecentLimitUpHistory(ctx, days, func(value foundation.LimitUpHistory) {
+			if publish != nil && ctx.Err() == nil {
+				publish(foundation.CloneLimitUpHistory(value))
+			}
+		})
+		return foundation.CloneLimitUpHistory(history), err
+	}
+	// Prefer an ordinary coverage-aware request over losing successful empty days.
+	if _, ok := s.cap.LimitUp.(contracts.LimitUpHistoryProvider); ok {
+		history, err := s.RecentLimitUpHistory(ctx, days)
+		if publish != nil && ctx.Err() == nil {
+			publish(foundation.CloneLimitUpHistory(history))
+		}
+		return history, err
+	}
+	events, err := s.ProgressiveRecentLimitUps(ctx, days, func(items []foundation.LimitUpEvent) {
+		if publish != nil && ctx.Err() == nil {
+			publish(foundation.LimitUpHistoryFromEvents(items, nil))
+		}
+	})
+	return foundation.LimitUpHistoryFromEvents(events, err), err
+}
+
+// ProgressiveRecentLimitUps explicitly preserves the optional supplier capability
+// through the Access wrapper, including partial events and the final typed error.
+func (s *Access) ProgressiveRecentLimitUps(ctx context.Context, days int, publish func([]foundation.LimitUpEvent)) ([]foundation.LimitUpEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.cap.LimitUp == nil {
+		return nil, s.unsupported("limit-up")
+	}
+	if provider, ok := s.cap.LimitUp.(contracts.ProgressiveRecentLimitUpProvider); ok {
+		events, err := provider.ProgressiveRecentLimitUps(ctx, days, func(events []foundation.LimitUpEvent) {
+			if publish != nil && ctx.Err() == nil {
+				publish(cloneLimitUpEvents(events))
+			}
+		})
+		return cloneLimitUpEvents(events), err
+	}
+	events, err := s.cap.LimitUp.RecentLimitUps(ctx, days)
+	if publish != nil && ctx.Err() == nil {
+		publish(cloneLimitUpEvents(events))
+	}
+	return cloneLimitUpEvents(events), err
+}
+
 func (s *Access) BrokenLimitUpPool(ctx context.Context, date time.Time) ([]foundation.MarketLimitEvent, error) {
 	if s.cap.Pools == nil {
 		return nil, s.unsupported("broken-limit-up")

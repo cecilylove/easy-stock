@@ -13,6 +13,7 @@ import (
 	"easy-stock/backend/internal/providers/hotstock"
 	"easy-stock/backend/internal/providers/sina"
 	"easy-stock/backend/internal/providers/tencent"
+	"easy-stock/backend/internal/providers/ths"
 )
 
 func Default(baseURL string) *registry.Registry {
@@ -23,10 +24,10 @@ func Default(baseURL string) *registry.Registry {
 		"sina":        {Realtime: sn, KLine: sn, Intraday: sn, HistoryIntraday: sina.NewHistoryIntradayClient(sn), FundFlow: sn, Directory: sn},
 		"tencent":     {Index: qq, KLine: tencent.NewPriceKLineClient(qq), AdjustedKLine: tencent.NewStockKLineClient(qq), Industry: qq, BoardMembers: qq, USSector: qq},
 		"cls":         {News: cls.NewClient()},
-		"ths":         {HotRank: hotstock.NewTHSRankClient()},
+		"ths":         {HotRank: hotstock.NewTHSRankClient(), BillboardLabels: ths.NewBillboardLabelClient()},
 	}
 	exchange := futuresposition.NewExchangeClient()
-	caps["cffex"] = registry.Capabilities{FuturesTrend: exchange, FuturesSnapshot: exchange, FuturesMembers: exchange, FuturesConsensus: exchange}
+	caps["cffex"] = registry.Capabilities{FuturesSnapshot: exchange, FuturesMembers: exchange, FuturesConsensus: exchange}
 	entries := []registry.Entry{}
 	for _, descriptor := range registry.DefaultDescriptors() {
 		entries = append(entries, registry.Entry{Descriptor: descriptor, Capabilities: caps[descriptor.ID]})

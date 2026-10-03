@@ -2,33 +2,62 @@ package eastmoney
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"easy-stock/backend/internal/foundation"
 )
 
+// limitPoolNumber distinguishes valid zero from missing/non-finite wire values.
+type limitPoolNumber struct {
+	value float64
+	valid bool
+}
+
+func (n *limitPoolNumber) UnmarshalJSON(data []byte) error {
+	*n = limitPoolNumber{}
+	text := strings.TrimSpace(string(data))
+	if strings.HasPrefix(text, "\"") {
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	if err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) {
+		n.value, n.valid = value, true
+	}
+	return nil
+}
+func (n limitPoolNumber) validInt() bool {
+	return n.valid && math.Trunc(n.value) == n.value && n.value >= 0 && n.value < float64(int(^uint(0)>>1))
+}
+
 type limitUpPoolPayload struct {
 	RC   int `json:"rc"`
-	Data struct {
-		Pool []struct {
-			Code           string  `json:"c"`
-			Name           string  `json:"n"`
-			Price          float64 `json:"p"`
-			ChangePercent  float64 `json:"zdp"`
-			Amount         float64 `json:"amount"`
-			FloatMarketCap float64 `json:"ltsz"`
-			TurnoverRate   float64 `json:"hs"`
-			Streak         int     `json:"lbc"`
-			FirstLimitTime int     `json:"fbt"`
-			LastLimitTime  int     `json:"lbt"`
-			OpenCount      int     `json:"zbc"`
-			Industry       string  `json:"hybk"`
+	Data *struct {
+		Pool *[]struct {
+			Code           string          `json:"c"`
+			Name           string          `json:"n"`
+			Price          limitPoolNumber `json:"p"`
+			ChangePercent  limitPoolNumber `json:"zdp"`
+			Amount         limitPoolNumber `json:"amount"`
+			FloatMarketCap limitPoolNumber `json:"ltsz"`
+			TurnoverRate   limitPoolNumber `json:"hs"`
+			Streak         limitPoolNumber `json:"lbc"`
+			FirstLimitTime limitPoolNumber `json:"fbt"`
+			LastLimitTime  limitPoolNumber `json:"lbt"`
+			OpenCount      limitPoolNumber `json:"zbc"`
+			Industry       string          `json:"hybk"`
 			Statistics     struct {
-				Days  int `json:"days"`
-				Count int `json:"ct"`
+				Days  limitPoolNumber `json:"days"`
+				Count limitPoolNumber `json:"ct"`
 			} `json:"zttj"`
 		} `json:"pool"`
 	} `json:"data"`
@@ -49,45 +78,46 @@ type marketLimitPoolPayload struct {
 }
 
 func (c *Client) RecentLimitUps(ctx context.Context, lookbackDays int) ([]foundation.LimitUpEvent, error) {
-	if lookbackDays <= 0 {
-		lookbackDays = 12
-	}
-	location := time.FixedZone("Asia/Shanghai", 8*60*60)
-	now := time.Now().In(location)
-	events := make([]foundation.LimitUpEvent, 0, 200)
-	successfulDays := 0
-	var lastErr error
-	for offset := lookbackDays - 1; offset >= 0; offset-- {
-		date := now.AddDate(0, 0, -offset)
-		if !foundation.IsAStockTradingDay(date) {
-			continue
-		}
-		dayEvents, err := c.LimitUpPool(ctx, date)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		successfulDays++
-		events = append(events, dayEvents...)
-	}
-	if successfulDays == 0 && lastErr != nil {
-		return nil, fmt.Errorf("eastmoney recent limit-up pool unavailable: %w", lastErr)
-	}
-	return events, nil
+	history, err := c.RecentLimitUpHistory(ctx, lookbackDays)
+	return history.Events, err
+}
+
+func (c *Client) RecentLimitUpHistory(ctx context.Context, days int) (foundation.LimitUpHistory, error) {
+	return c.collectLimitUpHistory(ctx, days, nil)
+}
+
+func (c *Client) ProgressiveRecentLimitUpHistory(ctx context.Context, days int, publish func(foundation.LimitUpHistory)) (foundation.LimitUpHistory, error) {
+	return c.collectLimitUpHistory(ctx, days, publish)
 }
 
 // ProgressiveRecentLimitUps also reports incomplete history, so comparisons
 // are not calculated from a silently missing trading day.
 func (c *Client) ProgressiveRecentLimitUps(ctx context.Context, days int, publish func([]foundation.LimitUpEvent)) ([]foundation.LimitUpEvent, error) {
-	return c.recentLimitUps(ctx, days, publish)
+	history, err := c.collectLimitUpHistory(ctx, days, func(value foundation.LimitUpHistory) {
+		if publish != nil {
+			publish(value.Events)
+		}
+	})
+	return history.Events, err
 }
 
-func (c *Client) recentLimitUps(ctx context.Context, lookbackDays int, publish func([]foundation.LimitUpEvent)) ([]foundation.LimitUpEvent, error) {
+func (c *Client) collectLimitUpHistory(ctx context.Context, lookbackDays int, publish func(foundation.LimitUpHistory)) (foundation.LimitUpHistory, error) {
+	if err := ctx.Err(); err != nil {
+		return foundation.LimitUpHistory{}, err
+	}
 	if lookbackDays <= 0 {
 		lookbackDays = 12
 	}
 	location := time.FixedZone("Asia/Shanghai", 8*60*60)
 	now := time.Now().In(location)
+	requested := make([]string, 0, lookbackDays)
+	for offset := lookbackDays - 1; offset >= 0; offset-- {
+		date := now.AddDate(0, 0, -offset)
+		if foundation.IsAStockTradingDay(date) {
+			requested = append(requested, date.Format("2006-01-02"))
+		}
+	}
+	covered := map[string]bool{}
 	type dayResult struct {
 		offset int
 		events []foundation.LimitUpEvent
@@ -123,22 +153,57 @@ func (c *Client) recentLimitUps(ctx context.Context, lookbackDays int, publish f
 		}
 		return events
 	}
-	var lastErr error
+	var failures []error
+	finish := func(cause error) (foundation.LimitUpHistory, error) {
+		var missing, successful []string
+		for _, date := range requested {
+			if covered[date] {
+				successful = append(successful, date)
+			} else {
+				missing = append(missing, date)
+			}
+		}
+		events := collect()
+		value := foundation.LimitUpHistory{Events: events, RequestedDates: append([]string(nil), requested...), CoveredDates: successful, MissingDates: missing,
+			Meta: foundation.SourceMeta{Source: "eastmoney:limit-up-pool", Provider: "eastmoney", Partial: len(missing) > 0 || cause != nil}}
+		// Do not claim a fresh network timestamp here: individual day calls may
+		// have been served by the existing supplier day cache.
+		for _, event := range events {
+			if event.Meta.FetchedAt.After(value.Meta.FetchedAt) {
+				value.Meta.FetchedAt = event.Meta.FetchedAt
+			}
+		}
+		if len(missing) == 0 && cause == nil {
+			return foundation.StampLimitUpHistory(value), nil
+		}
+		for i := range value.Events {
+			value.Events[i].Meta.Partial = true
+			value.Events[i].Meta.MissingIDs = append([]string(nil), missing...)
+		}
+		return foundation.StampLimitUpHistory(value), &foundation.LimitUpCoverageError{RequestedDates: append([]string(nil), requested...), CoveredDates: append([]string(nil), successful...), MissingDates: append([]string(nil), missing...), Cause: cause}
+	}
 	for remaining := lookbackDays; remaining > 0; remaining-- {
+		if err := ctx.Err(); err != nil {
+			return finish(errors.Join(append(failures, err)...))
+		}
 		select {
 		case <-ctx.Done():
-			return collect(), ctx.Err()
+			return finish(errors.Join(append(failures, ctx.Err())...))
 		case result := <-results:
+			date := now.AddDate(0, 0, -result.offset)
 			if result.err != nil {
-				lastErr = fmt.Errorf("%s 涨停池: %w", now.AddDate(0, 0, -result.offset).Format("2006-01-02"), result.err)
+				failures = append(failures, fmt.Errorf("%s 涨停池: %w", date.Format("2006-01-02"), result.err))
+			} else if foundation.IsAStockTradingDay(date) {
+				covered[date.Format("2006-01-02")] = true
 			}
 			days[result.offset] = result.events
-			if publish != nil && len(result.events) > 0 {
-				publish(collect())
+			if publish != nil && foundation.IsAStockTradingDay(date) && ctx.Err() == nil {
+				partial, _ := finish(nil)
+				publish(partial)
 			}
 		}
 	}
-	return collect(), lastErr
+	return finish(errors.Join(failures...))
 }
 
 func (c *Client) fetchLimitUpPool(ctx context.Context, date time.Time) ([]foundation.LimitUpEvent, error) {
@@ -160,36 +225,61 @@ func (c *Client) fetchLimitUpPool(ctx context.Context, date time.Time) ([]founda
 	if payload.RC != 0 {
 		return nil, fmt.Errorf("eastmoney limit-up pool rc=%d", payload.RC)
 	}
+	if payload.Data == nil || payload.Data.Pool == nil {
+		return nil, fmt.Errorf("eastmoney limit-up pool missing data/pool for %s", date.Format("2006-01-02"))
+	}
 	meta := foundation.SourceMeta{
-		Source:    "eastmoney:limit-up-pool",
-		SourceURL: requestURL,
-		FetchedAt: time.Now(),
+		Source: "eastmoney:limit-up-pool", Provider: "eastmoney",
+		SourceURL: requestURL, FetchedAt: time.Now(),
+		TradeDate: date.Format("2006-01-02"), FieldsKnown: true,
 		LatencyMS: time.Since(start).Milliseconds(),
 	}
-	events := make([]foundation.LimitUpEvent, 0, len(payload.Data.Pool))
-	for _, raw := range payload.Data.Pool {
+	events := make([]foundation.LimitUpEvent, 0, len(*payload.Data.Pool))
+	for _, raw := range *payload.Data.Pool {
 		symbol, err := normalizeEastMoneyStockCode(raw.Code)
 		if err != nil {
 			continue
 		}
-		events = append(events, foundation.LimitUpEvent{
-			Symbol:         symbol,
-			Name:           raw.Name,
-			Date:           date,
-			Price:          raw.Price / 1000,
-			ChangePercent:  raw.ChangePercent,
-			Amount:         raw.Amount,
-			FloatMarketCap: raw.FloatMarketCap,
-			TurnoverRate:   raw.TurnoverRate,
-			Streak:         raw.Streak,
-			FirstLimitTime: formatTradeClock(raw.FirstLimitTime),
-			LastLimitTime:  formatTradeClock(raw.LastLimitTime),
-			OpenCount:      raw.OpenCount,
-			Industry:       raw.Industry,
-			Days:           raw.Statistics.Days,
-			Count:          raw.Statistics.Count,
-			Meta:           meta,
-		})
+		event := foundation.LimitUpEvent{
+			Symbol: symbol, Name: raw.Name, Date: date, Industry: raw.Industry,
+			Meta: foundation.CloneSourceMeta(meta),
+		}
+		addNumber := func(field string, number limitPoolNumber, target *float64, divisor float64) {
+			if number.valid {
+				*target = number.value / divisor
+				event.Meta.AvailableFields = append(event.Meta.AvailableFields, field)
+			}
+		}
+		addInt := func(field string, number limitPoolNumber, target *int) {
+			if number.validInt() {
+				*target = int(number.value)
+				event.Meta.AvailableFields = append(event.Meta.AvailableFields, field)
+			}
+		}
+		addNumber("price", raw.Price, &event.Price, 1000)
+		addNumber("change_percent", raw.ChangePercent, &event.ChangePercent, 1)
+		addNumber("amount", raw.Amount, &event.Amount, 1)
+		addNumber("float_market_cap", raw.FloatMarketCap, &event.FloatMarketCap, 1)
+		addNumber("turnover_rate", raw.TurnoverRate, &event.TurnoverRate, 1)
+		addInt("streak", raw.Streak, &event.Streak)
+		addInt("open_count", raw.OpenCount, &event.OpenCount)
+		addInt("days", raw.Statistics.Days, &event.Days)
+		addInt("count", raw.Statistics.Count, &event.Count)
+		if raw.FirstLimitTime.validInt() {
+			event.FirstLimitTime = formatTradeClock(int(raw.FirstLimitTime.value))
+		}
+		if raw.LastLimitTime.validInt() {
+			event.LastLimitTime = formatTradeClock(int(raw.LastLimitTime.value))
+		}
+		for _, field := range []struct{ key, value string }{{"name", event.Name}, {"industry", event.Industry}, {"first_limit_time", event.FirstLimitTime}, {"last_limit_time", event.LastLimitTime}} {
+			if strings.TrimSpace(field.value) != "" && field.value != "--" {
+				event.Meta.AvailableFields = append(event.Meta.AvailableFields, field.key)
+			}
+		}
+		events = append(events, event)
+	}
+	if len(events) != len(*payload.Data.Pool) {
+		return events, fmt.Errorf("eastmoney limit-up pool contains invalid stock rows for %s", date.Format("2006-01-02"))
 	}
 	return events, nil
 }
@@ -261,7 +351,7 @@ func (c *Client) marketLimitPool(
 }
 
 func formatTradeClock(value int) string {
-	if value <= 0 {
+	if value <= 0 || value > 235959 || value/100%100 > 59 || value%100 > 59 {
 		return ""
 	}
 	raw := fmt.Sprintf("%06d", value)
@@ -276,6 +366,9 @@ type limitUpDayFlight struct {
 }
 
 func (c *Client) LimitUpPool(ctx context.Context, date time.Time) ([]foundation.LimitUpEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	key := date.Format("2006-01-02")
 	c.poolMu.Lock()
 	if f := c.limitUpDays[key]; f != nil && (f.expires.IsZero() || time.Now().Before(f.expires)) {
@@ -319,6 +412,7 @@ func cloneLimitEvents(events []foundation.LimitUpEvent) []foundation.LimitUpEven
 	result := append([]foundation.LimitUpEvent(nil), events...)
 	for i := range result {
 		result[i].Concepts = append([]string(nil), result[i].Concepts...)
+		result[i].Meta = foundation.CloneSourceMeta(result[i].Meta)
 	}
 	return result
 }

@@ -36,6 +36,24 @@ type LimitUpProvider interface {
 	RecentLimitUps(ctx context.Context, lookbackDays int) ([]foundation.LimitUpEvent, error)
 }
 
+// LimitUpHistoryProvider preserves successfully fetched empty trading days.
+// Optional so existing events-only suppliers remain compatible.
+type LimitUpHistoryProvider interface {
+	RecentLimitUpHistory(context.Context, int) (foundation.LimitUpHistory, error)
+}
+
+// ProgressiveLimitUpHistoryProvider returns final coverage from the same fetch;
+// callers must not issue a second history request to discover empty days.
+type ProgressiveLimitUpHistoryProvider interface {
+	ProgressiveRecentLimitUpHistory(context.Context, int, func(foundation.LimitUpHistory)) (foundation.LimitUpHistory, error)
+}
+
+// ProgressiveRecentLimitUpProvider publishes immutable cumulative history.
+// Its final error may accompany useful events and must retain incomplete coverage.
+type ProgressiveRecentLimitUpProvider interface {
+	ProgressiveRecentLimitUps(context.Context, int, func([]foundation.LimitUpEvent)) ([]foundation.LimitUpEvent, error)
+}
+
 type StockThemeAttributionProvider interface {
 	StockThemes(ctx context.Context, symbol string, lookbackDays int) ([]foundation.StockThemeAttribution, error)
 }

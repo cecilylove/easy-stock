@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"easy-stock/backend/internal/datasource/contracts"
+	"easy-stock/backend/internal/datasource/runtime"
 	"easy-stock/backend/internal/foundation"
 )
 
@@ -83,6 +85,8 @@ func (p *Market) MarketIndexSeries(ctx context.Context, id string, period string
 }
 
 func (p *Market) IndustryMomentum(ctx context.Context, limit int) ([]foundation.MarketIndustryMomentum, foundation.SourceMeta, error) {
+	ctx, cancel := runtime.Budget(ctx, 10*time.Second)
+	defer cancel()
 	if p.industryProvider == nil {
 		if p.config.IndustryFallback == nil {
 			return nil, foundation.SourceMeta{}, unsupportedMarket("industry-momentum")
@@ -98,7 +102,11 @@ func (p *Market) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 	if err := ctx.Err(); err != nil {
 		return nil, foundation.SourceMeta{}, err
 	}
-	items, meta, err := p.industryProvider.IndustryMomentum(ctx, limit)
+	primaryCtx, stopPrimary := marketPrimaryContext(ctx, p.config.IndustryFallback != nil)
+	items, meta, err := p.industryProvider.IndustryMomentum(primaryCtx, limit)
+	err = marketContextResult(primaryCtx, err)
+	stopPrimary()
+	err = marketContextResult(ctx, err)
 	if err == nil && len(items) == 0 {
 		err = &contracts.Error{Kind: contracts.NoData, SourceID: p.config.IndustrySourceID, Capability: "industry-momentum"}
 	}
@@ -121,7 +129,11 @@ func (p *Market) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 	if errors.Is(err, context.Canceled) || p.config.IndustryFallback == nil {
 		return nil, meta, err
 	}
-	fallbackItems, fallbackMeta, fallbackErr := p.config.IndustryFallback.IndustryMomentum(ctx, limit)
+	fallbackCtx, stopFallback := runtime.Budget(ctx, 7*time.Second)
+	fallbackItems, fallbackMeta, fallbackErr := p.config.IndustryFallback.IndustryMomentum(fallbackCtx, limit)
+	fallbackErr = marketContextResult(fallbackCtx, fallbackErr)
+	stopFallback()
+	fallbackErr = marketContextResult(ctx, fallbackErr)
 	if fallbackErr == nil && len(fallbackItems) == 0 {
 		fallbackErr = &contracts.Error{Kind: contracts.NoData, SourceID: p.config.IndustryFallbackSourceID, Capability: capability}
 	}
@@ -150,6 +162,8 @@ func (p *Market) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 }
 
 func (p *Market) MarketFundFlows(ctx context.Context, dimension string, sortKey string, limit int) ([]foundation.MarketFundFlow, foundation.SourceMeta, error) {
+	ctx, cancel := runtime.Budget(ctx, 10*time.Second)
+	defer cancel()
 	if p.fundFlowProvider == nil {
 		if p.config.FundFlowFallback == nil {
 			return nil, foundation.SourceMeta{}, unsupportedMarket("fund-flow/" + dimension)
@@ -165,7 +179,11 @@ func (p *Market) MarketFundFlows(ctx context.Context, dimension string, sortKey 
 	if err := ctx.Err(); err != nil {
 		return nil, foundation.SourceMeta{}, err
 	}
-	items, meta, err := p.fundFlowProvider.MarketFundFlows(ctx, dimension, sortKey, limit)
+	primaryCtx, stopPrimary := marketPrimaryContext(ctx, p.config.FundFlowFallback != nil)
+	items, meta, err := p.fundFlowProvider.MarketFundFlows(primaryCtx, dimension, sortKey, limit)
+	err = marketContextResult(primaryCtx, err)
+	stopPrimary()
+	err = marketContextResult(ctx, err)
 	capability := "fund-flow/" + dimension
 	if err == nil && len(items) == 0 {
 		err = &contracts.Error{Kind: contracts.NoData, SourceID: p.config.FundFlowSourceID, Capability: capability}
@@ -188,7 +206,11 @@ func (p *Market) MarketFundFlows(ctx context.Context, dimension string, sortKey 
 	if errors.Is(err, context.Canceled) || p.config.FundFlowFallback == nil {
 		return nil, meta, err
 	}
-	fallbackItems, fallbackMeta, fallbackErr := p.config.FundFlowFallback.MarketFundFlows(ctx, dimension, sortKey, limit)
+	fallbackCtx, stopFallback := runtime.Budget(ctx, 7*time.Second)
+	fallbackItems, fallbackMeta, fallbackErr := p.config.FundFlowFallback.MarketFundFlows(fallbackCtx, dimension, sortKey, limit)
+	fallbackErr = marketContextResult(fallbackCtx, fallbackErr)
+	stopFallback()
+	fallbackErr = marketContextResult(ctx, fallbackErr)
 	if fallbackErr == nil && len(fallbackItems) == 0 {
 		fallbackErr = &contracts.Error{Kind: contracts.NoData, SourceID: p.config.FundFlowFallbackSourceID, Capability: capability}
 	}
@@ -311,12 +333,33 @@ func sourceLabel(id string) string {
 	return id
 }
 
+// Only the two explicit industry/fund-flow chains reserve fallback time.
+func marketPrimaryContext(ctx context.Context, hasFallback bool) (context.Context, context.CancelFunc) {
+	if hasFallback {
+		return runtime.PrimaryBudget(ctx, 7*time.Second, 3*time.Second)
+	}
+	return runtime.Budget(ctx, 10*time.Second)
+}
+
+// Inspect before calling the child's CancelFunc: a provider returning nil after
+// its deadline must not publish success, including a populated/cached result.
+func marketContextResult(ctx context.Context, err error) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return errors.Join(contextErr, err)
+	}
+	return err
+}
+
 func runMarketCapability[T any](ctx context.Context, id, capability string, load func(context.Context) (T, foundation.SourceMeta, error)) (T, foundation.SourceMeta, error) {
 	var zero T
 	if err := ctx.Err(); err != nil {
 		return zero, foundation.SourceMeta{}, err
 	}
 	value, meta, err := load(ctx)
+	err = marketContextResult(ctx, err)
+	if err != nil {
+		value = zero
+	}
 	if id == "" {
 		id, _, _ = strings.Cut(meta.Source, ":")
 	}

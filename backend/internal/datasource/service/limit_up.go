@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"easy-stock/backend/internal/datasource/contracts"
 	"easy-stock/backend/internal/foundation"
 )
 
@@ -125,49 +127,237 @@ func (p *LimitUpProvider) StockThemes(ctx context.Context, symbol string, lookba
 }
 
 func (p *LimitUpProvider) RecentLimitUps(ctx context.Context, lookbackDays int) ([]foundation.LimitUpEvent, error) {
+	history, err := p.RecentLimitUpHistory(ctx, lookbackDays)
+	return history.Events, err
+}
+
+func (p *LimitUpProvider) RecentLimitUpHistory(ctx context.Context, lookbackDays int) (foundation.LimitUpHistory, error) {
+	if err := ctx.Err(); err != nil {
+		return foundation.LimitUpHistory{}, err
+	}
 	var primaryEvents []foundation.LimitUpEvent
 	var themeSnapshots []foundation.ThemeSnapshot
 	var primaryErr error
+	covered := map[string]bool{}
 	if p.primary != nil {
 		pools, _, err := p.primary.LimitUpPools(ctx, max(lookbackDays, 2))
-		if err != nil {
-			primaryErr = err
-		} else {
-			for _, pool := range pools {
-				primaryEvents = append(primaryEvents, cloneLimitUpEvents(pool.Events)...)
-			}
+		primaryErr = err
+		primaryEvents, covered = limitUpPoolEvents(pools)
+		if err := ctx.Err(); err != nil {
+			return foundation.LimitUpHistoryFromEvents(primaryEvents, err), err
 		}
 		if snapshots, _, err := p.primary.Snapshots(ctx, max(lookbackDays, 2)); err == nil {
 			themeSnapshots = snapshots
 		}
 	}
-
-	var fallbackEvents []foundation.LimitUpEvent
+	if err := ctx.Err(); err != nil {
+		return foundation.LimitUpHistoryFromEvents(primaryEvents, err), err
+	}
+	var fallbackHistory foundation.LimitUpHistory
 	var fallbackErr error
 	if p.fallback != nil {
-		fallbackEvents, fallbackErr = p.fallback.RecentLimitUps(ctx, lookbackDays)
+		fallbackHistory, fallbackErr = recentLimitUpHistory(ctx, p.fallback, lookbackDays)
 	}
-
-	switch {
-	case len(primaryEvents) > 0 && len(fallbackEvents) > 0:
-		return applyKaipanlaThemeLeaders(mergeLimitUpEvents(primaryEvents, fallbackEvents, primaryErr), themeSnapshots), nil
-	case len(primaryEvents) > 0:
-		return applyKaipanlaThemeLeaders(primaryEvents, themeSnapshots), nil
-	case len(fallbackEvents) > 0:
+	fallbackEvents := fallbackHistory.Events
+	events := mergeLimitUpEvents(primaryEvents, fallbackEvents, primaryErr)
+	if len(primaryEvents) == 0 && len(fallbackEvents) > 0 {
 		reason := "开盘啦涨停池暂无可用快照"
 		if primaryErr != nil {
 			reason = "开盘啦涨停池不可用：" + primaryErr.Error()
 		}
-		return applyKaipanlaThemeLeaders(markLimitUpFallback(fallbackEvents, reason), themeSnapshots), nil
-	case primaryErr != nil && fallbackErr != nil:
-		return nil, fmt.Errorf("kaipanla limit-up pool failed: %v; eastmoney fallback failed: %w", primaryErr, fallbackErr)
-	case primaryErr != nil:
-		return nil, primaryErr
-	case fallbackErr != nil:
-		return nil, fallbackErr
-	default:
-		return nil, fmt.Errorf("no limit-up data is available")
+		events = markLimitUpFallback(events, reason)
 	}
+	if p.fallback == nil {
+		fallbackErr = limitUpRetainedCoverage(lookbackDays, covered, primaryErr)
+	}
+	err := resolveLimitUpCoverage(primaryErr, fallbackErr, covered, p.fallback != nil)
+	if ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	}
+	events = applyKaipanlaThemeLeaders(markLimitUpCoverage(events, err, covered), themeSnapshots)
+	return combinedLimitUpHistory(events, fallbackHistory, covered, lookbackDays, err), err
+}
+
+func recentLimitUpHistory(ctx context.Context, provider RecentLimitUpProvider, days int) (foundation.LimitUpHistory, error) {
+	if history, ok := provider.(contracts.LimitUpHistoryProvider); ok {
+		value, err := history.RecentLimitUpHistory(ctx, days)
+		if err == nil && len(value.MissingDates) > 0 {
+			err = &foundation.LimitUpCoverageError{RequestedDates: append([]string(nil), value.RequestedDates...), CoveredDates: append([]string(nil), value.CoveredDates...), MissingDates: append([]string(nil), value.MissingDates...)}
+		}
+		return value, err
+	}
+	events, err := provider.RecentLimitUps(ctx, days)
+	return foundation.LimitUpHistoryFromEvents(events, err), err
+}
+
+func containsLimitUpDate(dates []string, date string) bool {
+	for _, value := range dates {
+		if value == date {
+			return true
+		}
+	}
+	return false
+}
+
+func combinedLimitUpHistory(events []foundation.LimitUpEvent, history foundation.LimitUpHistory, primaryCovered map[string]bool, days int, err error) foundation.LimitUpHistory {
+	value := foundation.LimitUpHistoryFromEvents(events, err)
+	value.Meta = foundation.CloneSourceMeta(history.Meta)
+	if value.Meta.Source == "" {
+		for _, event := range events {
+			if event.Meta.Source != "" {
+				value.Meta = foundation.CloneSourceMeta(event.Meta)
+				break
+			}
+		}
+	}
+	requested := append([]string(nil), history.RequestedDates...)
+	if len(requested) == 0 {
+		// An events-only result cannot define the request window: that drops
+		// successfully retained empty days when the history route is disabled.
+		requested = foundation.LimitUpRequestedDates(time.Now(), days)
+		for date, valid := range primaryCovered {
+			if valid && !containsLimitUpDate(requested, date) {
+				requested = append(requested, date)
+			}
+		}
+		sort.Strings(requested)
+	}
+	covered := map[string]bool{}
+	for _, date := range history.CoveredDates {
+		covered[date] = true
+	}
+	for date, valid := range primaryCovered {
+		if valid {
+			covered[date] = true
+		}
+	}
+	// Coverage comes only from the history supplier's reported full pools or
+	// validated retained pools. Merged rows (including partial pools) cannot
+	// establish whole-day completeness merely by carrying a date.
+	value.RequestedDates, value.CoveredDates, value.MissingDates = requested, nil, nil
+	for _, date := range requested {
+		if covered[date] {
+			value.CoveredDates = append(value.CoveredDates, date)
+		} else {
+			value.MissingDates = append(value.MissingDates, date)
+		}
+	}
+	value.Meta.Partial = err != nil || len(value.MissingDates) > 0
+	return foundation.StampLimitUpHistory(value)
+}
+
+// A retained full pool (including a valid empty pool) can repair a failed day.
+// Never infer coverage merely from a stock carrying a date from another pool.
+func limitUpPoolEvents(pools []foundation.LimitUpPoolSnapshot) ([]foundation.LimitUpEvent, map[string]bool) {
+	var events []foundation.LimitUpEvent
+	covered := map[string]bool{}
+	for _, pool := range pools {
+		if _, err := time.Parse("2006-01-02", pool.TradeDate); err != nil {
+			continue
+		}
+		complete := !pool.Meta.Partial && (pool.Meta.TradeDate == "" || pool.Meta.TradeDate == pool.TradeDate)
+		for _, event := range pool.Events {
+			if event.Date.IsZero() || event.Date.Format("2006-01-02") != pool.TradeDate || (event.Meta.TradeDate != "" && event.Meta.TradeDate != pool.TradeDate) {
+				complete = false
+				continue
+			}
+			if event.Meta.Partial {
+				complete = false
+			}
+			events = append(events, cloneLimitUpEvent(event))
+		}
+		if complete {
+			covered[pool.TradeDate] = true
+		}
+	}
+	return events, covered
+}
+
+func limitUpRetainedCoverage(days int, covered map[string]bool, cause error) error {
+	if days <= 0 {
+		days = 12
+	}
+	now := time.Now().In(time.FixedZone("Asia/Shanghai", 8*3600))
+	var requested, successful, missing []string
+	for offset := days - 1; offset >= 0; offset-- {
+		date := now.AddDate(0, 0, -offset)
+		if !foundation.IsAStockTradingDay(date) {
+			continue
+		}
+		key := date.Format("2006-01-02")
+		requested = append(requested, key)
+		if covered[key] {
+			successful = append(successful, key)
+		} else {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) == 0 {
+		return cause
+	}
+	return &foundation.LimitUpCoverageError{RequestedDates: requested, CoveredDates: successful, MissingDates: missing, Cause: cause}
+}
+
+func resolveLimitUpCoverage(primaryErr, historyErr error, covered map[string]bool, hasHistory bool) error {
+	if hasHistory && historyErr == nil {
+		return nil
+	} // history contract includes valid empty dates
+	if historyErr == nil {
+		if primaryErr != nil {
+			return primaryErr
+		}
+		if len(covered) == 0 {
+			return fmt.Errorf("no limit-up coverage is available")
+		}
+		return nil
+	}
+	var partial *foundation.LimitUpCoverageError
+	if !errors.As(historyErr, &partial) || len(partial.MissingDates) == 0 || errors.Is(historyErr, context.Canceled) {
+		return errors.Join(primaryErr, historyErr)
+	}
+	missing := make([]string, 0, len(partial.MissingDates))
+	recovered := append([]string(nil), partial.CoveredDates...)
+	for _, date := range partial.MissingDates {
+		if covered[date] {
+			recovered = append(recovered, date)
+		} else {
+			missing = append(missing, date)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return errors.Join(primaryErr, &foundation.LimitUpCoverageError{RequestedDates: append([]string(nil), partial.RequestedDates...), CoveredDates: recovered, MissingDates: missing, Cause: partial.Cause})
+}
+
+func markLimitUpCoverage(events []foundation.LimitUpEvent, err error, covered map[string]bool) []foundation.LimitUpEvent {
+	var partial *foundation.LimitUpCoverageError
+	errors.As(err, &partial)
+	for i := range events {
+		meta := &events[i].Meta
+		if partial != nil {
+			meta.Partial = true
+			meta.MissingIDs = append([]string(nil), partial.MissingDates...)
+			continue
+		}
+		if err != nil {
+			meta.Partial = true
+			continue
+		}
+		if meta.Partial && len(meta.MissingIDs) > 0 {
+			restored := true
+			for _, date := range meta.MissingIDs {
+				if !covered[date] {
+					restored = false
+				}
+			}
+			if restored {
+				meta.Partial = false
+				meta.MissingIDs = nil
+			}
+		}
+	}
+	return events
 }
 
 type kaipanlaThemeLeaderAttribution struct {
@@ -178,6 +368,7 @@ type kaipanlaThemeLeaderAttribution struct {
 }
 
 func applyKaipanlaThemeLeaders(events []foundation.LimitUpEvent, snapshots []foundation.ThemeSnapshot) []foundation.LimitUpEvent {
+	events = cloneLimitUpEvents(events)
 	if len(events) == 0 || len(snapshots) == 0 {
 		return events
 	}
@@ -269,13 +460,21 @@ func compactCachedTheme(value string) string {
 }
 
 func mergeLimitUpEvents(primary []foundation.LimitUpEvent, fallback []foundation.LimitUpEvent, primaryErr error) []foundation.LimitUpEvent {
-	result := cloneLimitUpEvents(primary)
+	result := make([]foundation.LimitUpEvent, 0, len(primary)+len(fallback))
+	for _, event := range primary {
+		if validLimitUpEventDate(event) {
+			result = append(result, cloneLimitUpEvent(event))
+		}
+	}
 	index := make(map[string]int, len(primary)+len(fallback))
 	primaryDate := latestLimitUpDate(primary)
 	for position, event := range result {
 		index[limitUpEventKey(event)] = position
 	}
 	for _, candidate := range fallback {
+		if !validLimitUpEventDate(candidate) {
+			continue
+		}
 		key := limitUpEventKey(candidate)
 		if position, exists := index[key]; exists {
 			result[position] = fillLimitUpEvent(result[position], candidate)
@@ -295,43 +494,88 @@ func mergeLimitUpEvents(primary []foundation.LimitUpEvent, fallback []foundation
 }
 
 func fillLimitUpEvent(primary foundation.LimitUpEvent, fallback foundation.LimitUpEvent) foundation.LimitUpEvent {
-	if primary.Name == "" {
-		primary.Name = fallback.Name
+	primary = cloneLimitUpEvent(primary)
+	if !validLimitUpEventDate(primary) || !validLimitUpEventDate(fallback) || limitUpEventKey(primary) != limitUpEventKey(fallback) {
+		return primary
 	}
-	if primary.Price == 0 {
-		primary.Price = fallback.Price
+	// Freeze the compatibility mask before adding hydration fields.
+	if !primary.Meta.FieldsKnown && len(primary.Meta.AvailableFields) == 0 {
+		legacy := primary
+		for _, field := range []string{"price", "change_percent", "amount", "float_market_cap", "turnover_rate", "streak", "open_count", "days", "count"} {
+			if foundation.LimitUpFieldAvailable(legacy, field) {
+				primary.Meta.AvailableFields = append(primary.Meta.AvailableFields, field)
+			}
+		}
+		for _, field := range []struct{ key, value string }{{"name", primary.Name}, {"first_limit_time", primary.FirstLimitTime}, {"last_limit_time", primary.LastLimitTime}, {"industry", primary.Industry}} {
+			if field.value != "" && field.value != "--" {
+				primary.Meta.AvailableFields = append(primary.Meta.AvailableFields, field.key)
+			}
+		}
+		primary.Meta.FieldsKnown = true
 	}
-	if primary.ChangePercent == 0 {
-		primary.ChangePercent = fallback.ChangePercent
+	record := func(field string) {
+		if !containsString(primary.Meta.AvailableFields, field) {
+			primary.Meta.AvailableFields = append(primary.Meta.AvailableFields, field)
+		}
+		if primary.Meta.FieldSources == nil {
+			primary.Meta.FieldSources = map[string]string{}
+		}
+		if primary.Meta.FieldFetchedAt == nil {
+			primary.Meta.FieldFetchedAt = map[string]time.Time{}
+		}
+		source := fallback.Meta.Source
+		if value := fallback.Meta.FieldSources[field]; value != "" {
+			source = value
+		}
+		fetchedAt := fallback.Meta.FetchedAt
+		if value, ok := fallback.Meta.FieldFetchedAt[field]; ok {
+			fetchedAt = value
+		}
+		primary.Meta.FieldSources[field], primary.Meta.FieldFetchedAt[field] = source, fetchedAt
 	}
-	if primary.Amount == 0 {
-		primary.Amount = fallback.Amount
+	for _, field := range []struct {
+		key    string
+		target *float64
+		value  float64
+	}{
+		{"price", &primary.Price, fallback.Price}, {"change_percent", &primary.ChangePercent, fallback.ChangePercent}, {"amount", &primary.Amount, fallback.Amount}, {"float_market_cap", &primary.FloatMarketCap, fallback.FloatMarketCap}, {"turnover_rate", &primary.TurnoverRate, fallback.TurnoverRate},
+	} {
+		if !foundation.LimitUpFieldAvailable(primary, field.key) && foundation.LimitUpFieldAvailable(fallback, field.key) {
+			*field.target = field.value
+			record(field.key)
+		}
 	}
-	if primary.FloatMarketCap == 0 {
-		primary.FloatMarketCap = fallback.FloatMarketCap
+	for _, field := range []struct {
+		key    string
+		target *int
+		value  int
+	}{
+		{"streak", &primary.Streak, fallback.Streak}, {"open_count", &primary.OpenCount, fallback.OpenCount}, {"days", &primary.Days, fallback.Days}, {"count", &primary.Count, fallback.Count},
+	} {
+		if !foundation.LimitUpFieldAvailable(primary, field.key) && foundation.LimitUpFieldAvailable(fallback, field.key) {
+			*field.target = field.value
+			record(field.key)
+		}
 	}
-	if primary.TurnoverRate == 0 {
-		primary.TurnoverRate = fallback.TurnoverRate
-	}
-	if primary.Streak == 0 {
-		primary.Streak = fallback.Streak
-	}
-	if primary.FirstLimitTime == "" {
-		primary.FirstLimitTime = fallback.FirstLimitTime
-	}
-	if primary.LastLimitTime == "" {
-		primary.LastLimitTime = fallback.LastLimitTime
-	}
-	if primary.Industry == "" {
-		primary.Industry = fallback.Industry
-	}
-	if primary.Days == 0 {
-		primary.Days = fallback.Days
-	}
-	if primary.Count == 0 {
-		primary.Count = fallback.Count
+	for _, field := range []struct {
+		key    string
+		target *string
+		value  string
+	}{
+		{"name", &primary.Name, fallback.Name}, {"first_limit_time", &primary.FirstLimitTime, fallback.FirstLimitTime}, {"last_limit_time", &primary.LastLimitTime, fallback.LastLimitTime}, {"industry", &primary.Industry, fallback.Industry},
+	} {
+		present := strings.TrimSpace(*field.target) != "" && *field.target != "--" && foundation.FieldAvailable(primary.Meta, field.key)
+		available := strings.TrimSpace(field.value) != "" && field.value != "--" && foundation.FieldAvailable(fallback.Meta, field.key)
+		if !present && available {
+			*field.target = field.value
+			record(field.key)
+		}
 	}
 	return primary
+}
+
+func validLimitUpEventDate(event foundation.LimitUpEvent) bool {
+	return !event.Date.IsZero() && (event.Meta.TradeDate == "" || event.Meta.TradeDate == event.Date.Format("2006-01-02"))
 }
 
 func markLimitUpFallback(events []foundation.LimitUpEvent, reason string) []foundation.LimitUpEvent {
@@ -354,6 +598,7 @@ func cloneLimitUpEvents(events []foundation.LimitUpEvent) []foundation.LimitUpEv
 
 func cloneLimitUpEvent(event foundation.LimitUpEvent) foundation.LimitUpEvent {
 	event.Concepts = append([]string(nil), event.Concepts...)
+	event.Meta = foundation.CloneSourceMeta(event.Meta)
 	return event
 }
 
@@ -387,36 +632,52 @@ func (p *LimitUpProvider) CachedLimitUps(ctx context.Context, days int) ([]found
 		return nil, nil
 	}
 	pools, err := p.primary.CachedLimitUpPools(ctx, max(days, 2))
-	var events []foundation.LimitUpEvent
-	for _, pool := range pools {
-		events = append(events, cloneLimitUpEvents(pool.Events)...)
-	}
+	events, _ := limitUpPoolEvents(pools)
 	return events, err
 }
 
 // ProgressiveLimitUps publishes immutable, cumulative pools as each source completes.
 func (p *LimitUpProvider) ProgressiveLimitUps(ctx context.Context, days int, publish func([]foundation.LimitUpEvent, string, error)) {
+	_, _ = p.ProgressiveLimitUpHistory(ctx, days, func(value foundation.LimitUpHistory, stage string, err error) {
+		if publish != nil {
+			publish(value.Events, stage, err)
+		}
+	})
+}
+
+// ProgressiveLimitUpHistory preserves the final empty-date coverage without a
+// second fetch; the legacy callback remains available above.
+func (p *LimitUpProvider) ProgressiveLimitUpHistory(ctx context.Context, days int, publish func(foundation.LimitUpHistory, string, error)) (foundation.LimitUpHistory, error) {
+	if ctx.Err() != nil {
+		return foundation.LimitUpHistory{}, ctx.Err()
+	}
+	var last foundation.LimitUpHistory
+	var lastErr error
 	type result struct {
-		stage  string
-		events []foundation.LimitUpEvent
-		themes []foundation.ThemeSnapshot
-		err    error
+		stage   string
+		events  []foundation.LimitUpEvent
+		history foundation.LimitUpHistory
+		themes  []foundation.ThemeSnapshot
+		covered map[string]bool
+		err     error
 	}
 	updates := make(chan result, 3)
 	send := func(item result) {
 		select {
-		case updates <- item:
+		case updates <- result{stage: item.stage, events: cloneLimitUpEvents(item.events), history: foundation.CloneLimitUpHistory(item.history), themes: item.themes, covered: item.covered, err: item.err}:
 		case <-ctx.Done():
 		}
 	}
 	go func() {
 		var events []foundation.LimitUpEvent
 		var err error
+		covered := map[string]bool{}
 		if p.primary != nil {
 			var pools []foundation.LimitUpPoolSnapshot
 			pools, err = p.primary.EarlyLimitUpPools(ctx, max(days, 2))
+			_, covered = limitUpPoolEvents(pools)
 			for _, pool := range pools {
-				items := cloneLimitUpEvents(pool.Events)
+				items, _ := limitUpPoolEvents([]foundation.LimitUpPoolSnapshot{pool})
 				for i := range items {
 					items[i].Meta.Stale = p.primary.LimitUpPoolStale(pool.FetchedAt)
 				}
@@ -425,21 +686,29 @@ func (p *LimitUpProvider) ProgressiveLimitUps(ctx context.Context, days int, pub
 		} else {
 			err = fmt.Errorf("开盘啦涨停池不可用")
 		}
-		send(result{stage: "primary", events: events, err: err})
+		send(result{stage: "primary", events: events, covered: covered, err: err})
 	}()
 	go func() {
-		var events []foundation.LimitUpEvent
+		var history foundation.LimitUpHistory
 		var err error
-		if progressive, ok := p.fallback.(interface {
-			ProgressiveRecentLimitUps(context.Context, int, func([]foundation.LimitUpEvent)) ([]foundation.LimitUpEvent, error)
-		}); ok {
-			events, err = progressive.ProgressiveRecentLimitUps(ctx, days, func(items []foundation.LimitUpEvent) { send(result{stage: "history_partial", events: items}) })
+		if progressive, ok := p.fallback.(contracts.ProgressiveLimitUpHistoryProvider); ok {
+			history, err = progressive.ProgressiveRecentLimitUpHistory(ctx, days, func(value foundation.LimitUpHistory) {
+				send(result{stage: "history_partial", events: value.Events, history: value})
+			})
+		} else if _, ok := p.fallback.(contracts.LimitUpHistoryProvider); ok {
+			history, err = recentLimitUpHistory(ctx, p.fallback, days)
+		} else if progressive, ok := p.fallback.(contracts.ProgressiveRecentLimitUpProvider); ok {
+			var events []foundation.LimitUpEvent
+			events, err = progressive.ProgressiveRecentLimitUps(ctx, days, func(items []foundation.LimitUpEvent) {
+				send(result{stage: "history_partial", events: items, history: foundation.LimitUpHistoryFromEvents(items, nil)})
+			})
+			history = foundation.LimitUpHistoryFromEvents(events, err)
 		} else if p.fallback != nil {
-			events, err = p.fallback.RecentLimitUps(ctx, days)
+			history, err = recentLimitUpHistory(ctx, p.fallback, days)
 		} else {
 			err = fmt.Errorf("历史涨停池不可用")
 		}
-		send(result{stage: "history", events: events, err: err})
+		send(result{stage: "history", events: history.Events, history: history, err: err})
 	}()
 	go func() {
 		var themes []foundation.ThemeSnapshot
@@ -450,21 +719,28 @@ func (p *LimitUpProvider) ProgressiveLimitUps(ctx context.Context, days int, pub
 		send(result{stage: "themes", themes: themes, err: err})
 	}()
 	var primary, fallback []foundation.LimitUpEvent
+	var fallbackHistory foundation.LimitUpHistory
 	var themes []foundation.ThemeSnapshot
-	var primaryErr error
+	var primaryErr, historyErr error
+	covered := map[string]bool{}
+	historyDone := false
 	for remaining := 3; remaining > 0; {
 		select {
 		case <-ctx.Done():
-			return
+			return last, errors.Join(lastErr, ctx.Err())
 		case item := <-updates:
 			if item.stage != "history_partial" {
 				remaining--
 			}
 			switch item.stage {
 			case "primary":
-				primary, primaryErr = item.events, item.err
-			case "history", "history_partial":
+				primary, primaryErr, covered = item.events, item.err, item.covered
+			case "history":
+				fallback, historyErr, historyDone = item.events, item.err, true
+				fallbackHistory = item.history
+			case "history_partial":
 				fallback = item.events
+				fallbackHistory = item.history
 			case "themes":
 				themes = item.themes
 			}
@@ -472,7 +748,30 @@ func (p *LimitUpProvider) ProgressiveLimitUps(ctx context.Context, days int, pub
 			if len(primary) == 0 && len(fallback) > 0 {
 				events = markLimitUpFallback(events, "开盘啦涨停池暂无可用快照，使用东方财富补位")
 			}
-			publish(applyKaipanlaThemeLeaders(events, themes), item.stage, item.err)
+			if historyDone && historyErr == nil && len(fallbackHistory.MissingDates) > 0 {
+				historyErr = &foundation.LimitUpCoverageError{RequestedDates: append([]string(nil), fallbackHistory.RequestedDates...), CoveredDates: append([]string(nil), fallbackHistory.CoveredDates...), MissingDates: append([]string(nil), fallbackHistory.MissingDates...)}
+			}
+			err := errors.Join(primaryErr, historyErr)
+			if historyDone {
+				coverageErr := historyErr
+				if p.fallback == nil {
+					coverageErr = limitUpRetainedCoverage(days, covered, primaryErr)
+				}
+				err = resolveLimitUpCoverage(primaryErr, coverageErr, covered, p.fallback != nil)
+			}
+			if item.stage == "themes" {
+				err = errors.Join(err, item.err)
+			}
+			events = markLimitUpCoverage(events, err, covered)
+			last = combinedLimitUpHistory(applyKaipanlaThemeLeaders(events, themes), fallbackHistory, covered, days, err)
+			lastErr = err
+			if publish != nil && ctx.Err() == nil {
+				publish(foundation.CloneLimitUpHistory(last), item.stage, err)
+			}
 		}
 	}
+	if ctx.Err() != nil {
+		return last, errors.Join(lastErr, ctx.Err())
+	}
+	return last, lastErr
 }

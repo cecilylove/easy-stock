@@ -94,20 +94,20 @@ func (c *Client) StockFundamentals(ctx context.Context, symbol string) (foundati
 		Message string `json:"message"`
 		Result  *struct {
 			Data []struct {
-				Symbol                    string         `json:"SECUCODE"`
-				ReportDate                string         `json:"REPORT_DATE"`
-				ReportName                string         `json:"REPORT_DATE_NAME"`
-				Revenue                   flexibleFloat  `json:"TOTALOPERATEREVE"`
-				RevenueYearOverYear       flexibleFloat  `json:"TOTALOPERATEREVETZ"`
-				NetProfit                 flexibleFloat  `json:"PARENTNETPROFIT"`
-				NetProfitYearOverYear     flexibleFloat  `json:"PARENTNETPROFITTZ"`
-				DeductedNetProfit         *flexibleFloat `json:"KCFJCXSYJLR"`
-				DeductedNetProfitYoY      *flexibleFloat `json:"KCFJCXSYJLRTZ"`
-				EPS                       flexibleFloat  `json:"EPSJB"`
-				ROE                       flexibleFloat  `json:"ROEJQ"`
-				GrossMargin               flexibleFloat  `json:"XSMLL"`
-				DebtRatio                 flexibleFloat  `json:"ZCFZL"`
-				OperatingCashFlowPerShare flexibleFloat  `json:"MGJYXJJE"`
+				Symbol                    string          `json:"SECUCODE"`
+				ReportDate                string          `json:"REPORT_DATE"`
+				ReportName                string          `json:"REPORT_DATE_NAME"`
+				Revenue                   financialNumber `json:"TOTALOPERATEREVE"`
+				RevenueYearOverYear       financialNumber `json:"TOTALOPERATEREVETZ"`
+				NetProfit                 financialNumber `json:"PARENTNETPROFIT"`
+				NetProfitYearOverYear     financialNumber `json:"PARENTNETPROFITTZ"`
+				DeductedNetProfit         financialNumber `json:"KCFJCXSYJLR"`
+				DeductedNetProfitYoY      financialNumber `json:"KCFJCXSYJLRTZ"`
+				EPS                       financialNumber `json:"EPSJB"`
+				ROE                       financialNumber `json:"ROEJQ"`
+				GrossMargin               financialNumber `json:"XSMLL"`
+				DebtRatio                 financialNumber `json:"ZCFZL"`
+				OperatingCashFlowPerShare financialNumber `json:"MGJYXJJE"`
 			} `json:"data"`
 		} `json:"result"`
 	}
@@ -121,26 +121,35 @@ func (c *Client) StockFundamentals(ctx context.Context, symbol string) (foundati
 		return foundation.StockFundamentals{}, fmt.Errorf("eastmoney stock fundamentals returned no data for %s", normalized.Canonical)
 	}
 	raw := payload.Result.Data[0]
-	deductedAvailable := raw.DeductedNetProfit != nil
-	deductedNetProfit := 0.0
-	deductedNetProfitYearOverYear := 0.0
-	deductedReportDate := ""
-	if raw.DeductedNetProfit != nil {
-		deductedNetProfit = float64(*raw.DeductedNetProfit)
-		deductedReportDate = strings.TrimSpace(raw.ReportDate)
+	availableFields := make([]string, 0, 11)
+	for _, field := range []struct {
+		name   string
+		number financialNumber
+	}{
+		{"revenue", raw.Revenue}, {"revenue_yoy", raw.RevenueYearOverYear},
+		{"net_profit", raw.NetProfit}, {"net_profit_yoy", raw.NetProfitYearOverYear},
+		{"deducted_net_profit", raw.DeductedNetProfit}, {"deducted_net_profit_yoy", raw.DeductedNetProfitYoY},
+		{"eps", raw.EPS}, {"roe", raw.ROE}, {"gross_margin", raw.GrossMargin},
+		{"debt_ratio", raw.DebtRatio}, {"operating_cash_flow_per_share", raw.OperatingCashFlowPerShare},
+	} {
+		if field.number.valid {
+			availableFields = append(availableFields, field.name)
+		}
 	}
-	if raw.DeductedNetProfitYoY != nil {
-		deductedNetProfitYearOverYear = float64(*raw.DeductedNetProfitYoY)
+	deductedReportDate := ""
+	if raw.DeductedNetProfit.valid {
+		deductedReportDate = strings.TrimSpace(raw.ReportDate)
 	}
 	return foundation.StockFundamentals{
 		Symbol: normalized.Canonical, ReportDate: strings.TrimSpace(raw.ReportDate), ReportName: strings.TrimSpace(raw.ReportName),
-		Revenue: float64(raw.Revenue), RevenueYearOverYear: float64(raw.RevenueYearOverYear),
-		NetProfit: float64(raw.NetProfit), NetProfitYearOverYear: float64(raw.NetProfitYearOverYear),
-		DeductedNetProfit: deductedNetProfit, DeductedNetProfitYearOverYear: deductedNetProfitYearOverYear,
-		DeductedNetProfitAvailable: deductedAvailable, DeductedNetProfitReportDate: deductedReportDate, EPS: float64(raw.EPS),
-		ROE: float64(raw.ROE), GrossMargin: float64(raw.GrossMargin), DebtRatio: float64(raw.DebtRatio),
-		OperatingCashFlowPerShare: float64(raw.OperatingCashFlowPerShare),
-		Meta:                      foundation.SourceMeta{Source: "eastmoney:f10-financials", SourceURL: requestURL, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds()},
+		Revenue: raw.Revenue.value, RevenueYearOverYear: raw.RevenueYearOverYear.value,
+		NetProfit: raw.NetProfit.value, NetProfitYearOverYear: raw.NetProfitYearOverYear.value,
+		DeductedNetProfit: raw.DeductedNetProfit.value, DeductedNetProfitYearOverYear: raw.DeductedNetProfitYoY.value,
+		DeductedNetProfitAvailable: raw.DeductedNetProfit.valid, DeductedNetProfitYearOverYearAvailable: raw.DeductedNetProfitYoY.valid,
+		DeductedNetProfitReportDate: deductedReportDate, EPS: raw.EPS.value,
+		ROE: raw.ROE.value, GrossMargin: raw.GrossMargin.value, DebtRatio: raw.DebtRatio.value,
+		OperatingCashFlowPerShare: raw.OperatingCashFlowPerShare.value,
+		Meta:                      foundation.SourceMeta{Source: "eastmoney:f10-financials", SourceURL: requestURL, FetchedAt: time.Now(), LatencyMS: time.Since(start).Milliseconds(), FieldsKnown: true, AvailableFields: availableFields},
 	}, nil
 }
 

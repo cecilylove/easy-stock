@@ -161,8 +161,9 @@ export function buildMarketBillboardPrompt(evidence: MarketBillboardPromptEviden
 		const topic = ladderStock
 			? [ladderStock.primary_theme, ...(ladderStock.secondary_themes || []), ...(ladderStock.raw_concepts || [])].filter(Boolean).filter((name, topicIndex, topics) => topics.indexOf(name) === topicIndex).slice(0, 6).join('、')
 			: '';
+		const ladderValue = (field: string, value: number, format: (value: number) => string) => ladderStock && sourceFieldAvailable(ladderStock.meta, field) && Number.isFinite(value) ? format(value) : '未提供';
 		const ladder = ladderStock
-			? `连板高度 ${ladderStock.streak}板，${ladderStock.streak_label || '涨停梯队'}，行业 ${ladderStock.industry || '未提供'}，题材 ${topic || '未提供'}，题材角色 ${ladderStock.theme_leader_role || '未提供'}，换手率 ${formatPercentValue(ladderStock.turnover_rate)}，成交额 ${formatMoney(ladderStock.amount)}`
+			? `连板高度 ${ladderStock.streak > 0 ? ladderValue('streak', ladderStock.streak, value => `${value}板`) : '未知'}，${ladderStock.streak_label || '涨停梯队'}，行业 ${ladderStock.industry || '未提供'}，题材 ${topic || '未提供'}，题材角色 ${ladderStock.theme_leader_role || '未提供'}，换手率 ${ladderValue('turnover_rate', ladderStock.turnover_rate, formatPercentValue)}，成交额 ${ladderValue('amount', ladderStock.amount, formatMoney)}`
 			: '未在同交易日连板梯队中命中，连板高度和题材关联暂无可验证数据';
 		const seats = detail
 			? `买方席位 ${buySeats.length} 个：${formatSeats(buySeats)}；卖方席位 ${sellSeats.length} 个：${formatSeats(sellSeats)}；机构席位净额 ${formatMoney(institutionNet)}；买方买一/前三集中度 ${formatPercentValue(buyTopOneConcentration)} / ${formatPercentValue(buyTopThreeConcentration)}，卖方卖一/前三集中度 ${formatPercentValue(sellTopOneConcentration)} / ${formatPercentValue(sellTopThreeConcentration)}；买卖席位结构（买入 ${formatMoney(buyAmount)} / 卖出 ${formatMoney(sellAmount)} / 席位净额 ${formatMoney(buyAmount - sellAmount)}）；活跃席位 ${activeSeatNames.length ? activeSeatNames.join('、') : '未提供'}；第三方平台/市场常用席位标签（非官方身份核验）${namedTraders.length ? namedTraders.join('、') : '未匹配到可靠标签，身份未确认'}`
@@ -170,8 +171,9 @@ export function buildMarketBillboardPrompt(evidence: MarketBillboardPromptEviden
 		return `${index + 1}. ${item.name}（${item.symbol}）：上榜日 ${item.trade_date}，收盘 ${formatNumber(item.close_price)}，涨跌 ${formatSigned(item.change_percent)}%，换手率 ${formatPercentValue(item.turnover_rate)}，龙虎榜买入 ${formatMoney(item.buy_amount)}，卖出 ${formatMoney(item.sell_amount)}，净买额 ${formatMoney(item.net_amount)}，机构买方数量 ${item.institution_buyers}，买卖原因 ${reasons || '未提供'}；${ladder}；${seats}`;
 	});
 	const conceptHeat = evidence.limitUp?.current.trade_date === billboardDate ? evidence.limitUp.concept_heat : [];
+	const streakUnknown = limitUpDay?.missing_fields?.includes('streak');
 	const marketContext = limitUpDay
-		? `同交易日连板环境：涨停 ${limitUpDay.limit_up_count} 家，连板 ${limitUpDay.board_count} 家，最高 ${limitUpDay.max_streak} 板，首板 ${limitUpDay.first_board_count} 家；题材热度前五：${(conceptHeat || []).slice(0, 5).map((item) => `${item.name}（${item.board_count}板，最高${item.max_streak}板，热度${item.heat.toFixed(1)}）`).join('、') || '该交易日未提供聚合题材热度，以逐股题材归因为准'}`
+		? `同交易日连板环境：涨停 ${limitUpDay.limit_up_count} 家，${streakUnknown ? '板数覆盖不完整，连板家数/最高板/首板家数未知' : `连板 ${limitUpDay.board_count} 家，最高 ${limitUpDay.max_streak} 板，首板 ${limitUpDay.first_board_count} 家`}；题材热度前五：${streakUnknown ? '板数不足，不输出聚合强度' : (conceptHeat || []).slice(0, 5).map((item) => `${item.name}（${item.board_count}板，最高${item.max_streak}板，热度${item.heat.toFixed(1)}）`).join('、') || '该交易日未提供聚合题材热度，以逐股题材归因为准'}`
 		: '同交易日连板环境和题材热度未获取，不得补造';
 	const source = evidence.meta?.source || items[0]?.meta.source || '未知';
 	const fetchedAt = evidence.meta?.fetched_at || items[0]?.meta.fetched_at || '未知';
@@ -276,7 +278,12 @@ export function buildMarketModulePrompt(view: Exclude<MarketOverviewView, 'pulse
 		}));
 	}
 	if (evidence.margins?.length) {
-		lines.push(...evidence.margins.slice(-30).map((item, index) => `${index + 1}. ${item.trade_date}：两融余额 ${formatLargeMoney(item.margin_balance)}，融资余额 ${formatLargeMoney(item.financing_balance)}，融券余额 ${formatLargeMoney(item.securities_lending_balance)}，两融余额日变动 ${formatLargeMoney(item.margin_balance_change)}，融资净买入 ${formatLargeMoney(item.financing_net_buy_amount)}`));
+		lines.push(...evidence.margins.slice(-30).map((item, index) => {
+			const value = (field: string, amount: number) => sourceFieldAvailable(item.meta, field, evidence.meta) ? formatLargeMoney(amount) : '未提供/覆盖不足';
+			const names: Record<string, string> = { '001': '深市', '002': '北交所', '007': '沪市' };
+			const coverage = item.coverage_known ? `${(item.markets || []).map(id => names[id] || id).join('、')}（${item.coverage_complete ? '完整市场覆盖' : '仅部分市场，不能当全市场或跨覆盖比较'}）` : '历史覆盖未验证';
+			return `${index + 1}. ${item.trade_date}：覆盖 ${coverage}，两融余额 ${value('margin_balance', item.margin_balance)}，融资余额 ${value('financing_balance', item.financing_balance)}，融券余额 ${value('securities_lending_balance', item.securities_lending_balance)}，两融余额日变动 ${value('margin_balance_change', item.margin_balance_change)}，融资净买入 ${value('financing_net_buy_amount', item.financing_net_buy_amount)}`;
+		}));
 	}
 	if (evidence.futures?.rows?.length) {
 		const latest = evidence.futures.rows.at(-1)!;

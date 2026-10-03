@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"easy-stock/backend/internal/datasource/contracts"
 	"easy-stock/backend/internal/foundation"
 	"easy-stock/backend/internal/marketemotion"
 )
@@ -135,6 +136,10 @@ func copyStrings(source map[string]string) map[string]string {
 	return result
 }
 
+type progressiveLimitUpHistoryProvider interface {
+	ProgressiveLimitUpHistory(context.Context, int, func(foundation.LimitUpHistory, string, error)) (foundation.LimitUpHistory, error)
+}
+
 type progressiveLimitUpProvider interface {
 	ProgressiveLimitUps(context.Context, int, func([]foundation.LimitUpEvent, string, error))
 }
@@ -171,6 +176,7 @@ func (s *Server) refreshLimitUpProgress(ctx context.Context, publish func(shortT
 	type update struct {
 		stage     string
 		events    []foundation.LimitUpEvent
+		history   *foundation.LimitUpHistory
 		catalog   []foundation.StockCatalogEntry
 		previous  *limitUpLadderDay
 		quoteDate string
@@ -185,7 +191,7 @@ func (s *Server) refreshLimitUpProgress(ctx context.Context, publish func(shortT
 	}
 	steps := map[string]string{"primary": "loading", "history": "loading", "themes": "loading", "concepts": "loading", "quotes": "loading"}
 	errs := map[string]string{}
-	var events []foundation.LimitUpEvent
+	var history foundation.LimitUpHistory
 	var catalog []foundation.StockCatalogEntry
 	var data *limitUpLadderData
 	var quotePrevious *limitUpLadderDay
@@ -213,7 +219,19 @@ func (s *Server) refreshLimitUpProgress(ctx context.Context, publish func(shortT
 		}
 	}
 	go func() {
-		if provider, ok := s.limitUpProvider.(progressiveLimitUpProvider); ok {
+		sendHistory := func(value foundation.LimitUpHistory, stage string, err error) {
+			value = foundation.CloneLimitUpHistory(value)
+			send(update{stage: stage, history: &value, err: err})
+		}
+		if provider, ok := s.limitUpProvider.(progressiveLimitUpHistoryProvider); ok {
+			_, _ = provider.ProgressiveLimitUpHistory(ctx, 8, sendHistory)
+		} else if provider, ok := s.limitUpProvider.(contracts.ProgressiveLimitUpHistoryProvider); ok {
+			value, err := provider.ProgressiveRecentLimitUpHistory(ctx, 8, func(value foundation.LimitUpHistory) { sendHistory(value, "history_partial", nil) })
+			sendHistory(value, "pool", err)
+		} else if provider, ok := s.limitUpProvider.(contracts.LimitUpHistoryProvider); ok {
+			value, err := provider.RecentLimitUpHistory(ctx, 8)
+			sendHistory(value, "pool", err)
+		} else if provider, ok := s.limitUpProvider.(progressiveLimitUpProvider); ok {
 			provider.ProgressiveLimitUps(ctx, 8, func(events []foundation.LimitUpEvent, stage string, err error) {
 				send(update{stage: stage, events: events, err: err})
 			})
@@ -264,12 +282,14 @@ func (s *Server) refreshLimitUpProgress(ctx context.Context, publish func(shortT
 				steps["primary"], steps["history"], steps["themes"] = status, status, status
 				fallthrough
 			default:
-				if len(item.events) > 0 {
-					events = item.events
+				if item.history != nil {
+					history = foundation.CloneLimitUpHistory(*item.history)
+				} else if len(item.events) > 0 {
+					history = foundation.LimitUpHistoryFromEvents(item.events, item.err)
 				}
 			}
-			if len(events) > 0 {
-				built, err := buildLimitUpLadder(events, catalog, time.Now())
+			if len(history.Events) > 0 || len(history.CoveredDates) > 0 {
+				built, err := buildLimitUpLadderHistory(history, catalog, time.Now())
 				if err == nil {
 					built.ConceptStatus = steps["concepts"]
 					if limitUpDayHasRawConcepts(built.Current) {
@@ -277,7 +297,7 @@ func (s *Server) refreshLimitUpProgress(ctx context.Context, publish func(shortT
 					}
 					built.ConceptError = errs["concepts"]
 					poolsDone := steps["primary"] != "loading" && steps["history"] != "loading"
-					built.ComparisonReady = poolsDone && steps["history"] == "ready" && built.Previous.TradeDate != ""
+					built.ComparisonReady = poolsDone && built.ComparisonReady
 					if !built.ComparisonReady {
 						built.Advance = []limitUpAdvanceStep{}
 					}

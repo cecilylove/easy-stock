@@ -116,11 +116,11 @@ func TestSourceHealthCategoriesDescribeImplementedCapabilities(t *testing.T) {
 		absent  []string
 	}{
 		{id: "cls", present: []string{"news"}, absent: []string{"calendar"}},
-		{id: "tencent", present: []string{"index", "kline", "sector", "sector-stocks", "us-sector"}, absent: []string{"quote", "hk"}},
-		{id: "cffex", present: []string{"futures", "futures-members", "futures-consensus"}, absent: []string{"quote", "kline", "margin"}},
-		{id: "sina", present: []string{"quote", "kline", "money-flow", "stock-directory"}, absent: []string{"concept", "auction"}},
-		{id: "ths", present: []string{"hot-ranks"}, absent: []string{"quote", "kline", "theme", "billboard-labels"}},
-		{id: "eastmoney", present: []string{"auction", "stock-directory", "concept", "business", "fundamentals", "market-pools", "margin", "billboard", "announcement", "report", "hot-ranks", "futures"}, absent: []string{"kline", "index"}},
+		{id: "tencent", present: []string{"index", "kline", "adjusted-kline", "industry", "board-members", "us-sector"}, absent: []string{"quote", "hk"}},
+		{id: "cffex", present: []string{"futures-snapshot", "futures-members", "futures-consensus"}, absent: []string{"quote", "kline", "margin", "futures-history"}},
+		{id: "sina", present: []string{"quote", "kline", "fund-flow", "stock-directory"}, absent: []string{"concept", "auction"}},
+		{id: "ths", present: []string{"hot-ranks", "billboard-labels"}, absent: []string{"quote", "kline", "theme"}},
+		{id: "eastmoney", present: []string{"auction", "stock-directory", "boards", "business", "fundamentals", "market-pools", "margin", "billboard", "announcements", "reports", "hot-ranks", "futures-history"}, absent: []string{"kline", "index"}},
 	} {
 		t.Run(test.id, func(t *testing.T) {
 			categories := make(map[string]bool)

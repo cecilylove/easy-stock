@@ -396,7 +396,7 @@ func buildSignals(trend TrendAnalysis, short ShortTermAnalysis, theme ThemeAnaly
 	}
 	consistent := timeframeConsistency(timeframes)
 	signals = append(signals, Signal{Key: "timeframe", Label: "周期一致性", Tone: scoreTone(consistent), Strength: consistent, Detail: timeframeSummary(timeframes)})
-	if fundamental != nil && fundamental.Available {
+	if fundamental != nil && fundamental.Available && (!fundamental.FieldsKnown || fundamental.ScoreAvailable) {
 		signals = append(signals, Signal{Key: "fundamental", Label: "基本面", Tone: scoreTone(fundamental.Score), Strength: fundamental.Score, Detail: fundamental.Summary})
 	}
 	if research != nil && research.Available {

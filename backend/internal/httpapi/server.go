@@ -236,7 +236,7 @@ func NewServer(config any) *Server {
 		if cfg.MarketCapabilities != nil {
 			marketConfig = *cfg.MarketCapabilities
 		}
-		cfg.MarketOverview = service.NewMarket(marketConfig)
+		cfg.MarketOverview = service.WithBillboardLabels(service.NewMarket(marketConfig), capability(routes.BillboardLabels).BillboardLabels, routes.BillboardLabels)
 		// Registered capability services emit their own source observations.
 		// A missing capability must not inherit an unrelated supplier identity.
 		marketIndexSourceID, marketIndustrySourceID, marketFlowSourceID = marketConfig.IndexSourceID, marketConfig.IndustrySourceID, marketConfig.FundFlowSourceID
@@ -363,7 +363,7 @@ func NewServer(config any) *Server {
 		probeProviders = &SourceProbeProviders{
 			Sina: capability("sina").Realtime, Tencent: capability("tencent").Index, CLS: capability("cls").News,
 			EastMoney: capability("eastmoney").ProbeDirectory, THS: service.NewHotRanks(capability("ths").HotRank),
-			CFFEX: capability("cffex").FuturesTrend, Kaipanla: capability("duanxianxia").Theme,
+			CFFEX: service.NewFuturesCapabilities(service.FuturesConfig{SnapshotID: "cffex", Snapshot: capability("cffex").FuturesSnapshot}), Kaipanla: capability("duanxianxia").Theme,
 		}
 	}
 	if cfg.HermesGateway != nil && (!cfg.StrictPersistence || len(startupErrors) == 0) {

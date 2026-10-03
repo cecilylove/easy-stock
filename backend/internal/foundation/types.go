@@ -1,40 +1,51 @@
 package foundation
 
-import "time"
+import (
+	"fmt"
+	"math"
+	"strings"
+	"time"
+)
 
 type SourceMeta struct {
-	Source               string              `json:"source"`
-	SourceURL            string              `json:"source_url,omitempty"`
-	AvailableFields      []string            `json:"available_fields,omitempty"`
-	FieldsKnown          bool                `json:"fields_known,omitempty"`
-	Provider             string              `json:"provider,omitempty"`
-	NativeCode           string              `json:"native_code,omitempty"`
-	InstrumentID         string              `json:"instrument_id,omitempty"`
-	Period               string              `json:"period,omitempty"`
-	RequestedAdjustment  string              `json:"requested_adjustment,omitempty"`
-	EffectiveAdjustment  string              `json:"effective_adjustment,omitempty"`
-	AdjustmentConvention string              `json:"adjustment_convention,omitempty"`
-	BasisID              string              `json:"basis_id,omitempty"`
-	AsOf                 string              `json:"as_of,omitempty"`
-	TimeZone             string              `json:"time_zone,omitempty"`
-	NativeTimestamp      string              `json:"native_timestamp,omitempty"`
-	VolumeUnit           string              `json:"volume_unit,omitempty"`
-	AmountCurrency       string              `json:"amount_currency,omitempty"`
-	Partial              bool                `json:"partial,omitempty"`
-	MissingIDs           []string            `json:"missing_ids,omitempty"`
-	RequestedSort        string              `json:"requested_sort,omitempty"`
-	EffectiveSort        string              `json:"effective_sort,omitempty"`
-	MemberSet            *MemberSetMeta      `json:"member_set,omitempty"`
-	Capability           string              `json:"capability,omitempty"`
-	Observations         []SourceObservation `json:"-"`
-	FetchedAt            time.Time           `json:"fetched_at"`
-	LatencyMS            int64               `json:"latency_ms"`
-	Stale                bool                `json:"stale"`
-	TradeDate            string              `json:"trade_date,omitempty"`
-	SnapshotID           string              `json:"snapshot_id,omitempty"`
-	NextRefreshAt        *time.Time          `json:"next_refresh_at,omitempty"`
-	FallbackReason       string              `json:"fallback_reason,omitempty"`
-	CarryForward         bool                `json:"carry_forward,omitempty"`
+	Source          string   `json:"source"`
+	SourceURL       string   `json:"source_url,omitempty"`
+	AvailableFields []string `json:"available_fields,omitempty"`
+	FieldsKnown     bool     `json:"fields_known,omitempty"`
+	// Field provenance overrides apply only to hydrated fields; Source remains the original input.
+	FieldSources         map[string]string    `json:"field_sources,omitempty"`
+	FieldFetchedAt       map[string]time.Time `json:"field_fetched_at,omitempty"`
+	Provider             string               `json:"provider,omitempty"`
+	NativeCode           string               `json:"native_code,omitempty"`
+	InstrumentID         string               `json:"instrument_id,omitempty"`
+	Period               string               `json:"period,omitempty"`
+	RequestedAdjustment  string               `json:"requested_adjustment,omitempty"`
+	EffectiveAdjustment  string               `json:"effective_adjustment,omitempty"`
+	AdjustmentConvention string               `json:"adjustment_convention,omitempty"`
+	BasisID              string               `json:"basis_id,omitempty"`
+	AsOf                 string               `json:"as_of,omitempty"`
+	TimeZone             string               `json:"time_zone,omitempty"`
+	NativeTimestamp      string               `json:"native_timestamp,omitempty"`
+	VolumeUnit           string               `json:"volume_unit,omitempty"`
+	AmountCurrency       string               `json:"amount_currency,omitempty"`
+	Partial              bool                 `json:"partial,omitempty"`
+	MissingIDs           []string             `json:"missing_ids,omitempty"`
+	CoveredDates         []string             `json:"covered_dates,omitempty"`
+	RequestedSort        string               `json:"requested_sort,omitempty"`
+	EffectiveSort        string               `json:"effective_sort,omitempty"`
+	MemberSet            *MemberSetMeta       `json:"member_set,omitempty"`
+	Capability           string               `json:"capability,omitempty"`
+	// ExecutionState is explicit for migrated adapters; empty keeps historical compatibility.
+	ExecutionState string              `json:"execution_state,omitempty"` // fetched, cache, joined, skipped
+	Observations   []SourceObservation `json:"-"`
+	FetchedAt      time.Time           `json:"fetched_at"`
+	LatencyMS      int64               `json:"latency_ms"`
+	Stale          bool                `json:"stale"`
+	TradeDate      string              `json:"trade_date,omitempty"`
+	SnapshotID     string              `json:"snapshot_id,omitempty"`
+	NextRefreshAt  *time.Time          `json:"next_refresh_at,omitempty"`
+	FallbackReason string              `json:"fallback_reason,omitempty"`
+	CarryForward   bool                `json:"carry_forward,omitempty"`
 }
 
 // BoardRef preserves native classification identity; codes are not portable across sources.
@@ -239,6 +250,94 @@ type LimitUpEvent struct {
 	Meta            SourceMeta           `json:"meta"`
 }
 
+// LimitUpCoverageError accompanies useful history when trading days failed.
+// CoveredDates includes successfully fetched empty pools, not just event dates.
+// MissingDates includes failed or unattempted dates; cancellation is retained in Cause.
+type LimitUpCoverageError struct {
+	RequestedDates []string
+	CoveredDates   []string
+	MissingDates   []string
+	Cause          error
+}
+
+func (e *LimitUpCoverageError) Error() string {
+	return fmt.Sprintf("limit-up history incomplete; missing dates: %s; cause: %v", strings.Join(e.MissingDates, ","), e.Cause)
+}
+func (e *LimitUpCoverageError) Unwrap() error { return e.Cause }
+
+// CloneSourceMeta isolates all reference-valued metadata from cache/consumer mutations.
+func CloneSourceMeta(meta SourceMeta) SourceMeta {
+	meta.AvailableFields = append([]string(nil), meta.AvailableFields...)
+	meta.MissingIDs = append([]string(nil), meta.MissingIDs...)
+	meta.CoveredDates = append([]string(nil), meta.CoveredDates...)
+	if meta.FieldSources != nil {
+		fields := make(map[string]string, len(meta.FieldSources))
+		for key, value := range meta.FieldSources {
+			fields[key] = value
+		}
+		meta.FieldSources = fields
+	}
+	if meta.FieldFetchedAt != nil {
+		fields := make(map[string]time.Time, len(meta.FieldFetchedAt))
+		for key, value := range meta.FieldFetchedAt {
+			fields[key] = value
+		}
+		meta.FieldFetchedAt = fields
+	}
+	if meta.MemberSet != nil {
+		value := *meta.MemberSet
+		meta.MemberSet = &value
+	}
+	if meta.NextRefreshAt != nil {
+		value := *meta.NextRefreshAt
+		meta.NextRefreshAt = &value
+	}
+	if meta.Observations != nil {
+		observations := make([]SourceObservation, len(meta.Observations))
+		for i, value := range meta.Observations {
+			observations[i] = value
+			observations[i].Meta = CloneSourceMeta(value.Meta)
+		}
+		meta.Observations = observations
+	}
+	return meta
+}
+
+// LimitUpFieldAvailable applies strict presence for new collectors and the
+// historical nonzero convention only for old fixtures/unmarked retained events.
+func LimitUpFieldAvailable(event LimitUpEvent, field string) bool {
+	var number float64
+	switch field {
+	case "price":
+		number = event.Price
+	case "change_percent":
+		number = event.ChangePercent
+	case "amount":
+		number = event.Amount
+	case "float_market_cap":
+		number = event.FloatMarketCap
+	case "turnover_rate":
+		number = event.TurnoverRate
+	case "streak":
+		number = float64(event.Streak)
+	case "open_count":
+		number = float64(event.OpenCount)
+	case "days":
+		number = float64(event.Days)
+	case "count":
+		number = float64(event.Count)
+	default:
+		return FieldAvailable(event.Meta, field)
+	}
+	if math.IsNaN(number) || math.IsInf(number, 0) {
+		return false
+	}
+	if event.Meta.FieldsKnown || len(event.Meta.AvailableFields) > 0 {
+		return FieldAvailable(event.Meta, field)
+	}
+	return number != 0
+}
+
 // StockThemeAttribution is an authoritative or cached per-stock theme label.
 // It keeps source provenance and evidence role so downstream analysis can prefer retained data
 // without conflating it with broad industry/catalog fallbacks.
@@ -268,25 +367,76 @@ type StockBusinessProfile struct {
 
 // StockFundamentals contains the latest reported financial snapshot used by
 // the non-short-term stock route. Values follow EastMoney's published F10
-// units: amounts are CNY and percentage fields are percentage points.
+// units: amounts are CNY and percentage fields are percentage points. Providers
+// should set Meta.FieldsKnown and list only valid numeric JSON field names in
+// Meta.AvailableFields; numeric zero placeholders alone do not prove validity.
 type StockFundamentals struct {
-	Symbol                        string     `json:"symbol"`
-	ReportDate                    string     `json:"report_date"`
-	ReportName                    string     `json:"report_name"`
-	Revenue                       float64    `json:"revenue"`
-	RevenueYearOverYear           float64    `json:"revenue_yoy"`
-	NetProfit                     float64    `json:"net_profit"`
-	NetProfitYearOverYear         float64    `json:"net_profit_yoy"`
-	DeductedNetProfit             float64    `json:"deducted_net_profit"`
-	DeductedNetProfitYearOverYear float64    `json:"deducted_net_profit_yoy"`
-	DeductedNetProfitAvailable    bool       `json:"deducted_net_profit_available"`
-	DeductedNetProfitReportDate   string     `json:"deducted_net_profit_report_date,omitempty"`
-	EPS                           float64    `json:"eps"`
-	ROE                           float64    `json:"roe"`
-	GrossMargin                   float64    `json:"gross_margin"`
-	DebtRatio                     float64    `json:"debt_ratio"`
-	OperatingCashFlowPerShare     float64    `json:"operating_cash_flow_per_share"`
-	Meta                          SourceMeta `json:"meta"`
+	Symbol                                 string     `json:"symbol"`
+	ReportDate                             string     `json:"report_date"`
+	ReportName                             string     `json:"report_name"`
+	Revenue                                float64    `json:"revenue"`
+	RevenueYearOverYear                    float64    `json:"revenue_yoy"`
+	NetProfit                              float64    `json:"net_profit"`
+	NetProfitYearOverYear                  float64    `json:"net_profit_yoy"`
+	DeductedNetProfit                      float64    `json:"deducted_net_profit"`
+	DeductedNetProfitYearOverYear          float64    `json:"deducted_net_profit_yoy"`
+	DeductedNetProfitAvailable             bool       `json:"deducted_net_profit_available"`
+	DeductedNetProfitYearOverYearAvailable bool       `json:"deducted_net_profit_yoy_available"`
+	DeductedNetProfitReportDate            string     `json:"deducted_net_profit_report_date,omitempty"`
+	EPS                                    float64    `json:"eps"`
+	ROE                                    float64    `json:"roe"`
+	GrossMargin                            float64    `json:"gross_margin"`
+	DebtRatio                              float64    `json:"debt_ratio"`
+	OperatingCashFlowPerShare              float64    `json:"operating_cash_flow_per_share"`
+	Meta                                   SourceMeta `json:"meta"`
+}
+
+// FieldAvailable distinguishes reported zeroes from missing financial values.
+// Explicit source masks are authoritative. Unmarked historical snapshots retain
+// their old finite-value semantics; deducted amount and growth are independent.
+func (item StockFundamentals) FieldAvailable(field string) bool {
+	var value float64
+	legacyAvailable := true
+	switch field {
+	case "revenue":
+		value = item.Revenue
+	case "revenue_yoy":
+		value = item.RevenueYearOverYear
+	case "net_profit":
+		value = item.NetProfit
+	case "net_profit_yoy":
+		value = item.NetProfitYearOverYear
+	case "deducted_net_profit":
+		value = item.DeductedNetProfit
+		legacyAvailable = item.DeductedNetProfitAvailable || value != 0
+	case "deducted_net_profit_yoy":
+		value = item.DeductedNetProfitYearOverYear
+		legacyAvailable = item.DeductedNetProfitYearOverYearAvailable || item.DeductedNetProfitAvailable || value != 0
+	case "eps":
+		value = item.EPS
+	case "roe":
+		value = item.ROE
+	case "gross_margin":
+		value = item.GrossMargin
+	case "debt_ratio":
+		value = item.DebtRatio
+	case "operating_cash_flow_per_share":
+		value = item.OperatingCashFlowPerShare
+	default:
+		return false
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return false
+	}
+	if item.Meta.FieldsKnown {
+		for _, available := range item.Meta.AvailableFields {
+			if available == field {
+				return true
+			}
+		}
+		return false
+	}
+	return legacyAvailable
 }
 
 // MarketLimitEvent represents one stock in a daily limit-event pool that is

@@ -75,7 +75,10 @@ func (c *Client) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 		if strings.TrimSpace(raw.LeaderName) != "" {
 			rowMeta.AvailableFields = append(rowMeta.AvailableFields, "leader_name")
 		}
-		if raw.ChangePercent.Valid || raw.FiveDay.Valid || raw.TwentyDay.Valid {
+		// Missing changes must not enter the score formula as zero; valid zero is allowed.
+		score := 0.0
+		if raw.ChangePercent.Valid && raw.FiveDay.Valid && raw.TwentyDay.Valid {
+			score = tencentIndustryScore(change, fiveDay, twentyDay)
 			rowMeta.AvailableFields = append(rowMeta.AvailableFields, "score")
 		}
 		leaderSymbol := ""
@@ -85,7 +88,7 @@ func (c *Client) IndustryMomentum(ctx context.Context, limit int) ([]foundation.
 		items = append(items, foundation.MarketIndustryMomentum{
 			Code: raw.Code, Name: raw.Name, ChangePercent: change, FiveDayChangePercent: fiveDay,
 			TwentyDayChange: twentyDay, LeaderSymbol: leaderSymbol, LeaderName: raw.LeaderName, LeaderChangePercent: leaderChange,
-			Score: tencentIndustryScore(change, fiveDay, twentyDay), Meta: rowMeta,
+			Score: score, Meta: rowMeta,
 		})
 	}
 	if len(items) == 0 {

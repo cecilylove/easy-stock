@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -217,7 +218,7 @@ func decryptPoolPayload(payload []byte) ([]byte, error) {
 
 func parseLimitUpPool(payload []byte, tradeDate string, fetchedAt time.Time, sourceURL string) ([]foundation.LimitUpEvent, error) {
 	var document struct {
-		List [][]json.RawMessage `json:"list"`
+		List *[][]json.RawMessage `json:"list"`
 	}
 	if err := json.Unmarshal(payload, &document); err != nil {
 		return nil, fmt.Errorf("decode limit-up pool JSON: %w", err)
@@ -227,14 +228,15 @@ func parseLimitUpPool(payload []byte, tradeDate string, fetchedAt time.Time, sou
 	if err != nil {
 		return nil, fmt.Errorf("parse limit-up pool trade date %q: %w", tradeDate, err)
 	}
-	meta := foundation.SourceMeta{
-		Source:    "duanxianxia:kaipanla-limit-up",
-		SourceURL: sourceURL,
-		FetchedAt: fetchedAt,
-		TradeDate: tradeDate,
+	if document.List == nil {
+		return nil, fmt.Errorf("limit-up pool missing list")
 	}
-	events := make([]foundation.LimitUpEvent, 0, len(document.List))
-	for _, item := range document.List {
+	meta := foundation.SourceMeta{
+		Source: "duanxianxia:kaipanla-limit-up", Provider: "duanxianxia",
+		SourceURL: sourceURL, FetchedAt: fetchedAt, TradeDate: tradeDate, FieldsKnown: true,
+	}
+	events := make([]foundation.LimitUpEvent, 0, len(*document.List))
+	for _, item := range *document.List {
 		if len(item) < 12 {
 			continue
 		}
@@ -244,15 +246,19 @@ func parseLimitUpPool(payload []byte, tradeDate string, fetchedAt time.Time, sou
 		}
 		streakLabel := rawPoolString(item[7])
 		days, count := parsePoolStreakLabel(streakLabel)
-		streak := rawPoolInt(item[11])
-		if streak <= 0 {
-			streak = max(count, 1)
+		streakValue, streakKnown := rawPoolNumber(item[11])
+		streakKnown = streakKnown && validPoolInt(streakValue)
+		streak := 0
+		if streakKnown {
+			streak = int(streakValue)
+		} else if count > 0 {
+			streak, streakKnown = count, true
 		}
 		lastLimitTime := ""
 		if len(item) > 12 {
 			lastLimitTime = rawPoolString(item[12])
 		}
-		events = append(events, foundation.LimitUpEvent{
+		event := foundation.LimitUpEvent{
 			Symbol:         normalized.Canonical,
 			Name:           rawPoolString(item[1]),
 			Date:           date,
@@ -268,27 +274,61 @@ func parseLimitUpPool(payload []byte, tradeDate string, fetchedAt time.Time, sou
 			Concepts:       splitPoolConcepts(rawPoolString(item[6])),
 			StreakLabel:    streakLabel,
 			BoardType:      rawPoolString(item[10]),
-			Meta:           meta,
-		})
+			Meta:           foundation.CloneSourceMeta(meta),
+		}
+		for _, field := range []struct {
+			key     string
+			raw     json.RawMessage
+			integer bool
+		}{
+			{"change_percent", item[2], false}, {"amount", item[8], false}, {"float_market_cap", item[9], false}, {"open_count", item[4], true},
+		} {
+			value, valid := rawPoolNumber(field.raw)
+			if valid && (!field.integer || validPoolInt(value)) {
+				event.Meta.AvailableFields = append(event.Meta.AvailableFields, field.key)
+			}
+		}
+		if streakKnown {
+			event.Meta.AvailableFields = append(event.Meta.AvailableFields, "streak")
+		}
+		if _, _, known := poolStreakNumbers(streakLabel); known {
+			event.Meta.AvailableFields = append(event.Meta.AvailableFields, "days", "count")
+		}
+		for _, field := range []struct{ key, value string }{{"name", event.Name}, {"first_limit_time", event.FirstLimitTime}, {"last_limit_time", event.LastLimitTime}, {"streak_label", event.StreakLabel}, {"board_type", event.BoardType}} {
+			if field.value != "" && field.value != "--" {
+				event.Meta.AvailableFields = append(event.Meta.AvailableFields, field.key)
+			}
+		}
+		if len(event.Concepts) > 0 {
+			event.Meta.AvailableFields = append(event.Meta.AvailableFields, "concepts")
+		}
+		events = append(events, event)
 	}
-	if len(events) == 0 {
-		return nil, fmt.Errorf("limit-up pool returned no stocks")
+	if len(*document.List) > 0 && len(events) != len(*document.List) {
+		return events, fmt.Errorf("limit-up pool contained invalid stock rows")
 	}
 	return events, nil
 }
 
 func parsePoolStreakLabel(value string) (int, int) {
+	days, count, _ := poolStreakNumbers(value)
+	return days, count
+}
+func poolStreakNumbers(value string) (int, int, bool) {
 	value = strings.TrimSpace(value)
 	if value == "首板" {
-		return 1, 1
+		return 1, 1, true
 	}
 	match := poolStreakLabel.FindStringSubmatch(value)
 	if len(match) != 3 {
-		return 0, 0
+		return 0, 0, false
 	}
-	days, _ := strconv.Atoi(match[1])
-	count, _ := strconv.Atoi(match[2])
-	return days, count
+	days, daysErr := strconv.Atoi(match[1])
+	count, countErr := strconv.Atoi(match[2])
+	if daysErr != nil || countErr != nil {
+		return 0, 0, false
+	}
+	return days, count, true
 }
 
 func splitPoolConcepts(value string) []string {
@@ -296,7 +336,7 @@ func splitPoolConcepts(value string) []string {
 	seen := map[string]struct{}{}
 	for _, candidate := range strings.Split(value, "+") {
 		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
+		if candidate == "" || candidate == "--" {
 			continue
 		}
 		if _, exists := seen[candidate]; exists {
@@ -320,17 +360,27 @@ func rawPoolString(value json.RawMessage) string {
 	return ""
 }
 
-func rawPoolFloat(value json.RawMessage) float64 {
+func rawPoolNumber(value json.RawMessage) (float64, bool) {
 	raw := rawPoolString(value)
 	if raw == "" {
 		raw = strings.TrimSpace(string(value))
 	}
-	parsed, _ := strconv.ParseFloat(raw, 64)
-	return parsed
+	parsed, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, false
+	}
+	return parsed, true
 }
-
+func validPoolInt(value float64) bool {
+	return value >= 0 && value < float64(int(^uint(0)>>1)) && math.Trunc(value) == value
+}
+func rawPoolFloat(value json.RawMessage) float64 { parsed, _ := rawPoolNumber(value); return parsed }
 func rawPoolInt(value json.RawMessage) int {
-	return int(rawPoolFloat(value))
+	parsed, valid := rawPoolNumber(value)
+	if !valid || !validPoolInt(parsed) {
+		return 0
+	}
+	return int(parsed)
 }
 
 func (c *Client) postForm(ctx context.Context, path string, form url.Values, target any) error {

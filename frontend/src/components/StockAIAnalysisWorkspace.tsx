@@ -886,19 +886,24 @@ function normalizeStockAITheme(theme?: StockAIAnalysis['theme']): NonNullable<St
 	return { ...fallback, ...(theme || {}), resonance: { ...fallback.resonance, ...(theme?.resonance || {}) } };
 }
 
-function FundamentalPanel({ analysis }: { analysis: StockAIAnalysis }) {
+export function FundamentalPanel({ analysis }: { analysis: StockAIAnalysis }) {
 	const item = analysis.fundamental;
+	const has = (field: string) => !!item && (item.fields_known ? (item.available_fields || []).includes(field) : field.startsWith('recurring_') || field.startsWith('non_recurring_') ? !!item.recurring_net_profit_available : true);
+	const number = (field: string, value: number | undefined, format: (value: number) => string) => has(field) && typeof value === 'number' && Number.isFinite(value) ? format(value) : '--';
+	const percent = (value: number) => `${value.toFixed(1)}%`;
+	const growth = (field: string, value: number | undefined) => has(field) && typeof value === 'number' ? `同比 ${signedPercent(value)}` : '同比未提供';
+	const tone = (field: string, value: number | undefined) => has(field) && typeof value === 'number' ? (value >= 0 ? 'positive' : 'negative') : '';
 	return <section className="stock-ai-panel stock-ai-fundamental-panel">
 		<header><div><span>公司质量</span><h3>基本面 · 最新财报</h3></div><Building2 size={19} /></header>
 		{item?.available ? <>
-			<div className="stock-ai-fundamental-summary"><strong>{item.score} · {item.quality}</strong><span>{item.report_name || item.report_date} · 收益持续性{item.sustainability || '待确认'}</span><p>{item.summary}</p>{(item.sustainability_flags || []).map((flag) => <small key={flag} className="stock-ai-fundamental-warning">{flag}</small>)}</div>
+			<div className="stock-ai-fundamental-summary"><strong>{!item.fields_known || item.score_available ? item.score : '--'} · {item.quality}</strong><span>{item.report_name || item.report_date} · 收益持续性{item.sustainability || '待确认'}</span><p>{item.summary}</p>{(item.sustainability_flags || []).map((flag) => <small key={flag} className="stock-ai-fundamental-warning">{flag}</small>)}</div>
 			<div className="stock-ai-fundamental-metrics">
-				<FundamentalMetric label="营业总收入" value={formatCompactAmount(item.revenue)} detail={`同比 ${signedPercent(item.revenue_yoy)}`} tone={item.revenue_yoy >= 0 ? 'positive' : 'negative'} />
-				<FundamentalMetric label="归母净利润" value={formatCompactAmount(item.net_profit)} detail={`同比 ${signedPercent(item.net_profit_yoy)}`} tone={item.net_profit_yoy >= 0 ? 'positive' : 'negative'} />
-				<FundamentalMetric label="扣非净利润" value={item.recurring_net_profit_available && typeof item.recurring_net_profit === 'number' ? formatCompactAmount(item.recurring_net_profit) : '--'} detail={item.recurring_net_profit_available && typeof item.recurring_net_profit_yoy === 'number' ? `同比 ${signedPercent(item.recurring_net_profit_yoy)}` : '数据待补充'} tone={item.recurring_net_profit_available && typeof item.recurring_net_profit_yoy === 'number' && item.recurring_net_profit_yoy >= 0 ? 'positive' : 'negative'} />
-				<FundamentalMetric label="一次性损益占比" value={item.recurring_net_profit_available && typeof item.non_recurring_profit_ratio === 'number' ? `${item.non_recurring_profit_ratio.toFixed(1)}%` : '--'} detail="占归母净利润绝对值" tone={item.recurring_net_profit_available && typeof item.non_recurring_profit_ratio === 'number' && item.non_recurring_profit_ratio >= 30 ? 'negative' : ''} />
-				<FundamentalMetric label="ROE" value={`${item.roe.toFixed(1)}%`} detail={`EPS ${item.eps.toFixed(2)}`} />
-				<FundamentalMetric label="毛利率" value={`${item.gross_margin.toFixed(1)}%`} detail={`负债率 ${item.debt_ratio.toFixed(1)}%`} />
+				<FundamentalMetric label="营业总收入" value={number('revenue', item.revenue, formatCompactAmount)} detail={growth('revenue_yoy', item.revenue_yoy)} tone={tone('revenue_yoy', item.revenue_yoy)} />
+				<FundamentalMetric label="归母净利润" value={number('net_profit', item.net_profit, formatCompactAmount)} detail={growth('net_profit_yoy', item.net_profit_yoy)} tone={tone('net_profit_yoy', item.net_profit_yoy)} />
+				<FundamentalMetric label="扣非净利润" value={item.recurring_net_profit_available ? number('recurring_net_profit', item.recurring_net_profit, formatCompactAmount) : '--'} detail={growth('recurring_net_profit_yoy', item.recurring_net_profit_yoy)} tone={tone('recurring_net_profit_yoy', item.recurring_net_profit_yoy)} />
+				<FundamentalMetric label="一次性损益占比" value={item.recurring_net_profit_available ? number('non_recurring_profit_ratio', item.non_recurring_profit_ratio, percent) : '--'} detail="占归母净利润绝对值" tone={has('non_recurring_profit_ratio') && typeof item.non_recurring_profit_ratio === 'number' && item.non_recurring_profit_ratio >= 30 ? 'negative' : ''} />
+				<FundamentalMetric label="ROE" value={number('roe', item.roe, percent)} detail={`EPS ${number('eps', item.eps, value => value.toFixed(2))}`} />
+				<FundamentalMetric label="毛利率" value={number('gross_margin', item.gross_margin, percent)} detail={`负债率 ${number('debt_ratio', item.debt_ratio, percent)}`} />
 			</div>
 		</> : <div className="stock-ai-panel-empty">最新F10财务数据暂不可用</div>}
 	</section>;

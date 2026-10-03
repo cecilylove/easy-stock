@@ -585,7 +585,7 @@ func TestAnalyzeThemeKeepsF10BusinessFactsWithoutHotResonance(t *testing.T) {
 	found := map[string]bool{}
 	for _, item := range analysis.Theme.ConfirmedThemes {
 		found[item.Name] = true
-		if item.Confidence != "高" || !strings.Contains(item.Detail, "F10主营已确认") {
+		if item.Confidence != "高" || !strings.Contains(item.Detail, "公司主营已确认") {
 			t.Fatalf("unexpected F10 fact tag: %+v", item)
 		}
 	}

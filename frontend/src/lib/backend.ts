@@ -287,9 +287,13 @@ export type SourceMeta = {
   amount_currency?: string;
   partial?: boolean;
   missing_ids?: string[];
+  covered_dates?: string[];
   requested_sort?: string;
   effective_sort?: string;
   capability?: string;
+  execution_state?: 'fetched' | 'cache' | 'joined' | 'skipped';
+  field_sources?: Record<string, string>;
+  field_fetched_at?: Record<string, string>;
   member_set?: MemberSetMeta;
   fetched_at: string;
   latency_ms: number;
@@ -426,6 +430,11 @@ export type MarketFundFlow = {
 };
 
 export type MarketMarginPoint = {
+	markets?: string[];
+	missing_markets?: string[];
+	coverage_known?: boolean;
+	coverage_complete?: boolean;
+	change_available?: boolean;
 	trade_date: string;
 	financing_balance: number;
 	securities_lending_balance: number;
@@ -522,6 +531,7 @@ export type MarketBillboardItem = {
 	institution_buyers: number;
 	buy_seats: number;
 	sell_seats: number;
+	seat_counts_known?: boolean;
 	meta: SourceMeta;
 };
 
@@ -559,6 +569,9 @@ export type MarketResearchItem = {
 	industry_name?: string;
 	title: string;
 	content?: string;
+	content_status?: 'available' | 'unavailable' | 'truncated';
+	content_scope?: string;
+	content_issue?: string;
 	organization?: string;
 	researchers?: string;
 	rating?: string;
@@ -846,6 +859,9 @@ export type StockAIThemeResonance = {
 };
 
 export type StockAIFundamental = {
+	fields_known?: boolean;
+	available_fields?: string[];
+	score_available?: boolean;
 	available: boolean;
 	score: number;
 	quality: string;
@@ -1425,6 +1441,7 @@ export type LimitUpLadderStock = {
 	theme_leader_role?: string;
 	theme_source?: string;
 	source?: string;
+	meta?: SourceMeta;
 };
 
 export type LimitUpLadderLevel = {
@@ -1436,6 +1453,7 @@ export type LimitUpLadderLevel = {
 
 export type LimitUpLadderDay = {
 	trade_date: string;
+	missing_fields?: string[];
 	limit_up_count: number;
 	board_count: number;
 	first_board_count: number;

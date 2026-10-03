@@ -177,18 +177,21 @@ export function MarginBalanceView({ items, limit, onLimit, meta }: {
 	meta: SourceMeta | null;
 }) {
 	const latest = items.at(-1);
-	const financingShare = latest?.margin_balance ? latest.financing_balance / latest.margin_balance * 100 : 0;
+	const latestHas = (field: string) => !!latest && sourceFieldAvailable(latest.meta, field, meta);
+	const financingShare = latest?.margin_balance && latestHas('financing_balance') && latestHas('margin_balance') ? latest.financing_balance / latest.margin_balance * 100 : NaN;
+	const coverageNames: Record<string, string> = { '001': '深市', '002': '北交所', '007': '沪市' };
+	const coverage = latest?.coverage_known ? (latest.markets || []).map(id => coverageNames[id] || id).join('、') : '历史口径未验证';
 	return <div className="market-data-view market-margin-view">
 		<SourceNotice meta={meta} />
 		<div className="market-margin-toolbar">
-			<div><strong>全市场两融余额</strong><span>沪市、深市、北交所合并口径，交易日收盘后更新</span></div>
+			<div><strong>{latest?.coverage_known && !latest.coverage_complete ? '部分市场两融余额' : '融资融券余额'}</strong><span>实际覆盖：{coverage} · 交易日收盘后更新{latest?.coverage_known && !latest.coverage_complete ? ' · 覆盖不完整，不计算日变化' : ''}</span></div>
 			<nav aria-label="融资融券图表周期">{[30, 60, 120, 250].map((value) => <button type="button" className={limit === value ? 'active' : ''} onClick={() => onLimit(value)} key={value}>{value === 250 ? '近1年' : `${value}日`}</button>)}</nav>
 		</div>
 		<section className="market-flow-summary market-margin-summary">
-			<SummaryMetric icon={<WalletCards size={17} />} label="两融余额" value={latest ? formatHundredMillion(latest.margin_balance) : '--'} detail={latest?.trade_date || '等待交易日'} />
-			<SummaryMetric icon={<TrendingUp size={17} />} label="融资余额" value={latest ? formatHundredMillion(latest.financing_balance) : '--'} detail={`占两融 ${financingShare.toFixed(2)}%`} />
-			<SummaryMetric icon={<Landmark size={17} />} label="融券余额" value={latest ? formatHundredMillion(latest.securities_lending_balance) : '--'} detail="按市值口径汇总" />
-			<SummaryMetric icon={<Activity size={17} />} label="当日余额变化" value={latest ? formatSignedHundredMillion(latest.margin_balance_change) : '--'} detail={latest ? `融资净买入 ${formatSignedHundredMillion(latest.financing_net_buy_amount)}` : '等待数据'} tone={toneClass(latest?.margin_balance_change || 0)} />
+			<SummaryMetric icon={<WalletCards size={17} />} label="两融余额" value={latestHas('margin_balance') ? formatHundredMillion(latest!.margin_balance) : '--'} detail={latest?.trade_date || '等待交易日'} />
+			<SummaryMetric icon={<TrendingUp size={17} />} label="融资余额" value={latestHas('financing_balance') ? formatHundredMillion(latest!.financing_balance) : '--'} detail={Number.isFinite(financingShare) ? `占两融 ${financingShare.toFixed(2)}%` : '占比未知'} />
+			<SummaryMetric icon={<Landmark size={17} />} label="融券余额" value={latestHas('securities_lending_balance') ? formatHundredMillion(latest!.securities_lending_balance) : '--'} detail="按实际覆盖市值汇总" />
+			<SummaryMetric icon={<Activity size={17} />} label="当日余额变化" value={latestHas('margin_balance_change') ? formatSignedHundredMillion(latest!.margin_balance_change) : '--'} detail={latestHas('financing_net_buy_amount') ? `融资净买入 ${formatSignedHundredMillion(latest!.financing_net_buy_amount)}` : '数据/覆盖不足，不计算'} tone={latestHas('margin_balance_change') ? toneClass(latest!.margin_balance_change) : 'flat'} />
 		</section>
 		<section className="market-margin-panel">
 			<header><div><span>MARGIN BALANCE TREND</span><h3>融资融券余额趋势</h3></div><div className="market-margin-legend"><span className="total">两融余额</span><span className="financing">融资余额</span><span className="lending">融券余额（右轴）</span></div></header>
@@ -249,8 +252,8 @@ export function FuturesPositionView({ series, members, consensus, variety, onVar
 
 function MarginBalanceChart({ items }: { items: MarketMarginPoint[] }) {
 	const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-	if (items.length < 2) return <div className="market-chart-loading">暂无足够的融资融券历史数据</div>;
-	const points = [...items].sort((left, right) => left.trade_date.localeCompare(right.trade_date));
+	const points = [...items].filter(point => (!point.coverage_known || point.coverage_complete) && ['margin_balance', 'financing_balance', 'securities_lending_balance'].every(field => sourceFieldAvailable(point.meta, field))).sort((left, right) => left.trade_date.localeCompare(right.trade_date));
+	if (points.length < 2) return <div className="market-chart-loading">暂无足够的完整市场融资融券历史数据</div>;
 	const width = 960;
 	const height = 380;
 	const left = 74;
@@ -300,8 +303,8 @@ function MarginBalanceChart({ items }: { items: MarketMarginPoint[] }) {
 			<div><span>两融余额</span><b>{formatHundredMillion(hovered.margin_balance)}</b></div>
 			<div><span>融资余额</span><b>{formatHundredMillion(hovered.financing_balance)}</b></div>
 			<div><span>融券余额</span><b>{formatHundredMillion(hovered.securities_lending_balance)}</b></div>
-			<div><span>余额变化</span><b className={toneClass(hovered.margin_balance_change)}>{formatSignedHundredMillion(hovered.margin_balance_change)}</b></div>
-			<div><span>融资净买入</span><b className={toneClass(hovered.financing_net_buy_amount)}>{formatSignedHundredMillion(hovered.financing_net_buy_amount)}</b></div>
+			<div><span>余额变化</span><b className={availableTone(hovered.margin_balance_change, sourceFieldAvailable(hovered.meta, 'margin_balance_change'))}>{formatAvailable(hovered.margin_balance_change, sourceFieldAvailable(hovered.meta, 'margin_balance_change'), formatSignedHundredMillion)}</b></div>
+			<div><span>融资净买入</span><b className={availableTone(hovered.financing_net_buy_amount, sourceFieldAvailable(hovered.meta, 'financing_net_buy_amount'))}>{formatAvailable(hovered.financing_net_buy_amount, sourceFieldAvailable(hovered.meta, 'financing_net_buy_amount'), formatSignedHundredMillion)}</b></div>
 		</div>}
 	</div>;
 }
@@ -478,7 +481,7 @@ export function ResearchView({ items, kind, queryDraft, onQueryDraft, onSearch, 
 		<form className="market-filter-bar" onSubmit={(event) => { event.preventDefault(); onSearch(); }}><label><Search size={14} /><input aria-label="搜索研究信号" value={queryDraft} onChange={(event) => onQueryDraft(event.target.value)} placeholder={kind === 'announcement' ? '搜索公告标题或输入股票关键词' : '搜索公司、行业、机构或观点'} /></label>{kind === 'announcement' && <select aria-label="公告分类" value={category} onChange={(event) => onCategory(event.target.value)}><option value="all">全部公告</option><option value="重大">重大事项</option><option value="业绩">业绩公告</option><option value="融资">融资公告</option><option value="风险">风险提示</option></select>}<button type="submit"><Search size={14} />检索</button></form>
 		{items.length ? <div className="market-research-list">{items.map((item) => <article key={`${item.kind}-${item.id}`}>
 			<div className="market-research-icon">{kind === 'announcement' ? <FileText size={18} /> : kind === 'stock' ? <Building2 size={18} /> : <TrendingUp size={18} />}</div>
-			<div><header><span>{item.category || (kind === 'stock' ? '个股研报' : kind === 'industry' ? '行业研报' : '公告')}</span><time>{formatDateTime(item.published_at)}</time></header><h3>{item.title}</h3><p>{[item.stock_name || item.symbol, item.industry_name, item.organization, item.researchers].filter(Boolean).join(' · ') || '市场研究信号'}</p><footer>{item.rating && <span>评级 <strong>{item.rating}</strong>{item.previous_rating && ` / 前值 ${item.previous_rating}`}</span>}{(item.target_low || item.target_high) && <span>目标价 <strong>{formatTarget(item.target_low, item.target_high)}</strong></span>}{item.eps ? <span>预测 EPS <strong>{item.eps.toFixed(2)}</strong></span> : null}{item.pe ? <span>预测 PE <strong>{item.pe.toFixed(1)}</strong></span> : null}</footer></div>
+			<div><header><span>{item.category || (kind === 'stock' ? '个股研报' : kind === 'industry' ? '行业研报' : '公告')}</span><time>{formatDateTime(item.published_at)}</time></header><h3>{item.title}</h3><p>{[item.stock_name || item.symbol, item.industry_name, item.organization, item.researchers].filter(Boolean).join(' · ') || '市场研究信号'}</p>{item.content_status && <small>{item.content_status === 'unavailable' ? '仅列表，正文未取得' : item.content_status === 'truncated' ? '正文已截断，非全文' : '已取得可读正文'}{item.content_issue ? ` · ${item.content_issue}` : ''}</small>}<footer>{item.rating && <span>评级 <strong>{item.rating}</strong>{item.previous_rating && ` / 前值 ${item.previous_rating}`}</span>}{(item.target_low || item.target_high) && <span>目标价 <strong>{formatTarget(item.target_low, item.target_high)}</strong></span>}{item.eps ? <span>预测 EPS <strong>{item.eps.toFixed(2)}</strong></span> : null}{item.pe ? <span>预测 PE <strong>{item.pe.toFixed(1)}</strong></span> : null}</footer></div>
 			{item.url && <a href={item.url} target="_blank" rel="noreferrer" title="查看原文"><ExternalLink size={16} /></a>}
 		</article>)}</div> : <EmptyData title="暂无匹配研究信号" detail="调整关键词或公告分类后重新检索。" />}
 	</div>;

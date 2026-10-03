@@ -44,13 +44,13 @@ func TestMapperBuildsSemiconductorMaterialsMap(t *testing.T) {
 	if node.BoardCode != "BK0891" || node.BoardName != "光刻胶" || node.ChangePercent != -1.2 {
 		t.Fatalf("unexpected photoresist node: %+v", node)
 	}
-	if node.MatchStatus != "matched" || node.BoardSource != "test" || node.StockSource != "eastmoney:board-constituents" {
+	if node.MatchStatus != "matched" || node.BoardSource != "test" || node.StockSource != "board-constituents:unknown" {
 		t.Fatalf("unexpected node data sources: %+v", node)
 	}
 	if len(node.Stocks) != 1 || node.Stocks[0].Symbol != "300576.SZ" {
 		t.Fatalf("unexpected photoresist stocks: %+v", node.Stocks)
 	}
-	if got.Meta.Source != "sector-map:eastmoney" || got.Meta.FetchedAt.IsZero() {
+	if got.Meta.Source != "sector-map:local-composition" || got.Meta.FetchedAt.IsZero() {
 		t.Fatalf("missing map meta: %+v", got.Meta)
 	}
 	for _, group := range got.Groups {
@@ -124,7 +124,7 @@ func TestMapperBuildsThemeOverviewsFromOneBoardSnapshot(t *testing.T) {
 	if semiconductor.TopNode != "半导体" || semiconductor.TopNodeChangePercent != 2 {
 		t.Fatalf("unexpected top node: %+v", semiconductor)
 	}
-	if meta.Source != "theme-overview:eastmoney:stock-selection" || meta.FetchedAt.IsZero() {
+	if meta.Source != "theme-overview:local-composition" || meta.FetchedAt.IsZero() {
 		t.Fatalf("unexpected overview meta: %+v", meta)
 	}
 }
@@ -175,7 +175,7 @@ func TestMapperUsesStockCatalogWhenBoardStocksFail(t *testing.T) {
 	if len(node.Stocks) == 0 {
 		t.Fatalf("expected stock-catalog fallback stocks: %+v", node)
 	}
-	if node.StockSource != "eastmoney:stock-selection" {
+	if node.StockSource != "stock-directory:unknown" {
 		t.Fatalf("expected stock-catalog source: %+v", node)
 	}
 	if node.ChangePercent != 1.24 {
@@ -266,7 +266,7 @@ func TestMapperHydratesCatalogStocksForNodesWithoutBoardMatch(t *testing.T) {
 	if node == nil {
 		t.Fatal("expected photoresist node")
 	}
-	if node.MatchStatus != "matched" || node.StockSource != "eastmoney:stock-selection" {
+	if node.MatchStatus != "matched" || node.StockSource != "stock-directory:unknown" {
 		t.Fatalf("expected catalog-matched node: %+v", node)
 	}
 	if len(node.Stocks) == 0 || node.ChangePercent != 1.24 {
@@ -516,7 +516,7 @@ func TestMapperFallsBackToBoardStocksForDynamicIndustry(t *testing.T) {
 		t.Fatalf("Build dynamic industry fallback failed: %v", err)
 	}
 	node := findNode(got, "industry_core")
-	if findStock(node, "000560.SZ") == nil || node.StockSource != "eastmoney:board-constituents" {
+	if findStock(node, "000560.SZ") == nil || node.StockSource != "board-constituents:unknown" {
 		t.Fatalf("expected board constituent fallback: %+v", node)
 	}
 }

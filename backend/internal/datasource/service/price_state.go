@@ -75,7 +75,7 @@ func MarketPriceFailure(err error) bool {
 		switch capability.Kind {
 		case contracts.Unsupported, contracts.NoData, contracts.InvalidResponse, contracts.Unauthorized, contracts.Canceled:
 			return false
-		case contracts.RateLimited, contracts.UpstreamFailure:
+		case contracts.RateLimited, contracts.UpstreamFailure, contracts.TimedOut:
 			return true
 		}
 	}

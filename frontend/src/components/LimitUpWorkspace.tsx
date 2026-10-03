@@ -35,6 +35,8 @@ import { KLineChart } from './KLineChart';
 import { LadderThemeEntries, LadderThemeEntry, useLadderThemeAI } from '../lib/ladder-theme-ai';
 import { classifyBillboardSeat } from '../lib/billboard';
 import { latestTradingDayKLines } from '../lib/kline';
+import { sourceFieldAvailable } from '../lib/source-fields';
+import { sourceName } from '../lib/source-integrations';
 import { ShortTermProgress } from '../lib/short-term-progress';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
@@ -213,9 +215,9 @@ export function LimitUpWorkspace({ config, data, state, error, emotionData, emot
 
 			<div className="limit-up-summary">
 				<SummaryCard icon={<Flame size={17} />} label="涨停家数" value={data ? current.limitUpCount : '—'} detail={data ? stSummaryLabel(showST, current.stCount) : '等待涨停池'} tone="hot" />
-				<SummaryCard icon={<Layers3 size={17} />} label="连板家数" value={data ? current.boardCount : '—'} detail={data ? `首板 ${current.firstBoardCount} 只` : '等待涨停池'} tone="blue" />
-				<SummaryCard icon={<TrendingUp size={17} />} label="最高连板" value={data ? `${current.maxStreak || 0}板` : '—'} detail={data ? heightStructureLabel(current.maxStreak, current.boardCount) : '等待涨停池'} tone="purple" />
-				<SummaryCard icon={<TimerReset size={17} />} label="开板后回封" value={data ? current.reopenedCount : '—'} detail="仅统计当前仍封板，非完整炸板率" tone="amber" />
+				<SummaryCard icon={<Layers3 size={17} />} label="连板家数" value={data && Number.isFinite(current.maxStreak) ? current.boardCount : '—'} detail={data && Number.isFinite(current.maxStreak) ? `首板 ${current.firstBoardCount} 只` : '板数覆盖不足，首板/连板家数未知'} tone="blue" />
+				<SummaryCard icon={<TrendingUp size={17} />} label="最高连板" value={data && Number.isFinite(current.maxStreak) ? `${current.maxStreak}板` : '—'} detail={data && Number.isFinite(current.maxStreak) ? heightStructureLabel(current.maxStreak, current.boardCount) : '板数未知，不评价高度'} tone="purple" />
+				<SummaryCard icon={<TimerReset size={17} />} label="开板后回封" value={data && Number.isFinite(current.reopenedCount) ? current.reopenedCount : '—'} detail="仅统计当前仍封板，非完整炸板率" tone="amber" />
 				<SummaryCard icon={<BadgeCent size={17} />} label="封板成交额" value={data ? formatMoney(current.totalAmount) : '—'} detail="当前可见涨停池合计" tone="green" />
 			</div>
 
@@ -267,7 +269,7 @@ export function LimitUpWorkspace({ config, data, state, error, emotionData, emot
 				<div className="limit-panel-heading previous-ladder-heading">
 					<div><span>历史对照</span><h3>昨日连板梯队</h3></div>
 					<div className="previous-ladder-controls">
-						<div className="previous-summary"><History size={15} /><span>{previous.tradeDate || '暂无交易日'}</span><strong>{previous.tradeDate ? `${previous.limitUpCount}只涨停 · ${previous.maxStreak || 0}板高度` : updating ? '历史梯队更新中' : '暂无历史梯队'}</strong><em>{previous.sourceSummary}</em></div>
+						<div className="previous-summary"><History size={15} /><span>{previous.tradeDate || '暂无交易日'}</span><strong>{previous.tradeDate ? `${previous.limitUpCount}只涨停 · ${Number.isFinite(previous.maxStreak) ? `${previous.maxStreak}板高度` : '板数未知'}` : updating ? '历史梯队更新中' : '暂无历史梯队'}</strong><em>{previous.sourceSummary}</em></div>
 						<button
 							type="button"
 							className="previous-ladder-toggle"
@@ -476,9 +478,9 @@ function LadderRows({ aiEntries, levels, tradeDate, compact = false, showCurrent
 					key={level.level}
 				>
 					<summary className="limit-level-summary">
-						<div className="limit-level-badge"><strong>{level.level}</strong><span>板</span><small>{level.stocks.length}只</small></div>
+						<div className="limit-level-badge"><strong>{level.level > 0 ? level.level : '?'}</strong><span>板</span><small>{level.stocks.length}只</small></div>
 						<div className="limit-level-toggle-copy">
-							<strong>{level.level === 1 ? '首板股票' : `${level.level}板梯队`}</strong>
+							<strong>{level.level === 0 ? '板数未知' : level.level === 1 ? '首板股票' : `${level.level}板梯队`}</strong>
 							<span>{level.level === 1 ? '数量较多，点击展开全部股票' : '点击收拢本层股票'}</span>
 						</div>
 						<ChevronDown size={17} aria-hidden="true" />
@@ -492,20 +494,21 @@ function LadderRows({ aiEntries, levels, tradeDate, compact = false, showCurrent
 	);
 }
 
-function LadderStockChip({ tradeDate, ai, stock, compact, showCurrentChange, onSelect, onSelectBillboard }: { tradeDate: string; ai?: LadderThemeEntry; stock: LimitUpLadderStock; compact: boolean; showCurrentChange: boolean; onSelect: () => void; onSelectBillboard: () => void }) {
+export function LadderStockChip({ tradeDate, ai, stock, compact, showCurrentChange, onSelect, onSelectBillboard }: { tradeDate: string; ai?: LadderThemeEntry; stock: LimitUpLadderStock; compact: boolean; showCurrentChange: boolean; onSelect: () => void; onSelectBillboard: () => void }) {
 	const [conceptsExpanded, setConceptsExpanded] = useState(false);
 	const concepts = [...new Set((stock.raw_concepts || []).flatMap(value => value.split(/[、,，;；]/)).map(value => value.trim()).filter(Boolean))];
 	const visibleConcepts = conceptsExpanded ? concepts : concepts.slice(0, 3);
 	const hiddenConceptCount = Math.max(0, concepts.length - 3);
 	const tooltip = [
 		`${stock.name} · 概念板块：${concepts.join('、') || '暂无概念数据'}`,
-		`数据源：${stock.source?.includes('duanxianxia') ? '开盘啦' : stock.source ? '东方财富补充' : '待确认'}`,
+		`数据源：${stock.source ? sourceName(stock.source) : '待确认'}`,
+		...Object.entries(stock.meta?.field_sources || {}).map(([field, source]) => `补字段 ${field}：${sourceName(source)} · 抓取 ${stock.meta?.field_fetched_at?.[field] || '未知'}`),
 		stock.theme_source ? `题材口径：${stock.theme_source.includes('cross-day') ? '跨日开盘啦统一' : stock.theme_source.includes('duanxianxia') ? '开盘啦逐股题材' : '东方财富概念归因'}` : '',
 		stock.raw_concepts?.length ? `原始概念：${stock.raw_concepts.join('、')}` : '',
 		...(stock.theme_evidence || []),
 	].filter(Boolean).join('\n');
 	return (
-		<article className={`limit-stock-chip clickable ${stock.open_count > 0 ? 'reopened' : ''} ${stock.is_st ? 'st' : ''}`} title={`${tooltip}\n点击查看多周期行情`} role="button" tabIndex={0} onClick={onSelect} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(); } }}>
+		<article className={`limit-stock-chip clickable ${sourceFieldAvailable(stock.meta, 'open_count') && stock.open_count > 0 ? 'reopened' : ''} ${stock.is_st ? 'st' : ''}`} title={`${tooltip}\n点击查看多周期行情`} role="button" tabIndex={0} onClick={onSelect} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(); } }}>
 			<div className="limit-stock-title">
 				<strong>{stock.name}</strong>
 				{showCurrentChange && stock.current_change_percent != null && (
@@ -543,7 +546,7 @@ function LadderStockChip({ tradeDate, ai, stock, compact, showCurrentChange, onS
 				</details>}
 			</div>}
 			<div className="limit-stock-sub"><span>{stock.symbol}</span><em>{stock.industry || '暂无行业数据'}</em></div>
-			{!compact ? <div className="limit-stock-meta"><span>{formatClock(stock.first_limit_time)}</span><span>{stock.board_type || (stock.open_count ? `开板${stock.open_count}次` : '封板未开')}</span><button type="button" className="limit-billboard-button" onClick={(event) => { event.stopPropagation(); onSelectBillboard(); }}>龙虎榜</button></div> : <button type="button" className="limit-billboard-button compact" onClick={(event) => { event.stopPropagation(); onSelectBillboard(); }}>龙虎榜</button>}
+			{!compact ? <div className="limit-stock-meta"><span>{formatClock(stock.first_limit_time)}</span><span>{stock.board_type || (!sourceFieldAvailable(stock.meta, 'open_count') ? '开板次数未知' : stock.open_count ? `开板${stock.open_count}次` : '封板未开')}</span><button type="button" className="limit-billboard-button" onClick={(event) => { event.stopPropagation(); onSelectBillboard(); }}>龙虎榜</button></div> : <button type="button" className="limit-billboard-button compact" onClick={(event) => { event.stopPropagation(); onSelectBillboard(); }}>龙虎榜</button>}
 		</article>
 	);
 }
@@ -566,7 +569,7 @@ function BillboardModal({ stock, tradeDate, item, detail, state, error, onClose 
 				{state === 'empty' && <div className="billboard-modal-state empty"><Landmark size={26} /><strong>该交易日未上榜</strong><span>{stock.name} 在 {titleDate} 暂无龙虎榜记录。</span></div>}
 				{state === 'error' && <div className="billboard-modal-state error"><ShieldAlert size={24} /><strong>龙虎榜数据暂不可用</strong><span>{error || '请稍后重试。'}</span></div>}
 				{state === 'ready' && item && <>
-					<div className="billboard-tag-row"><span className="billboard-tag primary">上榜</span><span className="billboard-tag">{item.reason || '上榜原因未提供'}</span>{item.institution_buyers > 0 && <span className="billboard-tag institution">机构参与</span>}<span className="billboard-tag">买方 {item.buy_seats}席</span><span className="billboard-tag">卖方 {item.sell_seats}席</span><span className={`billboard-tag ${item.net_amount >= 0 ? 'positive' : 'negative'}`}>{item.net_amount >= 0 ? '净买入' : '净卖出'} {formatMoney(Math.abs(item.net_amount))}</span></div>
+					<div className="billboard-tag-row"><span className="billboard-tag primary">上榜</span><span className="billboard-tag">{item.reason || '上榜原因未提供'}</span>{item.institution_buyers > 0 && <span className="billboard-tag institution">机构参与</span>}{detail ? <><span className="billboard-tag">买方 {detail.buy_seats.length}席</span><span className="billboard-tag">卖方 {detail.sell_seats.length}席</span></> : item.seat_counts_known ? <><span className="billboard-tag">买方 {item.buy_seats}席</span><span className="billboard-tag">卖方 {item.sell_seats}席</span></> : <span className="billboard-tag">席位数量待明细确认</span>}<span className={`billboard-tag ${item.net_amount >= 0 ? 'positive' : 'negative'}`}>{item.net_amount >= 0 ? '净买入' : '净卖出'} {formatMoney(Math.abs(item.net_amount))}</span></div>
 					<div className="billboard-stat-grid"><BillboardStat label="收盘价" value={formatPrice(item.close_price)} /><BillboardStat label="涨跌幅" value={formatSignedPercent(item.change_percent)} tone={item.change_percent >= 0 ? 'up' : 'down'} /><BillboardStat label="换手率" value={`${item.turnover_rate.toFixed(2)}%`} /><BillboardStat label="买入金额" value={formatMoney(item.buy_amount)} /><BillboardStat label="卖出金额" value={formatMoney(item.sell_amount)} /><BillboardStat label="净买额" value={formatMoney(item.net_amount)} tone={item.net_amount >= 0 ? 'up' : 'down'} /><BillboardStat label="机构买方" value={`${item.institution_buyers}席`} /></div>
 					{item.summary && <blockquote className="billboard-summary">{item.summary}</blockquote>}
 					{!detail && <div className="billboard-detail-warning"><ShieldAlert size={15} /><span>买卖席位明细暂不可用，已展示榜单汇总。</span></div>}
@@ -637,11 +640,11 @@ function summarizeVisibleDay(day: LimitUpLadderDay | undefined, showST: boolean)
 		levels,
 		limitUpCount: stocks.length,
 		boardCount: stocks.filter((stock) => stock.streak >= 2).length,
-		firstBoardCount: stocks.filter((stock) => stock.streak <= 1).length,
-		maxStreak: stocks.reduce((maximum, stock) => Math.max(maximum, stock.streak), 0),
-		reopenedCount: stocks.filter((stock) => stock.open_count > 0).length,
+		firstBoardCount: stocks.filter((stock) => stock.streak === 1).length,
+		maxStreak: day?.missing_fields?.includes('streak') ? NaN : stocks.reduce((maximum, stock) => Math.max(maximum, stock.streak), 0),
+		reopenedCount: stocks.every(stock => sourceFieldAvailable(stock.meta, 'open_count')) ? stocks.filter((stock) => stock.open_count > 0).length : NaN,
 		stCount: (day?.levels || []).flatMap((level) => level.stocks).filter((stock) => stock.is_st).length,
-		totalAmount: stocks.reduce((total, stock) => total + stock.amount, 0),
+		totalAmount: stocks.every(stock => sourceFieldAvailable(stock.meta, 'amount')) ? stocks.reduce((total, stock) => total + stock.amount, 0) : NaN,
 		sourceSummary: ladderSourceSummary(kaipanlaCount, fallbackCount),
 	};
 }

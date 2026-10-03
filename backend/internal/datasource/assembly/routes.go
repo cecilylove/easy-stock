@@ -3,6 +3,7 @@ package assembly
 import (
 	"easy-stock/backend/internal/datasource/registry"
 	"fmt"
+	"strings"
 )
 
 // Routes explicitly opts registered abilities into business access. Registration
@@ -18,12 +19,13 @@ type Routes struct {
 	FuturesSnapshot, FuturesMembers, FuturesConsensus                                                                                    string // Independent overrides; FuturesExchange is the legacy combined default.
 	BoardMembers                                                                                                                         []string
 	Theme                                                                                                                                string
+	BillboardLabels                                                                                                                      string // Optional enrichment; empty disables labels without disabling raw details.
 }
 
 func DefaultRoutes() Routes {
 	return Routes{
 		Realtime: "sina", Auction: "eastmoney", Intraday: "sina", HistoryIntraday: "sina", News: "cls", Directory: "eastmoney", Business: "eastmoney", Fundamentals: "eastmoney", LimitUp: "eastmoney", Pools: "eastmoney", Boards: "eastmoney", Theme: "duanxianxia",
-		KLine: []string{"sina", "tencent"}, Strict: []string{"tencent"}, DefaultStrict: "tencent", Index: "tencent", Industry: "tencent", IndustryFallback: "eastmoney", FundFlow: "sina", FundFlowFallback: "eastmoney", Margin: "eastmoney", Billboard: "eastmoney", Announcements: "eastmoney", Reports: "eastmoney", USSectorFallback: "tencent", HotRanks: []string{"ths", "eastmoney"}, FuturesHistory: "eastmoney", FuturesExchange: "cffex", BoardMembers: []string{"tencent"},
+		KLine: []string{"sina", "tencent"}, Strict: []string{"tencent"}, DefaultStrict: "tencent", Index: "tencent", Industry: "tencent", IndustryFallback: "eastmoney", FundFlow: "sina", FundFlowFallback: "eastmoney", Margin: "eastmoney", Billboard: "eastmoney", BillboardLabels: "ths", Announcements: "eastmoney", Reports: "eastmoney", USSectorFallback: "tencent", HotRanks: []string{"ths", "eastmoney"}, FuturesHistory: "eastmoney", FuturesExchange: "cffex", BoardMembers: []string{"tencent"},
 	}
 }
 
@@ -75,6 +77,7 @@ func (r Routes) Validate(sources *registry.Registry) error {
 		{r.FundFlowFallback, "fund-flow-fallback", func(c registry.Capabilities) bool { return c.FundFlow != nil }},
 		{r.Margin, "margin", func(c registry.Capabilities) bool { return c.Margin != nil }},
 		{r.Billboard, "billboard", func(c registry.Capabilities) bool { return c.Billboard != nil }},
+		{r.BillboardLabels, "billboard-labels", func(c registry.Capabilities) bool { return c.BillboardLabels != nil }},
 		{r.Announcements, "announcements", func(c registry.Capabilities) bool { return c.Announcements != nil }},
 		{r.Reports, "reports", func(c registry.Capabilities) bool { return c.Reports != nil }},
 		{r.LimitUp, "limit-up", func(c registry.Capabilities) bool { return c.LimitUp != nil }},
@@ -119,6 +122,19 @@ func (r Routes) Validate(sources *registry.Registry) error {
 		entry, ok := sources.Lookup(check.id)
 		if !ok || !entry.Descriptor.Enabled || !entry.Descriptor.Implemented || !check.present(entry.Capabilities) {
 			return fmt.Errorf("source route %s: %q is disabled, missing, or unsupported", check.cap, check.id)
+		}
+		// Interface values containing typed nil pointers must not activate a
+		// route. The canonical slot list already excludes those placeholders.
+		capability := strings.TrimSuffix(check.cap, "-fallback")
+		found := false
+		for _, actual := range registry.CanonicalCapabilities(entry.Capabilities) {
+			if actual == capability {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("source route %s: %q has no implementation", check.cap, check.id)
 		}
 	}
 	return nil

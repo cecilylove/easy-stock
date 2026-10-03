@@ -102,7 +102,7 @@ func (m *Mapper) Build(ctx context.Context, themeID string) (foundation.SectorMa
 		ThemeTabs: tabs,
 		Groups:    make([]foundation.SectorMapGroup, 0, len(theme.Groups)),
 		Meta: foundation.SourceMeta{
-			Source:    "sector-map:eastmoney",
+			Source:    "sector-map:local-composition",
 			FetchedAt: time.Now(),
 			LatencyMS: time.Since(start).Milliseconds(),
 		},
@@ -137,7 +137,7 @@ func (m *Mapper) Overviews(ctx context.Context) ([]foundation.ThemeOverview, fou
 		items := buildTrendOverviews(events, catalog)
 		if len(items) > 0 {
 			return items, foundation.SourceMeta{
-				Source:    "trend-overview:eastmoney:limit-up+stock-selection",
+				Source:    "trend-overview:local-composition",
 				FetchedAt: time.Now(),
 				LatencyMS: time.Since(start).Milliseconds(),
 				TradeDate: items[0].TradeDate,
@@ -153,7 +153,7 @@ func (m *Mapper) Overviews(ctx context.Context) ([]foundation.ThemeOverview, fou
 		items = append(items, buildThemeOverview(theme, boards, catalogIndex))
 	}
 	meta := foundation.SourceMeta{
-		Source:    "theme-overview:eastmoney:stock-selection",
+		Source:    "theme-overview:local-composition",
 		FetchedAt: time.Now(),
 		LatencyMS: time.Since(start).Milliseconds(),
 	}
@@ -263,11 +263,16 @@ func (m *Mapper) buildNode(
 		Stocks:      []foundation.BoardStock{},
 	}
 	board, matchedBy, boardMatched := matchBoard(node, boards)
+	nativeMembers := false
 	if boardMatched {
 		out.BoardCode = board.Code
 		out.BoardName = board.Name
 		out.BoardSource = board.Meta.Source
-		out.BoardRef = &foundation.BoardRef{Provider: "eastmoney", NativeCode: board.Code, Dimension: "unknown", Name: board.Name}
+		provider := board.Meta.Provider
+		if provider == "" {
+			provider, _, _ = strings.Cut(board.Meta.Source, ":")
+		}
+		out.BoardRef = &foundation.BoardRef{Provider: provider, NativeCode: board.Code, Dimension: "unknown", Name: board.Name}
 		out.ChangePercent = board.ChangePercent
 		out.MainNetInflow = board.MainNetInflow
 		out.MatchStatus = "matched"
@@ -277,7 +282,8 @@ func (m *Mapper) buildNode(
 			stocks, err := m.provider.BoardStocks(ctx, board.Code, 30)
 			if err == nil && len(stocks) > 0 {
 				out.Stocks = append([]foundation.BoardStock(nil), stocks...)
-				out.StockSource = "eastmoney:board-constituents"
+				out.StockSource = boardStockSources(stocks, "board-constituents:unknown")
+				nativeMembers = true
 			}
 		}
 	} else {
@@ -289,10 +295,11 @@ func (m *Mapper) buildNode(
 		out.Stocks = mergeBoardStock(out.Stocks, stock)
 	}
 	if len(catalogStocks) > 0 {
+		catalogSource := boardStockSources(catalogStocks, "stock-directory:unknown")
 		if out.StockSource == "" {
-			out.StockSource = "eastmoney:stock-selection"
-		} else if !strings.Contains(out.StockSource, "stock-selection") {
-			out.StockSource += "+stock-selection"
+			out.StockSource = catalogSource
+		} else if out.StockSource != catalogSource {
+			out.StockSource += " + " + catalogSource
 		}
 		out.MatchStatus = "matched"
 		if node.Narrative != "" {
@@ -304,18 +311,23 @@ func (m *Mapper) buildNode(
 	if len(out.Stocks) == 0 && boardMatched && len(catalog) > 0 {
 		if stocks, err := m.provider.BoardStocks(ctx, board.Code, 200); err == nil && len(stocks) > 0 {
 			out.Stocks = append([]foundation.BoardStock(nil), stocks...)
-			out.StockSource = "eastmoney:board-constituents"
+			out.StockSource = boardStockSources(stocks, "board-constituents:unknown")
+			nativeMembers = true
 			out.MatchStatus = "matched"
 			out.MatchedBy = append(out.MatchedBy, "board-constituents:fallback")
 		}
 	}
+	beforeCandidates := len(out.Stocks)
 	m.hydrateLimitUpCandidates(ctx, node, catalog, limitEvents, &out)
+	if len(out.Stocks) != beforeCandidates || len(catalogStocks) > 0 {
+		nativeMembers = false
+	}
 	if out.ChangePercent == 0 && len(out.Stocks) > 0 {
 		out.ChangePercent = averageChangePercent(out.Stocks)
 	}
 	if len(out.Stocks) == 0 {
 		if catalogErr != nil {
-			out.Warnings = append(out.Warnings, "东方财富股票目录暂不可用")
+			out.Warnings = append(out.Warnings, "股票目录暂不可用")
 		} else if !boardMatched {
 			out.Warnings = append(out.Warnings, "未匹配到题材成分")
 		} else {
@@ -323,7 +335,7 @@ func (m *Mapper) buildNode(
 		}
 	}
 	kind, scope, method := "candidate", "related_candidates", "catalog_or_narrative_match"
-	if out.StockSource == "eastmoney:board-constituents" {
+	if nativeMembers {
 		kind, scope, method = "native", "returned_page", "native_board_code"
 	}
 	out.MemberSet = &foundation.MemberSetMeta{Kind: kind, Returned: len(out.Stocks), Scope: scope, Method: method}
@@ -566,11 +578,7 @@ func (m *Mapper) hydrateLimitUpCandidates(
 		}
 		out.Stocks = mergeBoardStock(out.Stocks, stock)
 	}
-	if out.StockSource == "" {
-		out.StockSource = "eastmoney:recent-limit-up"
-	} else if !strings.Contains(out.StockSource, "recent-limit-up") {
-		out.StockSource += "+recent-limit-up"
-	}
+	out.StockSource = boardStockSources(out.Stocks, "limit-up-candidates:unknown")
 }
 
 func limitEventMatchesNode(event foundation.LimitUpEvent, node Node, catalog catalogIndex) bool {

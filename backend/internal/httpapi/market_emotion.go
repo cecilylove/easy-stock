@@ -312,17 +312,32 @@ func (e *marketEmotionEngine) sync(
 		_ = e.store.SaveSyncState(context.Background(), state)
 	}()
 
-	events, err := e.limitUps.RecentLimitUps(ctx, 24)
+	historyInput, err := loadLimitUpHistory(ctx, e.limitUps, 24)
 	if err != nil {
 		return fmt.Errorf("load recent limit-up history: %w", err)
 	}
 	eventsByDate := map[string][]foundation.LimitUpEvent{}
-	for _, event := range events {
+	covered := map[string]bool{}
+	for _, rawDate := range historyInput.CoveredDates {
+		date, parseErr := time.ParseInLocation("2006-01-02", rawDate, shanghaiLocation)
+		if parseErr == nil && foundation.IsAStockTradingDay(date) && rawDate <= completedMarketDate(now) {
+			covered[rawDate] = true
+			eventsByDate[rawDate] = nil
+		}
+	}
+	for _, missing := range historyInput.MissingDates {
+		delete(covered, missing)
+		delete(eventsByDate, missing)
+	}
+	for _, event := range historyInput.Events {
 		if event.Date.IsZero() {
 			continue
 		}
 		date := event.Date.In(shanghaiLocation).Format("2006-01-02")
-		if date <= completedMarketDate(now) {
+		if covered[date] && (event.Meta.TradeDate == "" || event.Meta.TradeDate == date) {
+			if err := validateEmotionEventFields([]foundation.LimitUpEvent{event}); err != nil {
+				return err
+			}
 			eventsByDate[date] = append(eventsByDate[date], event)
 		}
 	}
@@ -367,11 +382,8 @@ func (e *marketEmotionEngine) sync(
 		day := buildLimitUpDay(date, eventsByDate[date], catalogBySymbol)
 		days[date] = &day
 	}
-	for index, date := range dates {
-		var previous *limitUpLadderDay
-		if index > 0 {
-			previous = days[dates[index-1]]
-		}
+	for _, date := range dates {
+		previous := days[previousLimitUpTradingDate(date)]
 		attributeLimitUpThemes(days[date], previous, catalog)
 	}
 
@@ -380,8 +392,11 @@ func (e *marketEmotionEngine) sync(
 		return err
 	}
 	previousDate := map[string]string{}
-	for index := 1; index < len(dates); index++ {
-		previousDate[dates[index]] = dates[index-1]
+	for _, date := range dates {
+		adjacent := previousLimitUpTradingDate(date)
+		if days[adjacent] != nil {
+			previousDate[date] = adjacent
+		}
 	}
 	quoteSymbols := map[string]struct{}{}
 	for _, date := range targetDates {
@@ -408,6 +423,7 @@ func (e *marketEmotionEngine) sync(
 			return fmt.Errorf("%s historical quote coverage %.1f%% is too low; cache was not updated", date, raw.QuoteCoverage*100)
 		}
 		snapshot := scoreMarketEmotion(date, raw, history, now)
+		snapshot.Source = marketEmotionInputSources(eventsByDate[date], sidePools[date], lines[date], catalog)
 		history = append(history, snapshot)
 		newSnapshots = append(newSnapshots, snapshot)
 		state.LastSuccessDate = date
@@ -865,7 +881,7 @@ func scoreMarketEmotion(
 		HistorySamples: len(history),
 		Raw:            raw,
 		Scores:         scores,
-		Source:         "东方财富涨停/炸板/跌停池 + 东方财富日K + 动态概念归因",
+		Source:         "本地情绪模型（具体输入来源见采集结果）",
 		UpdatedAt:      now,
 	}
 }

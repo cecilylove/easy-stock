@@ -89,6 +89,12 @@ type MarketFundFlow struct {
 }
 
 type MarketMarginPoint struct {
+	// Coverage refers to the source's market IDs, not inferred zero balances.
+	Markets                      []string   `json:"markets,omitempty"`
+	MissingMarkets               []string   `json:"missing_markets,omitempty"`
+	CoverageKnown                bool       `json:"coverage_known,omitempty"`
+	CoverageComplete             bool       `json:"coverage_complete"`
+	ChangeAvailable              bool       `json:"change_available"`
 	TradeDate                    string     `json:"trade_date"`
 	FinancingBalance             float64    `json:"financing_balance"`
 	SecuritiesLendingBalance     float64    `json:"securities_lending_balance"`
@@ -117,6 +123,7 @@ type MarketBillboardItem struct {
 	InstitutionBuyers int        `json:"institution_buyers"`
 	BuySeats          int        `json:"buy_seats"`
 	SellSeats         int        `json:"sell_seats"`
+	SeatCountsKnown   bool       `json:"seat_counts_known"`
 	Meta              SourceMeta `json:"meta"`
 }
 
@@ -157,6 +164,9 @@ type MarketResearchItem struct {
 	IndustryName   string     `json:"industry_name,omitempty"`
 	Title          string     `json:"title"`
 	Content        string     `json:"content,omitempty"`
+	ContentStatus  string     `json:"content_status,omitempty"`
+	ContentScope   string     `json:"content_scope,omitempty"`
+	ContentIssue   string     `json:"content_issue,omitempty"`
 	Organization   string     `json:"organization,omitempty"`
 	Researchers    string     `json:"researchers,omitempty"`
 	Rating         string     `json:"rating,omitempty"`

@@ -432,15 +432,16 @@ func (c *Client) MarketMarginSeries(ctx context.Context, limit int) ([]foundatio
 			Result  struct {
 				Pages int `json:"pages"`
 				Data  []struct {
-					Date                         string  `json:"DIM_DATE"`
-					FinancingBalance             float64 `json:"RZYE"`
-					SecuritiesLendingBalance     float64 `json:"RQYE"`
-					MarginBalance                float64 `json:"RZRQYE"`
-					FinancingBuyAmount           float64 `json:"RZMRE"`
-					FinancingRepayAmount         float64 `json:"RZCHE"`
-					FinancingNetBuyAmount        float64 `json:"RZJME"`
-					SecuritiesLendingSellVolume  float64 `json:"RQMCL"`
-					SecuritiesLendingRepayVolume float64 `json:"RQCHL"`
+					Date                         string        `json:"DIM_DATE"`
+					Market                       string        `json:"SCDM"`
+					FinancingBalance             catalogNumber `json:"RZYE"`
+					SecuritiesLendingBalance     catalogNumber `json:"RQYE"`
+					MarginBalance                catalogNumber `json:"RZRQYE"`
+					FinancingBuyAmount           catalogNumber `json:"RZMRE"`
+					FinancingRepayAmount         catalogNumber `json:"RZCHE"`
+					FinancingNetBuyAmount        catalogNumber `json:"RZJME"`
+					SecuritiesLendingSellVolume  catalogNumber `json:"RQMCL"`
+					SecuritiesLendingRepayVolume catalogNumber `json:"RQCHL"`
 				} `json:"data"`
 			} `json:"result"`
 		}
@@ -460,14 +461,9 @@ func (c *Client) MarketMarginSeries(ctx context.Context, limit int) ([]foundatio
 				point = &foundation.MarketMarginPoint{TradeDate: tradeDate}
 				pointsByDate[tradeDate] = point
 			}
-			point.FinancingBalance += raw.FinancingBalance
-			point.SecuritiesLendingBalance += raw.SecuritiesLendingBalance
-			point.MarginBalance += raw.MarginBalance
-			point.FinancingBuyAmount += raw.FinancingBuyAmount
-			point.FinancingRepayAmount += raw.FinancingRepayAmount
-			point.FinancingNetBuyAmount += raw.FinancingNetBuyAmount
-			point.SecuritiesLendingSellVolume += raw.SecuritiesLendingSellVolume
-			point.SecuritiesLendingRepayVolume += raw.SecuritiesLendingRepayVolume
+			if err := addMarginMarket(point, raw.Market, []catalogNumber{raw.FinancingBalance, raw.SecuritiesLendingBalance, raw.MarginBalance, raw.FinancingBuyAmount, raw.FinancingRepayAmount, raw.FinancingNetBuyAmount, raw.SecuritiesLendingSellVolume, raw.SecuritiesLendingRepayVolume}); err != nil {
+				return nil, foundation.SourceMeta{}, err
+			}
 		}
 		if len(pointsByDate) >= limit+1 || len(payload.Result.Data) < 500 || (payload.Result.Pages > 0 && page >= payload.Result.Pages) {
 			break
@@ -484,20 +480,46 @@ func (c *Client) MarketMarginSeries(ctx context.Context, limit int) ([]foundatio
 	sort.Strings(tradeDates)
 	meta := foundation.SourceMeta{
 		Source: "eastmoney:margin-balance", SourceURL: lastRequestURL,
-		AvailableFields: []string{"financing_balance", "securities_lending_balance", "margin_balance", "margin_balance_change", "financing_buy_amount", "financing_repay_amount", "financing_net_buy_amount", "securities_lending_sell_volume", "securities_lending_repay_volume"},
-		FetchedAt:       time.Now(), LatencyMS: time.Since(start).Milliseconds(), TradeDate: tradeDates[len(tradeDates)-1],
+		FieldsKnown: true,
+		FetchedAt:   time.Now(), LatencyMS: time.Since(start).Milliseconds(), TradeDate: tradeDates[len(tradeDates)-1],
 	}
 	points := make([]foundation.MarketMarginPoint, 0, len(tradeDates))
 	for _, tradeDate := range tradeDates {
 		point := *pointsByDate[tradeDate]
+		finalizeMarginCoverage(&point)
+		point.Meta.Source, point.Meta.SourceURL = meta.Source, meta.SourceURL
+		point.Meta.FetchedAt, point.Meta.LatencyMS, point.Meta.TradeDate = meta.FetchedAt, meta.LatencyMS, tradeDate
 		if len(points) > 0 {
-			point.MarginBalanceChange = point.MarginBalance - points[len(points)-1].MarginBalance
+			previous := points[len(points)-1]
+			if point.CoverageComplete && previous.CoverageComplete && adjacentMarginTradingDays(previous.TradeDate, point.TradeDate) && foundation.FieldAvailable(point.Meta, "margin_balance") && foundation.FieldAvailable(previous.Meta, "margin_balance") {
+				change := point.MarginBalance - previous.MarginBalance
+				if !math.IsNaN(change) && !math.IsInf(change, 0) {
+					point.MarginBalanceChange = change
+					point.ChangeAvailable = true
+					point.Meta.AvailableFields = append(point.Meta.AvailableFields, "margin_balance_change")
+				}
+			}
 		}
-		point.Meta = meta
+		if point.Meta.Partial {
+			meta.Partial = true
+			meta.MissingIDs = append(meta.MissingIDs, tradeDate+":market-coverage")
+		}
 		points = append(points, point)
 	}
 	if len(points) > limit {
 		points = points[len(points)-limit:]
+	}
+	// Schema is the retained rows' intersection, never a claim that an
+	// unreported field became a full-market zero.
+	meta.AvailableFields = append([]string(nil), points[0].Meta.AvailableFields...)
+	for _, point := range points[1:] {
+		fields := []string{}
+		for _, field := range meta.AvailableFields {
+			if foundation.FieldAvailable(point.Meta, field) {
+				fields = append(fields, field)
+			}
+		}
+		meta.AvailableFields = fields
 	}
 	return points, meta, nil
 }
@@ -583,7 +605,9 @@ func (c *Client) fetchBillboardDate(ctx context.Context, tradeDate string, limit
 			TurnoverRate: asFloat(raw["TURNOVERRATE"]), Reason: asString(raw["EXPLANATION"]), Summary: asString(raw["EXPLAIN"]),
 			BuyAmount: firstFloat(raw["BILLBOARD_BUY_AMT"], raw["SUM_BUY_AMT"]), SellAmount: firstFloat(raw["BILLBOARD_SELL_AMT"], raw["SUM_SELL_AMT"]),
 			NetAmount: firstFloat(raw["BILLBOARD_NET_AMT"], raw["NET_BS_AMT"]), InstitutionBuyers: institutionCount(asString(raw["EXPLAIN"])),
-			BuySeats: int(asFloat(raw["BUY_SEAT"])), SellSeats: int(asFloat(raw["SELL_SEAT"])), Meta: meta,
+			// BUY_SEAT/SELL_SEAT are native classification codes, not counts.
+			// Only the actual detail arrays can establish seat counts.
+			Meta: meta,
 		})
 	}
 	return items, meta, nil
@@ -619,7 +643,6 @@ func (c *Client) MarketBillboardDetail(ctx context.Context, symbol string, trade
 	if err != nil {
 		return foundation.MarketBillboardDetail{}, foundation.SourceMeta{}, err
 	}
-	buySeats, sellSeats = c.enrichBillboardSeatLabels(ctx, normalized.Canonical, tradeDate, buySeats, sellSeats)
 	meta := foundation.SourceMeta{
 		Source:    "eastmoney:billboard-seats",
 		SourceURL: buyURL + " | " + sellURL,
@@ -704,6 +727,10 @@ func (c *Client) MarketAnnouncements(ctx context.Context, query string, symbol s
 	if limit <= 0 {
 		limit = 50
 	}
+	limit = min(limit, 100)
+	// List and body requests share a single caller-bounded budget.
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	endpoint := c.announcementBaseURL + "/api/security/ann"
 	params := url.Values{}
 	params.Set("sr", "-1")
@@ -765,18 +792,45 @@ func (c *Client) MarketAnnouncements(ctx context.Context, query string, symbol s
 	// The list endpoint only exposes titles. Load the announcement body as
 	// well, otherwise event-driven theme attribution cannot see the target
 	// company, ownership ratio or product terms hidden in the notice.
-	var bodyWG sync.WaitGroup
+	jobs := make(chan int, len(items))
 	for index := range items {
+		jobs <- index
+	}
+	close(jobs)
+	var bodyWG sync.WaitGroup
+	for worker := 0; worker < min(4, len(items)); worker++ {
 		bodyWG.Add(1)
-		go func(index int) {
+		go func() {
 			defer bodyWG.Done()
-			content, contentErr := c.announcementContent(ctx, items[index].ID)
-			if contentErr == nil {
-				items[index].Content = truncateAnnouncementContent(content, 8_000)
+			for index := range jobs {
+				item := &items[index]
+				item.ContentStatus, item.ContentScope = "unavailable", "list-only"
+				content, contentErr := c.announcementContent(ctx, item.ID)
+				if contentErr != nil || strings.TrimSpace(content) == "" {
+					item.ContentIssue = "正文未取得，不能视为阅读全文或据此排除风险"
+					item.Meta.Partial = true
+					continue
+				}
+				item.Content = truncateAnnouncementContent(content, 8_000)
+				item.ContentStatus, item.ContentScope = "available", "readable-text"
+				if len([]rune(content)) > 8_000 {
+					item.ContentStatus, item.ContentScope = "truncated", "truncated-text"
+					item.ContentIssue = "正文已截断为8000字，不等于附件全文"
+					item.Meta.Partial = true
+				}
 			}
-		}(index)
+		}()
 	}
 	bodyWG.Wait()
+	for _, item := range items {
+		if item.Meta.Partial {
+			meta.Partial = true
+			meta.MissingIDs = append(meta.MissingIDs, item.ID+":body")
+		}
+	}
+	if ctx.Err() == context.Canceled {
+		return items, meta, ctx.Err()
+	}
 	return items, meta, nil
 }
 

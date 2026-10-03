@@ -53,7 +53,7 @@ func (t *sourceHealthTracker) sourceID(value string) string {
 }
 
 func (t *sourceHealthTracker) success(meta foundation.SourceMeta) {
-	if t == nil || meta.Stale || meta.FetchedAt.IsZero() {
+	if t == nil || meta.Stale || meta.FetchedAt.IsZero() || (meta.ExecutionState != "" && meta.ExecutionState != "fetched") {
 		return
 	}
 	id := t.sourceID(meta.Source)
@@ -79,6 +79,9 @@ func (t *sourceHealthTracker) success(meta foundation.SourceMeta) {
 }
 
 func (t *sourceHealthTracker) observe(event foundation.SourceObservation) {
+	if event.Meta.ExecutionState != "" && event.Meta.ExecutionState != "fetched" {
+		return
+	}
 	capability := event.Capability
 	if capability == "" {
 		capability = event.Meta.Capability

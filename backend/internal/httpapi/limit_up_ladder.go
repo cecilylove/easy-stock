@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"easy-stock/backend/internal/datasource/contracts"
 	"math"
 	"net/http"
 	"sort"
@@ -15,34 +18,35 @@ import (
 )
 
 type limitUpLadderStock struct {
-	Symbol               string   `json:"symbol"`
-	Name                 string   `json:"name"`
-	Price                float64  `json:"price"`
-	ChangePercent        float64  `json:"change_percent"`
-	CurrentChangePercent *float64 `json:"current_change_percent,omitempty"`
-	Amount               float64  `json:"amount"`
-	FloatMarketCap       float64  `json:"float_market_cap"`
-	TurnoverRate         float64  `json:"turnover_rate"`
-	Streak               int      `json:"streak"`
-	FirstLimitTime       string   `json:"first_limit_time,omitempty"`
-	LastLimitTime        string   `json:"last_limit_time,omitempty"`
-	OpenCount            int      `json:"open_count"`
-	Industry             string   `json:"industry,omitempty"`
-	Days                 int      `json:"days"`
-	Count                int      `json:"count"`
-	StreakLabel          string   `json:"streak_label,omitempty"`
-	BoardType            string   `json:"board_type,omitempty"`
-	IsST                 bool     `json:"is_st"`
-	LimitRegime          string   `json:"limit_regime"`
-	RawConcepts          []string `json:"raw_concepts,omitempty"`
-	PrimaryTheme         string   `json:"primary_theme,omitempty"`
-	SecondaryThemes      []string `json:"secondary_themes,omitempty"`
-	ThemeConfidence      float64  `json:"theme_confidence,omitempty"`
-	ThemeEvidence        []string `json:"theme_evidence,omitempty"`
-	ThemeSource          string   `json:"theme_source,omitempty"`
-	ThemeRank            int      `json:"theme_rank,omitempty"`
-	ThemeLeaderRole      string   `json:"theme_leader_role,omitempty"`
-	Source               string   `json:"source,omitempty"`
+	Symbol               string                `json:"symbol"`
+	Name                 string                `json:"name"`
+	Price                float64               `json:"price"`
+	ChangePercent        float64               `json:"change_percent"`
+	CurrentChangePercent *float64              `json:"current_change_percent,omitempty"`
+	Amount               float64               `json:"amount"`
+	FloatMarketCap       float64               `json:"float_market_cap"`
+	TurnoverRate         float64               `json:"turnover_rate"`
+	Streak               int                   `json:"streak"`
+	FirstLimitTime       string                `json:"first_limit_time,omitempty"`
+	LastLimitTime        string                `json:"last_limit_time,omitempty"`
+	OpenCount            int                   `json:"open_count"`
+	Industry             string                `json:"industry,omitempty"`
+	Days                 int                   `json:"days"`
+	Count                int                   `json:"count"`
+	StreakLabel          string                `json:"streak_label,omitempty"`
+	BoardType            string                `json:"board_type,omitempty"`
+	IsST                 bool                  `json:"is_st"`
+	LimitRegime          string                `json:"limit_regime"`
+	RawConcepts          []string              `json:"raw_concepts,omitempty"`
+	PrimaryTheme         string                `json:"primary_theme,omitempty"`
+	SecondaryThemes      []string              `json:"secondary_themes,omitempty"`
+	ThemeConfidence      float64               `json:"theme_confidence,omitempty"`
+	ThemeEvidence        []string              `json:"theme_evidence,omitempty"`
+	ThemeSource          string                `json:"theme_source,omitempty"`
+	ThemeRank            int                   `json:"theme_rank,omitempty"`
+	ThemeLeaderRole      string                `json:"theme_leader_role,omitempty"`
+	Source               string                `json:"source,omitempty"`
+	Meta                 foundation.SourceMeta `json:"meta"`
 }
 
 type limitUpLadderLevel struct {
@@ -54,6 +58,7 @@ type limitUpLadderLevel struct {
 
 type limitUpLadderDay struct {
 	TradeDate       string               `json:"trade_date"`
+	MissingFields   []string             `json:"missing_fields,omitempty"`
 	LimitUpCount    int                  `json:"limit_up_count"`
 	BoardCount      int                  `json:"board_count"`
 	FirstBoardCount int                  `json:"first_board_count"`
@@ -149,7 +154,7 @@ func (c *limitUpLadderCache) load(ctx context.Context, provider LimitUpProvider,
 	c.inflight = flight
 	c.mu.Unlock()
 
-	var events []foundation.LimitUpEvent
+	var history foundation.LimitUpHistory
 	var catalog []foundation.StockCatalogEntry
 	var limitUpErr error
 	var conceptErr error
@@ -157,7 +162,7 @@ func (c *limitUpLadderCache) load(ctx context.Context, provider LimitUpProvider,
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		events, limitUpErr = provider.RecentLimitUps(ctx, 8)
+		history, limitUpErr = loadLimitUpHistory(ctx, provider, 8)
 	}()
 	if conceptProvider != nil {
 		wg.Add(1)
@@ -167,8 +172,12 @@ func (c *limitUpLadderCache) load(ctx context.Context, provider LimitUpProvider,
 		}()
 	}
 	wg.Wait()
-	if limitUpErr == nil {
-		flight.data, limitUpErr = buildLimitUpLadder(events, catalog, time.Now())
+	if ctx.Err() != nil {
+		limitUpErr = ctx.Err()
+	}
+	var coverageErr *foundation.LimitUpCoverageError
+	if ctx.Err() == nil && (limitUpErr == nil || (errors.As(limitUpErr, &coverageErr) && !errors.Is(limitUpErr, context.Canceled))) {
+		flight.data, limitUpErr = buildLimitUpLadderHistory(history, catalog, time.Now())
 		if limitUpErr == nil {
 			enrichPreviousCurrentChanges(ctx, &flight.data.Previous, realtimeProvider)
 			hasPrimaryConcepts := limitUpDayHasRawConcepts(flight.data.Current)
@@ -258,14 +267,59 @@ func enrichPreviousCurrentChanges(ctx context.Context, previous *limitUpLadderDa
 	}
 }
 
+func loadLimitUpHistory(ctx context.Context, provider LimitUpProvider, days int) (foundation.LimitUpHistory, error) {
+	if history, ok := provider.(contracts.LimitUpHistoryProvider); ok {
+		value, err := history.RecentLimitUpHistory(ctx, days)
+		if err == nil && len(value.MissingDates) > 0 {
+			err = &foundation.LimitUpCoverageError{RequestedDates: append([]string(nil), value.RequestedDates...), CoveredDates: append([]string(nil), value.CoveredDates...), MissingDates: append([]string(nil), value.MissingDates...)}
+		}
+		return value, err
+	}
+	events, err := provider.RecentLimitUps(ctx, days)
+	return foundation.LimitUpHistoryFromEvents(events, err), err
+}
+
+func previousLimitUpTradingDate(rawDate string) string {
+	date, err := time.ParseInLocation("2006-01-02", rawDate, shanghaiLocation)
+	if err != nil {
+		return ""
+	}
+	for offset := 1; offset <= 370; offset++ {
+		previous := date.AddDate(0, 0, -offset)
+		if foundation.IsAStockTradingDay(previous) {
+			return previous.Format("2006-01-02")
+		}
+	}
+	return ""
+}
+
 func buildLimitUpLadder(events []foundation.LimitUpEvent, catalog []foundation.StockCatalogEntry, now time.Time) (limitUpLadderData, error) {
+	return buildLimitUpLadderHistory(foundation.LimitUpHistoryFromEvents(events, nil), catalog, now)
+}
+
+func buildLimitUpLadderHistory(history foundation.LimitUpHistory, catalog []foundation.StockCatalogEntry, now time.Time) (limitUpLadderData, error) {
 	byDate := map[string][]foundation.LimitUpEvent{}
-	var fallbackMeta foundation.SourceMeta
-	for _, event := range events {
+	covered := map[string]bool{}
+	for _, rawDate := range history.CoveredDates {
+		date, err := time.ParseInLocation("2006-01-02", rawDate, shanghaiLocation)
+		if err == nil && foundation.IsAStockTradingDay(date) {
+			covered[rawDate] = true
+			byDate[rawDate] = nil
+		}
+	}
+	for _, missing := range history.MissingDates {
+		delete(covered, missing)
+		delete(byDate, missing)
+	}
+	fallbackMeta := foundation.CloneSourceMeta(history.Meta)
+	for _, event := range history.Events {
 		if event.Date.IsZero() || !foundation.IsAStockTradingDay(event.Date) {
 			continue
 		}
-		date := event.Date.Format("2006-01-02")
+		date := event.Date.In(shanghaiLocation).Format("2006-01-02")
+		if event.Meta.TradeDate != "" && event.Meta.TradeDate != date {
+			continue
+		}
 		byDate[date] = append(byDate[date], event)
 		if fallbackMeta.Source == "" && event.Meta.Source != "" {
 			fallbackMeta = event.Meta
@@ -289,9 +343,11 @@ func buildLimitUpLadder(events []foundation.LimitUpEvent, catalog []foundation.S
 	catalogBySymbol := stockConceptCatalog(catalog)
 	current := buildLimitUpDay(dates[0], byDate[dates[0]], catalogBySymbol)
 	previous := limitUpLadderDay{}
-	if len(dates) > 1 {
-		previous = buildLimitUpDay(dates[1], byDate[dates[1]], catalogBySymbol)
+	previousDate := previousLimitUpTradingDate(current.TradeDate)
+	if covered[previousDate] {
+		previous = buildLimitUpDay(previousDate, byDate[previousDate], catalogBySymbol)
 	}
+	comparisonReady := covered[current.TradeDate] && covered[previousDate] && !hasUnknownLadderStreak(current) && !hasUnknownLadderStreak(previous)
 	conceptHeat := attributeLimitUpThemes(&current, &previous, catalog)
 	conceptMeta := limitUpConceptSourceMeta(byDate[dates[0]], catalog)
 	if meta.Source == "" {
@@ -310,12 +366,19 @@ func buildLimitUpLadder(events []foundation.LimitUpEvent, catalog []foundation.S
 			status = "盘中快照"
 		}
 	}
+	meta.CoveredDates = append([]string(nil), history.CoveredDates...)
+	meta.MissingIDs = append([]string(nil), history.MissingDates...)
+	meta.Partial = history.Meta.Partial || len(history.MissingDates) > 0 || !covered[current.TradeDate] || len(current.MissingFields) > 0
+	advance := []limitUpAdvanceStep{}
+	if comparisonReady {
+		advance = buildAdvanceSteps(previous, current)
+	}
 	return limitUpLadderData{
-		ComparisonReady: previous.TradeDate != "",
+		ComparisonReady: comparisonReady,
 		SessionStatus:   status,
 		Current:         current,
 		Previous:        previous,
-		Advance:         buildAdvanceSteps(previous, current),
+		Advance:         advance,
 		IndustryHeat:    buildIndustryHeat(current),
 		ConceptHeat:     conceptHeat,
 		ConceptMeta:     conceptMeta,
@@ -336,8 +399,13 @@ func buildLimitUpDay(date string, events []foundation.LimitUpEvent, catalog map[
 	}
 	levels := map[int][]limitUpLadderStock{}
 	day := limitUpLadderDay{TradeDate: date}
+	missingFields := map[string]bool{}
 	for _, event := range bySymbol {
 		level := max(event.Streak, 1)
+		if event.Meta.FieldsKnown && (!foundation.FieldAvailable(event.Meta, "streak") || event.Streak < 1) {
+			level = 0
+			missingFields["streak"] = true
+		}
 		stock := limitUpStockFromEvent(event, level, catalog[event.Symbol])
 		levels[level] = append(levels[level], stock)
 		if stock.IsST {
@@ -345,16 +413,29 @@ func buildLimitUpDay(date string, events []foundation.LimitUpEvent, catalog map[
 			continue
 		}
 		day.LimitUpCount++
-		day.TotalAmount += event.Amount
+		if foundation.FieldAvailable(event.Meta, "amount") {
+			day.TotalAmount += event.Amount
+		} else {
+			missingFields["amount"] = true
+		}
 		day.MaxStreak = max(day.MaxStreak, level)
 		if level >= 2 {
 			day.BoardCount++
-		} else {
+		} else if level == 1 {
 			day.FirstBoardCount++
 		}
-		if event.OpenCount > 0 {
+		if !foundation.FieldAvailable(event.Meta, "open_count") {
+			missingFields["open_count"] = true
+		} else if event.OpenCount > 0 {
 			day.ReopenedCount++
 		}
+	}
+	for field := range missingFields {
+		day.MissingFields = append(day.MissingFields, field)
+	}
+	sort.Strings(day.MissingFields)
+	if missingFields["amount"] {
+		day.TotalAmount = 0
 	}
 	levelValues := make([]int, 0, len(levels))
 	for level := range levels {
@@ -367,17 +448,29 @@ func buildLimitUpDay(date string, events []foundation.LimitUpEvent, catalog map[
 			if stocks[i].IsST != stocks[j].IsST {
 				return !stocks[i].IsST
 			}
-			if stocks[i].OpenCount != stocks[j].OpenCount {
+			leftOpen, rightOpen := foundation.FieldAvailable(stocks[i].Meta, "open_count"), foundation.FieldAvailable(stocks[j].Meta, "open_count")
+			if leftOpen != rightOpen {
+				return leftOpen
+			}
+			if leftOpen && stocks[i].OpenCount != stocks[j].OpenCount {
 				return stocks[i].OpenCount < stocks[j].OpenCount
 			}
 			if stocks[i].FirstLimitTime != stocks[j].FirstLimitTime {
 				return stocks[i].FirstLimitTime < stocks[j].FirstLimitTime
 			}
+			leftAmount, rightAmount := foundation.FieldAvailable(stocks[i].Meta, "amount"), foundation.FieldAvailable(stocks[j].Meta, "amount")
+			if leftAmount != rightAmount {
+				return leftAmount
+			}
 			return stocks[i].Amount > stocks[j].Amount
 		})
+		label := fmt.Sprintf("%d板", level)
+		if level == 0 {
+			label = "板数未知"
+		}
 		day.Levels = append(day.Levels, limitUpLadderLevel{
 			Level:  level,
-			Label:  fmt.Sprintf("%d板", level),
+			Label:  label,
 			Count:  len(stocks),
 			Stocks: stocks,
 		})
@@ -425,6 +518,7 @@ func limitUpStockFromEvent(event foundation.LimitUpEvent, level int, catalog fou
 		ThemeRank:       event.ThemeRank,
 		ThemeLeaderRole: event.ThemeLeaderRole,
 		Source:          event.Meta.Source,
+		Meta:            foundation.CloneSourceMeta(event.Meta),
 	}
 }
 

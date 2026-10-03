@@ -101,24 +101,65 @@ func Analyze(input Input) (Analysis, error) {
 
 func analyzeFundamentals(item *foundation.StockFundamentals) FundamentalAnalysis {
 	if item == nil || strings.TrimSpace(item.ReportDate) == "" {
-		return FundamentalAnalysis{Quality: "数据不足", Sustainability: "数据不足", Summary: "尚未取得最新F10财务数据"}
+		return FundamentalAnalysis{FieldsKnown: true, AvailableFields: []string{}, Quality: "数据不足", Sustainability: "数据不足", Summary: "尚未取得最新F10财务数据，财务风险未知"}
 	}
-	// Keep the non-zero fallback for older providers/fixtures, while allowing a
-	// provider to explicitly mark a legitimate zero value as available.
-	hasDeductedProfit := item.DeductedNetProfitAvailable || item.DeductedNetProfit != 0 || item.DeductedNetProfitYearOverYear != 0
-	recurringProfit := item.NetProfit
-	recurringGrowth := item.NetProfitYearOverYear
-	nonRecurringProfit := 0.0
-	nonRecurringRatio := 0.0
-	sustainability := "待确认"
-	sustainabilityFlags := make([]string, 0, 3)
-	if hasDeductedProfit {
-		recurringProfit = item.DeductedNetProfit
-		recurringGrowth = item.DeductedNetProfitYearOverYear
-		nonRecurringProfit = item.NetProfit - item.DeductedNetProfit
-		if math.Abs(item.NetProfit) > 1e-9 {
-			nonRecurringRatio = math.Abs(nonRecurringProfit) / math.Abs(item.NetProfit) * 100
+	availableFields := make([]string, 0, 13)
+	// Sanitize unavailable placeholders as well as NaN/Inf before JSON output.
+	value := func(field string, number float64) float64 {
+		if !item.FieldAvailable(field) {
+			return 0
 		}
+		availableFields = append(availableFields, field)
+		return number
+	}
+	revenue := value("revenue", item.Revenue)
+	revenueGrowth := value("revenue_yoy", item.RevenueYearOverYear)
+	netProfit := value("net_profit", item.NetProfit)
+	netGrowth := value("net_profit_yoy", item.NetProfitYearOverYear)
+	recurringProfit := value("deducted_net_profit", item.DeductedNetProfit)
+	recurringGrowth := value("deducted_net_profit_yoy", item.DeductedNetProfitYearOverYear)
+	eps := value("eps", item.EPS)
+	roe := value("roe", item.ROE)
+	grossMargin := value("gross_margin", item.GrossMargin)
+	debtRatio := value("debt_ratio", item.DebtRatio)
+	cashFlow := value("operating_cash_flow_per_share", item.OperatingCashFlowPerShare)
+	// The analysis output uses recurring_* names for the actual deducted data.
+	for index, field := range availableFields {
+		switch field {
+		case "deducted_net_profit":
+			availableFields[index] = "recurring_net_profit"
+		case "deducted_net_profit_yoy":
+			availableFields[index] = "recurring_net_profit_yoy"
+		}
+	}
+	hasDeductedProfit := item.FieldAvailable("deducted_net_profit")
+	hasDeductedGrowth := item.FieldAvailable("deducted_net_profit_yoy")
+	hasNonRecurringProfit := hasDeductedProfit && item.FieldAvailable("net_profit")
+	hasNonRecurringRatio := hasNonRecurringProfit && math.Abs(netProfit) > 1e-9
+	nonRecurringProfit, nonRecurringRatio := 0.0, 0.0
+	sustainability := "待确认"
+	sustainabilityFlags := make([]string, 0, 5)
+	if hasNonRecurringProfit {
+		nonRecurringProfit = netProfit - recurringProfit
+		// Extreme finite inputs must not overflow a derived financial field.
+		hasNonRecurringProfit = !math.IsNaN(nonRecurringProfit) && !math.IsInf(nonRecurringProfit, 0)
+		if hasNonRecurringProfit {
+			availableFields = append(availableFields, "non_recurring_profit")
+		} else {
+			nonRecurringProfit = 0
+		}
+	}
+	hasNonRecurringRatio = hasNonRecurringRatio && hasNonRecurringProfit
+	if hasNonRecurringRatio {
+		nonRecurringRatio = math.Abs(nonRecurringProfit) / math.Abs(netProfit) * 100
+		hasNonRecurringRatio = !math.IsNaN(nonRecurringRatio) && !math.IsInf(nonRecurringRatio, 0)
+		if hasNonRecurringRatio {
+			availableFields = append(availableFields, "non_recurring_profit_ratio")
+		} else {
+			nonRecurringRatio = 0
+		}
+	}
+	if hasNonRecurringRatio {
 		sustainability = "较好"
 		if nonRecurringProfit > 0 && nonRecurringRatio >= 50 {
 			sustainability = "较差"
@@ -130,75 +171,136 @@ func analyzeFundamentals(item *foundation.StockFundamentals) FundamentalAnalysis
 			sustainability = "一般"
 			sustainabilityFlags = append(sustainabilityFlags, "存在一定一次性收益影响")
 		}
-		if recurringProfit <= 0 && item.NetProfit > 0 {
-			sustainability = "较差"
-			sustainabilityFlags = append(sustainabilityFlags, "剔除非经常性损益后归母利润为负")
-		}
-	} else {
-		sustainabilityFlags = append(sustainabilityFlags, "缺少扣非净利润，持续性无法完全核验")
 	}
-	score := 50.0
-	score += clamp(item.RevenueYearOverYear/8, -15, 15)
-	score += clamp(recurringGrowth/6, -20, 20)
-	if hasDeductedProfit {
+	if hasNonRecurringProfit && recurringProfit <= 0 && netProfit > 0 {
+		sustainability = "较差"
+		sustainabilityFlags = append(sustainabilityFlags, "剔除非经常性损益后归母利润非正")
+	}
+	if !hasDeductedProfit {
+		sustainabilityFlags = append(sustainabilityFlags, "缺少扣非净利润，持续性无法完全核验")
+	} else if !hasNonRecurringRatio {
+		sustainabilityFlags = append(sustainabilityFlags, "归母净利润缺失或为零，非经常性损益占比未知")
+	}
+	if !hasDeductedGrowth {
+		sustainabilityFlags = append(sustainabilityFlags, "扣非净利润同比未知，不能据此确认持续增长")
+	}
+	score, scoreAvailable := 50.0, false
+	if item.FieldAvailable("revenue_yoy") {
+		score += clamp(revenueGrowth/8, -15, 15)
+		scoreAvailable = true
+	}
+	if hasDeductedGrowth {
+		score += clamp(recurringGrowth/6, -20, 20)
+		scoreAvailable = true
+	} else if !hasDeductedProfit && item.FieldAvailable("net_profit_yoy") {
+		// Only a disclosed fallback is permitted; a missing deducted YoY must
+		// not become zero or silently borrow parent growth when amount is known.
+		score += clamp(netGrowth/6, -20, 20)
+		scoreAvailable = true
+	}
+	if hasNonRecurringProfit {
+		scoreAvailable = scoreAvailable || hasNonRecurringRatio || (recurringProfit <= 0 && netProfit > 0)
 		switch {
-		case recurringProfit <= 0 && item.NetProfit > 0:
+		case recurringProfit <= 0 && netProfit > 0:
 			score -= 20
-		case nonRecurringProfit > 0 && nonRecurringRatio >= 50:
+		case hasNonRecurringRatio && nonRecurringProfit > 0 && nonRecurringRatio >= 50:
 			score -= 18
-		case nonRecurringProfit > 0 && nonRecurringRatio >= 30:
+		case hasNonRecurringRatio && nonRecurringProfit > 0 && nonRecurringRatio >= 30:
 			score -= 12
-		case nonRecurringProfit > 0 && nonRecurringRatio >= 15:
+		case hasNonRecurringRatio && nonRecurringProfit > 0 && nonRecurringRatio >= 15:
 			score -= 6
 		}
 	}
-	if item.ROE >= 15 {
-		score += 12
-	} else if item.ROE >= 8 {
-		score += 6
-	} else if item.ROE > 0 && item.ROE < 3 {
-		score -= 6
-	} else if item.ROE < 0 {
-		score -= 15
+	if item.FieldAvailable("roe") {
+		scoreAvailable = true
+		if roe >= 15 {
+			score += 12
+		} else if roe >= 8 {
+			score += 6
+		} else if roe > 0 && roe < 3 {
+			score -= 6
+		} else if roe < 0 {
+			score -= 15
+		}
 	}
-	if item.GrossMargin >= 35 {
-		score += 8
-	} else if item.GrossMargin > 0 && item.GrossMargin < 12 {
-		score -= 8
+	if item.FieldAvailable("gross_margin") {
+		scoreAvailable = true
+		if grossMargin >= 35 {
+			score += 8
+		} else if grossMargin > 0 && grossMargin < 12 {
+			score -= 8
+		}
 	}
-	if item.DebtRatio >= 75 {
-		score -= 12
-	} else if item.DebtRatio > 0 && item.DebtRatio <= 45 {
-		score += 5
+	if item.FieldAvailable("debt_ratio") {
+		scoreAvailable = true
+		if debtRatio >= 75 {
+			score -= 12
+		} else if debtRatio > 0 && debtRatio <= 45 {
+			score += 5
+		}
 	}
-	if item.OperatingCashFlowPerShare > 0 {
-		score += 5
-	} else if item.OperatingCashFlowPerShare < 0 {
-		score -= 5
+	if item.FieldAvailable("operating_cash_flow_per_share") {
+		scoreAvailable = true
+		if cashFlow > 0 {
+			score += 5
+		} else if cashFlow < 0 {
+			score -= 5
+		}
+	}
+	if math.Abs(nonRecurringRatio) <= math.MaxFloat64/100 {
+		nonRecurringRatio = round2(nonRecurringRatio)
 	}
 	finalScore := int(math.Round(clamp(score, 0, 100)))
 	quality := "中性"
-	if finalScore >= 72 {
+	switch {
+	case !scoreAvailable:
+		finalScore, quality = 0, "数据不足"
+	case finalScore >= 72:
 		quality = "较好"
-	} else if finalScore >= 58 {
+	case finalScore >= 58:
 		quality = "稳健"
-	} else if finalScore < 35 {
+	case finalScore < 35:
 		quality = "承压"
-	} else if finalScore < 48 {
+	case finalScore < 48:
 		quality = "偏弱"
 	}
-	summary := fmt.Sprintf("%s：营收同比%+.1f%%，归母净利同比%+.1f%%，持续性口径同比%+.1f%%，ROE %.1f%%，毛利率%.1f%%，负债率%.1f%%", firstNonEmpty(item.ReportName, item.ReportDate), item.RevenueYearOverYear, item.NetProfitYearOverYear, recurringGrowth, item.ROE, item.GrossMargin, item.DebtRatio)
-	if hasDeductedProfit {
-		summary += fmt.Sprintf("；非经常性损益占归母净利%.1f%%，扣非净利润%.2f", nonRecurringRatio, recurringProfit)
+	formatMetric := func(field, format string, number float64) string {
+		if !item.FieldAvailable(field) {
+			return "未知"
+		}
+		return fmt.Sprintf(format, number)
+	}
+	summary := fmt.Sprintf("%s：营收同比%s，归母净利同比%s，扣非净利同比%s，ROE %s，毛利率%s，负债率%s", firstNonEmpty(item.ReportName, item.ReportDate),
+		formatMetric("revenue_yoy", "%+.1f%%", revenueGrowth), formatMetric("net_profit_yoy", "%+.1f%%", netGrowth), formatMetric("deducted_net_profit_yoy", "%+.1f%%", recurringGrowth),
+		formatMetric("roe", "%.1f%%", roe), formatMetric("gross_margin", "%.1f%%", grossMargin), formatMetric("debt_ratio", "%.1f%%", debtRatio))
+	summary += "，EPS " + formatMetric("eps", "%.2f", eps) + "，每股经营现金流" + formatMetric("operating_cash_flow_per_share", "%.2f", cashFlow)
+	summary += "；扣非净利润" + formatMetric("deducted_net_profit", "%.2f", recurringProfit)
+	if hasNonRecurringRatio {
+		summary += fmt.Sprintf("，非经常性损益占归母净利%.1f%%", nonRecurringRatio)
 	} else {
-		summary += "；未取得扣非净利润，未将利润增长完全视为可持续增长"
+		summary += "，非经常性损益占比未知"
+	}
+	if !hasDeductedProfit && !hasDeductedGrowth && item.FieldAvailable("net_profit_yoy") {
+		summary += "；增长评分仅参考归母同比，不代表扣非利润持续增长"
+	}
+	missing := false
+	for _, field := range []string{"revenue", "revenue_yoy", "net_profit", "net_profit_yoy", "deducted_net_profit", "deducted_net_profit_yoy", "eps", "roe", "gross_margin", "debt_ratio", "operating_cash_flow_per_share"} {
+		if !item.FieldAvailable(field) {
+			missing = true
+			break
+		}
+	}
+	if missing {
+		summary += "；部分指标未取得或不适用，仅有效字段参与评分，未知不代表无风险"
+		sustainabilityFlags = append(sustainabilityFlags, "部分财务指标未知，不能据此排除风险")
 	}
 	return FundamentalAnalysis{
-		Available: true, Score: finalScore, Quality: quality, ReportDate: item.ReportDate, ReportName: item.ReportName,
-		Revenue: item.Revenue, RevenueYearOverYear: item.RevenueYearOverYear, NetProfit: item.NetProfit,
-		NetProfitYearOverYear: item.NetProfitYearOverYear, RecurringNetProfitAvailable: hasDeductedProfit, RecurringNetProfit: recurringProfit, RecurringNetProfitYearOverYear: recurringGrowth,
-		NonRecurringProfit: nonRecurringProfit, NonRecurringProfitRatio: round2(nonRecurringRatio), Sustainability: sustainability, SustainabilityFlags: uniqueStrings(sustainabilityFlags, 4), EPS: item.EPS, ROE: item.ROE, GrossMargin: item.GrossMargin,
-		DebtRatio: item.DebtRatio, OperatingCashFlowPerShare: item.OperatingCashFlowPerShare,
+		Available: len(availableFields) > 0, FieldsKnown: true, AvailableFields: availableFields, ScoreAvailable: scoreAvailable,
+		Score: finalScore, Quality: quality, ReportDate: item.ReportDate, ReportName: item.ReportName,
+		Revenue: revenue, RevenueYearOverYear: revenueGrowth, NetProfit: netProfit, NetProfitYearOverYear: netGrowth,
+		RecurringNetProfitAvailable: hasDeductedProfit, RecurringNetProfitYearOverYearAvailable: hasDeductedGrowth, RecurringNetProfit: recurringProfit, RecurringNetProfitYearOverYear: recurringGrowth,
+		NonRecurringProfit: nonRecurringProfit, NonRecurringProfitRatio: nonRecurringRatio, Sustainability: sustainability, SustainabilityFlags: uniqueStrings(sustainabilityFlags, 5),
+		EPS: eps, ROE: roe, GrossMargin: grossMargin, DebtRatio: debtRatio, OperatingCashFlowPerShare: cashFlow,
 		Summary: summary, Source: item.Meta.Source,
 	}
 }
@@ -1129,7 +1231,7 @@ func buildEvidence(input Input, profile Profile, trend TrendAnalysis, short Shor
 	}
 	if profile.PrimaryType != "emotion_leader" && research != nil && research.Available {
 		detail := research.Summary + "；评级为机构观点，仅作预期参考"
-		evidence = append(evidence, Evidence{Category: "研报", Title: fmt.Sprintf("机构覆盖 · %d篇", research.ReportCount), Detail: detail, Source: "eastmoney:report"})
+		evidence = append(evidence, Evidence{Category: "研报", Title: fmt.Sprintf("机构覆盖 · %d篇", research.ReportCount), Detail: detail, Source: researchReportSources(research.Reports)})
 	}
 	if stockNews != nil && stockNews.Available {
 		evidence = append(evidence, Evidence{Category: "个股新闻", Title: fmt.Sprintf("近%d日 · %d条", stockNews.WindowDays, stockNews.ArticleCount), Detail: stockNews.Summary, Source: firstNewsSource(stockNews.Articles), AsOf: newsAnalysisDate(stockNews)})
@@ -1207,7 +1309,7 @@ func buildDataQuality(input Input, profile Profile, lines []foundation.KLine, sh
 	if profile.PrimaryType != "emotion_leader" {
 		status, message := fundamentalQualityStatus(fundamental)
 		if status == "" {
-			quality = append(quality, DataQuality{Key: "fundamental", Status: "limited", Message: "最新F10财务指标暂不可用"})
+			quality = append(quality, DataQuality{Key: "fundamental", Status: "limited", Message: "最新F10财务指标暂不可用，财务风险未知，不能据此排除风险"})
 		} else {
 			quality = append(quality, DataQuality{Key: "fundamental", Status: status, Message: message})
 		}
@@ -1227,10 +1329,32 @@ func fundamentalQualityStatus(fundamental *FundamentalAnalysis) (string, string)
 	if fundamental == nil || !fundamental.Available {
 		return "", ""
 	}
+	if fundamental.FieldsKnown {
+		available := make(map[string]bool, len(fundamental.AvailableFields))
+		for _, field := range fundamental.AvailableFields {
+			available[field] = true
+		}
+		missing := make([]string, 0, 11)
+		for _, field := range []struct{ key, label string }{
+			{"revenue", "营收"}, {"revenue_yoy", "营收同比"}, {"net_profit", "归母净利"}, {"net_profit_yoy", "归母同比"},
+			{"recurring_net_profit", "扣非净利润"}, {"recurring_net_profit_yoy", "扣非同比"}, {"eps", "EPS"},
+			{"roe", "ROE"}, {"gross_margin", "毛利率"}, {"debt_ratio", "负债率"}, {"operating_cash_flow_per_share", "每股经营现金流"},
+		} {
+			if !available[field.key] {
+				missing = append(missing, field.label)
+			}
+		}
+		if len(missing) > 0 {
+			return "limited", "已接入财务快照，但" + strings.Join(missing, "、") + "未知或不适用；缺失指标未参与计算，不能据此排除风险"
+		}
+		if !available["non_recurring_profit_ratio"] {
+			return "limited", "财务字段已取得，但归母净利润为零或占比计算不可用，非经常性损益占比未知"
+		}
+	}
 	if !fundamental.RecurringNetProfitAvailable {
 		return "limited", "已接入最新东方财富F10，但扣非净利润缺失，收益持续性待确认"
 	}
-	return "ready", "已接入最新东方财富F10财务指标，并完成扣非利润核验"
+	return "ready", "已接入最新财务指标；扣非利润仅剔除非经常性损益，不代表风险已排除"
 }
 
 func classifyTrendPhase(last, ma20, ma60, ma120, slope20, slope60, position60, drawdown120, volumeRatio float64) string {

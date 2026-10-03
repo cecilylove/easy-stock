@@ -311,7 +311,7 @@ func buildNewListingSignals(trend TrendAnalysis, short ShortTermAnalysis, theme 
 		marketScore := int(clamp(market.Score, 0, 100))
 		signals = append(signals, Signal{Key: "market", Label: "市场环境", Tone: scoreTone(marketScore), Strength: marketScore, Detail: market.Phase + " · " + market.Confidence})
 	}
-	if fundamental != nil && fundamental.Available {
+	if fundamental != nil && fundamental.Available && (!fundamental.FieldsKnown || fundamental.ScoreAvailable) {
 		signals = append(signals, Signal{Key: "fundamental", Label: "基本面", Tone: scoreTone(fundamental.Score), Strength: fundamental.Score, Detail: fundamental.Summary})
 	}
 	if research != nil && research.Available {
@@ -399,7 +399,7 @@ func buildNewListingEvidence(input Input, trend TrendAnalysis, short ShortTermAn
 		evidence = append(evidence, Evidence{Category: "基本面", Title: fundamental.ReportName + " · " + fundamental.Quality, Detail: fundamental.Summary, Source: fundamental.Source, AsOf: fundamental.ReportDate})
 	}
 	if research != nil && research.Available {
-		evidence = append(evidence, Evidence{Category: "研报", Title: fmt.Sprintf("机构覆盖 · %d篇", research.ReportCount), Detail: research.Summary, Source: "eastmoney:report"})
+		evidence = append(evidence, Evidence{Category: "研报", Title: fmt.Sprintf("机构覆盖 · %d篇", research.ReportCount), Detail: research.Summary, Source: researchReportSources(research.Reports)})
 	}
 	if stockNews != nil && stockNews.Available {
 		evidence = append(evidence, Evidence{Category: "个股新闻", Title: fmt.Sprintf("近%d日 · %d条", stockNews.WindowDays, stockNews.ArticleCount), Detail: stockNews.Summary, Source: firstNewsSource(stockNews.Articles), AsOf: newsAnalysisDate(stockNews)})

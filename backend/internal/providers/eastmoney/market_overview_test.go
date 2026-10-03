@@ -73,7 +73,7 @@ func TestMarketOverviewProvidersParsePrimarySources(t *testing.T) {
 		t.Fatalf("flows=%+v err=%v", flows, err)
 	}
 	margins, marginMeta, err := client.MarketMarginSeries(ctx, 2)
-	if err != nil || len(margins) != 2 || margins[1].MarginBalance != 382 || margins[1].FinancingBalance != 350 || margins[1].SecuritiesLendingBalance != 32 || margins[1].MarginBalanceChange != 52 || marginMeta.Source != "eastmoney:margin-balance" {
+	if err != nil || len(margins) != 2 || margins[1].MarginBalance != 382 || margins[1].FinancingBalance != 350 || margins[1].SecuritiesLendingBalance != 32 || margins[1].MarginBalanceChange != 0 || margins[1].ChangeAvailable || margins[1].CoverageComplete || !marginMeta.Partial || marginMeta.Source != "eastmoney:margin-balance" {
 		t.Fatalf("margins=%+v meta=%+v err=%v", margins, marginMeta, err)
 	}
 	billboard, _, err := client.MarketBillboard(ctx, "2026-08-11", 10)

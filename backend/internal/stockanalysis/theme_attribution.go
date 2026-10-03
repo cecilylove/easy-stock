@@ -122,7 +122,7 @@ func enrichTheme(input Input, short ShortTermAnalysis, base ThemeAnalysis) Theme
 			canonical := canonicalTheme(candidate)
 			add(canonical, ThemeEvidence{
 				Theme: canonical, Type: "fact", Relation: "own_business", Direction: "positive",
-				Source: firstNonEmpty(input.BusinessSource, "eastmoney:f10-business"), Title: "东方财富F10主营业务",
+				Source: firstNonEmpty(input.BusinessSource, "company-profile:business"), EvidenceRole: "business-profile", Title: "公司主营业务资料",
 				Snippet: truncateText(snippet, 220), Strength: .90, Freshness: .70,
 			}, true, false)
 		}
@@ -1163,9 +1163,9 @@ func themeEvidenceStrings(items []ThemeEvidence, limit int) []string {
 func themeTagDetail(bucket *themeEvidenceBucket) string {
 	if hasF10BusinessEvidence(bucket.evidence) {
 		if bucket.marketOK {
-			return fmt.Sprintf("F10主营已确认，题材趋势%d分，炒作相关性%d", bucket.market.TrendScore, bucket.score)
+			return fmt.Sprintf("公司主营已确认，题材趋势%d分，炒作相关性%d", bucket.market.TrendScore, bucket.score)
 		}
-		return fmt.Sprintf("F10主营已确认，尚未匹配到当前市场热点，炒作相关性%d", bucket.score)
+		return fmt.Sprintf("公司主营已确认，尚未匹配到当前市场热点，炒作相关性%d", bucket.score)
 	}
 	if bucket.mappingOK && !bucket.confirmed {
 		if bucket.marketOK {
@@ -1180,7 +1180,7 @@ func themeTagDetail(bucket *themeEvidenceBucket) string {
 }
 func hasF10BusinessEvidence(items []ThemeEvidence) bool {
 	for _, item := range items {
-		if item.Type == "fact" && item.Relation == "own_business" && strings.Contains(strings.ToLower(item.Source), "f10-business") {
+		if item.Type == "fact" && item.Relation == "own_business" && (item.EvidenceRole == "business-profile" || (item.EvidenceRole == "" && strings.Contains(strings.ToLower(item.Source), "f10-business"))) {
 			return true
 		}
 	}

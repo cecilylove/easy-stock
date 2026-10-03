@@ -24,6 +24,13 @@ type BillboardProvider interface {
 	MarketBillboard(context.Context, string, int) ([]foundation.MarketBillboardItem, foundation.SourceMeta, error)
 	MarketBillboardDetail(context.Context, string, string, string) (foundation.MarketBillboardDetail, foundation.SourceMeta, error)
 }
+
+// BillboardLabelProvider supplies optional platform seat classifications only.
+// Keys are normalized seat names; failure must not invalidate raw buy/sell rows.
+// Cached results retain their actual fetch timestamp, not the time of cache access.
+type BillboardLabelProvider interface {
+	Fetch(ctx context.Context, symbol, tradeDate string) (map[string]string, foundation.SourceMeta, error)
+}
 type AnnouncementProvider interface {
 	MarketAnnouncements(context.Context, string, string, string, int) ([]foundation.MarketResearchItem, foundation.SourceMeta, error)
 }

@@ -3,8 +3,12 @@ package eastmoney
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"easy-stock/backend/internal/datasource/contracts"
 	"easy-stock/backend/internal/foundation"
 )
 
@@ -27,6 +32,8 @@ type Client struct {
 	reportBaseURL       string
 	thsBaseURL          string
 	httpClient          *http.Client
+	cooldownMu          sync.Mutex
+	cooldowns           map[string]time.Time
 	poolMu              sync.Mutex
 	limitUpDays         map[string]*limitUpDayFlight
 	catalogCacheMu      sync.RWMutex
@@ -203,20 +210,22 @@ func (c *Client) KLineAdjusted(ctx context.Context, symbol string, period string
 	return items, nil
 }
 
+// This is the sole retry owner for JSON GETs: at most three transport attempts,
+// including the first. Backoff and origin-local 429 cooldown share the caller's
+// deadline; malformed JSON and permanent HTTP failures never enter this loop.
 func (c *Client) getJSONWithRetry(ctx context.Context, requestURL string, target any) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return err
+			return eastmoneyContextError(err, lastErr)
 		}
+		delay := time.Duration(0)
 		if attempt > 0 {
-			timer := time.NewTimer(150 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
+			base := 150 * time.Millisecond * time.Duration(1<<(attempt-1))
+			delay = base + time.Duration(rand.Int64N(int64(base/2)+1))
+		}
+		if err := c.waitJSONRetry(ctx, requestURL, delay); err != nil {
+			return eastmoneyContextError(err, lastErr)
 		}
 		err := c.getJSON(ctx, requestURL, target)
 		if err == nil {
@@ -224,7 +233,7 @@ func (c *Client) getJSONWithRetry(ctx context.Context, requestURL string, target
 		}
 		lastErr = err
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return eastmoneyContextError(ctx.Err(), err)
 		}
 		if !isTransient(err) {
 			return err
@@ -233,30 +242,156 @@ func (c *Client) getJSONWithRetry(ctx context.Context, requestURL string, target
 	return lastErr
 }
 
+func eastmoneyContextError(err, previous error) error {
+	kind := contracts.Canceled
+	if errors.Is(err, context.DeadlineExceeded) {
+		kind = contracts.TimedOut
+	}
+	typed := &contracts.Error{Kind: kind, SourceID: "eastmoney", Timeout: kind == contracts.TimedOut, Cause: errors.Join(err, previous)}
+	var prior *contracts.Error
+	if errors.As(previous, &prior) {
+		typed.HTTPStatus, typed.RetryAfter = prior.HTTPStatus, prior.RetryAfter
+	}
+	return typed
+}
+
 func (c *Client) getJSON(ctx context.Context, requestURL string, target any) error {
+	if err := ctx.Err(); err != nil {
+		return eastmoneyContextError(err, nil)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		return err
+		return &contracts.Error{Kind: contracts.InvalidResponse, SourceID: "eastmoney", Cause: err}
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 easy-stock/0.1")
 	req.Header.Set("Referer", "https://quote.eastmoney.com/")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return eastmoneyContextError(ctx.Err(), err)
+		}
+		kind, timeout := contracts.UpstreamFailure, false
+		var network net.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &network) && network.Timeout()) {
+			kind, timeout = contracts.TimedOut, true
+		} else if errors.Is(err, context.Canceled) {
+			kind = contracts.Canceled
+		}
+		return &contracts.Error{Kind: kind, SourceID: "eastmoney", Cause: err, Timeout: timeout}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("eastmoney http status %d", resp.StatusCode)
+		kind := contracts.UpstreamFailure
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			kind = contracts.RateLimited
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			kind = contracts.Unauthorized
+		case resp.StatusCode >= 400 && resp.StatusCode < 500:
+			kind = contracts.InvalidResponse
+		}
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		if kind == contracts.RateLimited {
+			c.setJSONCooldown(requestURL, max(retryAfter, 150*time.Millisecond))
+		}
+		return &contracts.Error{Kind: kind, SourceID: "eastmoney", HTTPStatus: resp.StatusCode, RetryAfter: retryAfter, Cause: fmt.Errorf("eastmoney http status %d", resp.StatusCode)}
 	}
-	return json.NewDecoder(resp.Body).Decode(target)
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		typed := &contracts.Error{Kind: contracts.InvalidResponse, SourceID: "eastmoney", HTTPStatus: resp.StatusCode, Cause: err}
+		if ctx.Err() != nil {
+			return eastmoneyContextError(ctx.Err(), typed)
+		}
+		var network net.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &network) && network.Timeout()) {
+			typed.Kind, typed.Timeout = contracts.TimedOut, true
+		} else if errors.Is(err, context.Canceled) {
+			typed.Kind = contracts.Canceled
+		}
+		return typed
+	}
+	if err := ctx.Err(); err != nil {
+		return eastmoneyContextError(err, nil)
+	}
+	return nil
 }
 
 func isTransient(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "eof") ||
-		strings.Contains(msg, "timeout") ||
-		strings.Contains(msg, "temporary") ||
-		strings.Contains(msg, "http status 5")
+	var typed *contracts.Error
+	if !errors.As(err, &typed) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if typed.HTTPStatus != 0 {
+		return typed.HTTPStatus == http.StatusTooManyRequests || (typed.HTTPStatus >= 500 && typed.HTTPStatus <= 599)
+	}
+	if typed.Kind != contracts.UpstreamFailure && typed.Kind != contracts.TimedOut {
+		return false
+	}
+	var network net.Error
+	return errors.Is(typed.Cause, io.EOF) || errors.Is(typed.Cause, io.ErrUnexpectedEOF) ||
+		(errors.As(typed.Cause, &network) && (network.Timeout() || network.Temporary()))
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		// Saturate rather than overflow an untrusted header's seconds value.
+		return time.Duration(min(seconds, int64((1<<63-1)/time.Second))) * time.Second
+	}
+	if date, err := http.ParseTime(value); err == nil && date.After(now) {
+		return date.Sub(now)
+	}
+	return 0
+}
+
+func jsonOrigin(requestURL string) string {
+	parsed, err := url.Parse(requestURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func (c *Client) setJSONCooldown(requestURL string, delay time.Duration) {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+	if c.cooldowns == nil {
+		c.cooldowns = make(map[string]time.Time)
+	}
+	origin, until := jsonOrigin(requestURL), time.Now().Add(delay)
+	if until.After(c.cooldowns[origin]) {
+		c.cooldowns[origin] = until
+	}
+}
+
+func (c *Client) waitJSONRetry(ctx context.Context, requestURL string, delay time.Duration) error {
+	backoffUntil := time.Now().Add(delay)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		c.cooldownMu.Lock()
+		until := maxTime(backoffUntil, c.cooldowns[jsonOrigin(requestURL)])
+		c.cooldownMu.Unlock()
+		remaining := time.Until(until)
+		if remaining <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		// A concurrent 429 may have extended the same origin's cooldown.
+	}
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func eastMoneyPeriod(period string) string {

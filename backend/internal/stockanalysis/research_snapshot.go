@@ -96,7 +96,7 @@ func BuildResearchSnapshot(input Input, analysis Analysis, cutoff time.Time) Res
 	}, lastDate)
 	addMetric("m-quote", "行情快照（不等于收盘价）", analysis.Quote, analysis.Quote.TradeTime.Format(time.RFC3339))
 	if input.Fundamentals != nil && input.Fundamentals.ReportDate != "" {
-		encoded, _ := json.Marshal(map[string]any{"data": input.Fundamentals, "definitions": map[string]string{"revenue": "营业总收入（并非营业收入）", "net_profit": "归属于母公司股东的净利润", "deducted_net_profit": "扣除非经常性损益后的归母净利润", "period": "报告期累计值，不能充作单季度值", "operating_cash_flow_per_share": "每股经营现金流，不能直接当作现金流总额"}})
+		encoded, _ := json.Marshal(map[string]any{"data": input.Fundamentals, "definitions": map[string]string{"revenue": "营业总收入（并非营业收入）", "net_profit": "归属于母公司股东的净利润", "deducted_net_profit": "扣除非经常性损益后的归母净利润", "period": "报告期累计值，不能充作单季度值", "operating_cash_flow_per_share": "每股经营现金流，不能直接当作现金流总额", "field_validity": "meta.fields_known=true时只能使用available_fields列明的指标；其它数字为缺失占位，不是有效零。扣非金额与同比有效性独立，未知不推断为无风险"}})
 		snapshot.Sources = append(snapshot.Sources, ResearchSource{ID: "f-financial", Kind: "disclosure", Title: "财务披露快照（累计口径，金额为元）",
 			Content: string(encoded), Provider: input.Fundamentals.Meta.Source, CapturedAt: snapshot.CapturedAt, ReportDate: input.Fundamentals.ReportDate, TimeStatus: "publication_unknown"})
 		snapshot.Limitations = append(snapshot.Limitations, "财务仅含单期披露快照，不能断言连续改善；报告期不等于公告发布时间，不可用于严格历史回测")
@@ -226,6 +226,9 @@ func ResearchItemSource(item foundation.MarketResearchItem, kind string, capture
 	content := item.Content
 	if content == "" {
 		content = item.Title
+	}
+	if item.ContentStatus != "" {
+		content = fmt.Sprintf("【内容范围：%s；状态：%s；%s】\n%s", item.ContentScope, item.ContentStatus, item.ContentIssue, content)
 	}
 	if kind == "opinion" {
 		content += fmt.Sprintf("\n机构：%s；评级：%s；前次评级：%s", item.Organization, item.Rating, item.PreviousRating)

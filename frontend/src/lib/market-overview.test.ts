@@ -108,6 +108,15 @@ describe('market AI source masks', () => {
 });
 
 describe('market billboard AI prompt', () => {
+ it('does not manufacture zero ladder facts from masked missing fields', () => {
+  const meta={source:'fixture',fetched_at:'',stale:false,latency_ms:0,fields_known:true,available_fields:[]};
+  const item={trade_date:'2026-09-30',symbol:'600001.SH',name:'样本',close_price:1,change_percent:1,turnover_rate:1,reason:'偏离值',buy_amount:1,sell_amount:1,net_amount:0,institution_buyers:0,buy_seats:0,sell_seats:0,meta};
+  const stock={symbol:item.symbol,name:item.name,price:1,change_percent:1,amount:0,float_market_cap:0,turnover_rate:0,streak:0,open_count:0,days:0,count:0,is_st:false,limit_regime:'10cm',raw_concepts:[],primary_theme:'',secondary_themes:[],theme_confidence:0,theme_evidence:[],meta};
+  const day={trade_date:item.trade_date,missing_fields:['streak'],limit_up_count:1,board_count:0,first_board_count:0,max_streak:0,reopened_count:0,st_count:0,total_amount:0,levels:[{level:0,label:'板数未知',count:1,stocks:[stock]}]};
+  const prompt=buildMarketBillboardPrompt({items:[item],details:{},limitUp:{session_status:'closed',current:day,previous:{...day,trade_date:'2026-09-29',levels:[]},advance:[],industry_heat:[],concept_heat:[],meta}},'测试');
+  expect(prompt).toContain('连板高度 未知');expect(prompt).toContain('换手率 未提供');expect(prompt).toContain('成交额 未提供');expect(prompt).toContain('板数覆盖不完整');
+  expect(prompt).not.toContain('连板高度 0板');expect(prompt).not.toContain('最高 0 板');expect(prompt).not.toContain('首板 0 家');
+ });
 	it('includes seats, institution net flow, concentration, themes, streaks and two three-stock lists', () => {
 		const item = {
 			trade_date: '2026-08-11', symbol: '600001.SH', name: '样本股份', close_price: 12.3,

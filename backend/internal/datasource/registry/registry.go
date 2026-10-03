@@ -6,7 +6,9 @@ import (
 	"context"
 	"easy-stock/backend/internal/datasource/contracts"
 	"fmt"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -48,6 +50,7 @@ type Capabilities struct {
 	FundFlow          contracts.FundFlowProvider
 	Margin            contracts.MarginProvider
 	Billboard         contracts.BillboardProvider
+	BillboardLabels   contracts.BillboardLabelProvider
 	Announcements     contracts.AnnouncementProvider
 	Reports           contracts.ReportProvider
 	Directory         contracts.StockDirectoryProvider
@@ -100,11 +103,86 @@ func New(entries ...Entry) (*Registry, error) {
 			return nil, fmt.Errorf("duplicate source %q", e.Descriptor.ID)
 		}
 		seen[e.Descriptor.ID] = true
+		implemented := CanonicalCapabilities(e.Capabilities)
+		if len(implemented) != 0 {
+			for _, declared := range e.Descriptor.Capabilities {
+				if !supportsDeclaration(declared, implemented) {
+					return nil, fmt.Errorf("source %q declares unsupported capability %q", e.Descriptor.ID, declared)
+				}
+			}
+			// Missing declarations in older custom registrations are generated,
+			// not rejected. Descriptor-only historical catalogs remain untouched.
+			e.Descriptor.Capabilities = implemented
+		}
 		e.Descriptor = cloneDescriptor(e.Descriptor)
 		r.entries = append(r.entries, e)
 	}
 	return r, nil
 }
+
+// CanonicalCapabilities derives the catalog from actual independently registered
+// implementation slots, not from interface methods a supplier happens to have.
+// ProbeDirectory is deliberately excluded: a diagnostic is not a business route.
+func CanonicalCapabilities(c Capabilities) []string {
+	slots := []struct {
+		name           string
+		implementation any
+	}{
+		{"browser-subscription", c.BrowserCollection}, {"author-links", c.AuthorLinks}, {"authorized-article", c.AuthorizedArticle},
+		{"article", c.Article}, {"review-archive", c.Archive},
+		{"knowledge-tree", c.Knowledge}, {"knowledge-document", c.Knowledge},
+		{"boards", c.Boards}, {"board-members", c.BoardMembers}, {"theme", c.Theme}, {"us-sector", c.USSector},
+		{"quote", c.Realtime}, {"auction", c.Auction}, {"kline", c.KLine}, {"adjusted-kline", c.AdjustedKLine},
+		{"intraday", c.Intraday}, {"historical-intraday", c.HistoryIntraday}, {"news", c.News},
+		{"index", c.Index}, {"industry", c.Industry}, {"fund-flow", c.FundFlow}, {"margin", c.Margin},
+		{"billboard", c.Billboard}, {"billboard-labels", c.BillboardLabels}, {"announcements", c.Announcements}, {"reports", c.Reports},
+		{"stock-directory", c.Directory}, {"business", c.Business}, {"fundamentals", c.Fundamentals},
+		{"limit-up", c.LimitUp}, {"market-pools", c.Pools}, {"hot-ranks", c.HotRank},
+		{"futures-history", c.FuturesTrend}, {"futures-snapshot", c.FuturesSnapshot}, {"futures-members", c.FuturesMembers}, {"futures-consensus", c.FuturesConsensus},
+	}
+	result := []string{}
+	for _, slot := range slots {
+		if slot.implementation == nil {
+			continue
+		}
+		value := reflect.ValueOf(slot.implementation)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				continue
+			}
+		}
+		result = append(result, slot.name)
+	}
+	sort.Strings(result)
+	return result
+}
+
+// Legacy display labels map explicitly to supported slots; none create routes.
+func supportsDeclaration(name string, implemented []string) bool {
+	aliases := map[string][]string{
+		"leaders": {"theme"}, "concept": {"theme", "boards", "stock-directory"},
+		"sector": {"industry"}, "sector-stocks": {"board-members"}, "money-flow": {"fund-flow"},
+		"announcement": {"announcements"}, "report": {"reports"},
+		"futures": {"futures-history", "futures-snapshot"},
+		// ThemeFetcher explicitly includes FetchLimitUpPool, but this is not
+		// a registration of the independent LimitUpProvider business slot.
+		"limit-up": {"limit-up", "theme"},
+	}
+	candidates := aliases[name]
+	if len(candidates) == 0 {
+		candidates = []string{name}
+	}
+	for _, candidate := range candidates {
+		for _, actual := range implemented {
+			if candidate == actual {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func cloneDescriptor(d Descriptor) Descriptor {
 	d.ArticleHosts = append([]string(nil), d.ArticleHosts...)
 	d.Kinds = append([]string(nil), d.Kinds...)
