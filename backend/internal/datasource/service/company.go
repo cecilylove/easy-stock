@@ -149,6 +149,12 @@ func (s *Company) StockFundamentals(ctx context.Context, symbol string) (foundat
 	if err != nil {
 		return foundation.StockFundamentals{}, err
 	}
+	if len(normalized.RawCode) != 6 {
+		return foundation.StockFundamentals{}, &contracts.Error{Kind: contracts.Unsupported, Capability: "fundamentals", Cause: fmt.Errorf("unsupported financial symbol")}
+	}
+	if err != nil {
+		return foundation.StockFundamentals{}, err
+	}
 	ctx, cancel := runtime.Budget(ctx, 10*time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {

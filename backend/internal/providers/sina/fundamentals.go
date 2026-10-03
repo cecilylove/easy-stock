@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"easy-stock/backend/internal/datasource/contracts"
 	"easy-stock/backend/internal/foundation"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
@@ -63,6 +64,10 @@ func NewFundamentalsClient(config FundamentalsConfig) *FundamentalsClient {
 func SupportsFundamentalsSymbol(symbol string) bool {
 	_, err := fundamentalsSymbol(symbol)
 	return err == nil
+}
+
+func unsupportedFundamentals(symbol string) error {
+	return &contracts.Error{Kind: contracts.Unsupported, SourceID: "sina", Capability: "fundamentals", Cause: fmt.Errorf("unsupported financial symbol %q", symbol)}
 }
 
 func fundamentalsSymbol(input string) (foundation.Symbol, error) {
@@ -118,7 +123,7 @@ type fundamentalsNumber struct {
 func (c *FundamentalsClient) StockFundamentals(ctx context.Context, input string) (foundation.StockFundamentals, error) {
 	symbol, err := fundamentalsSymbol(input)
 	if err != nil {
-		return foundation.StockFundamentals{}, err
+		return foundation.StockFundamentals{}, unsupportedFundamentals(input)
 	}
 	ctx, cancel := context.WithTimeout(ctx, fundamentalsBudget)
 	defer cancel()
@@ -216,6 +221,20 @@ func (c *FundamentalsClient) StockFundamentals(ctx context.Context, input string
 		dates = append(dates, date)
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
+	newestAdvertised := ""
+	for date := range descriptions {
+		if date > newestAdvertised {
+			newestAdvertised = date
+		}
+	}
+	// The newest advertised report must have a payload. Older dates may be
+	// omitted by pagination, but silently downgrading to an older complete
+	// report would mislabel the latest disclosure.
+	if newestAdvertised != "" {
+		if _, exists := data.Reports[newestAdvertised]; !exists {
+			return foundation.StockFundamentals{}, fmt.Errorf("sina fundamentals latest report payload missing")
+		}
+	}
 	for _, key := range dates {
 		reportDate, err := fundamentalsDate(key, location)
 		if err != nil {
@@ -256,6 +275,15 @@ func (c *FundamentalsClient) StockFundamentals(ctx context.Context, input string
 		return item, nil
 	}
 	return foundation.StockFundamentals{}, fmt.Errorf("sina fundamentals no published report as of now")
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func fundamentalsDate(value string, location *time.Location) (time.Time, error) {
