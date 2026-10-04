@@ -21,7 +21,7 @@ func Default(baseURL string) *registry.Registry {
 	caps := map[string]registry.Capabilities{
 		"duanxianxia": {Theme: duanxianxia.NewClient(duanxianxia.ClientConfig{BaseURL: baseURL})},
 		"eastmoney":   {Auction: em, Industry: em, FundFlow: em, Margin: em, Billboard: em, Announcements: em, Reports: em, Directory: em, ProbeDirectory: freshDirectory{}, Business: em, Fundamentals: em, LimitUp: em, Pools: em, Boards: em, HotRank: hotstock.NewEastMoneyRankClient(), FuturesTrend: futuresposition.NewHistoryClient()},
-		"sina":        {Realtime: sn, KLine: sn, Intraday: sn, HistoryIntraday: sina.NewHistoryIntradayClient(sn), FundFlow: sn, Directory: sn, Business: sina.NewBusinessClient(sina.BusinessConfig{}), Fundamentals: sina.NewFundamentalsClient(sina.FundamentalsConfig{})},
+		"sina":        {Realtime: sn, KLine: sn, Intraday: sn, HistoryIntraday: sina.NewHistoryIntradayClient(sn), FundFlow: sn, Directory: sn, Business: sina.NewBusinessClient(sina.BusinessConfig{}), Fundamentals: sina.NewFundamentalsClient(sina.FundamentalsConfig{}), Announcements: sina.NewAnnouncementClient(sina.AnnouncementConfig{}), Reports: sina.NewReportClient(sina.ReportConfig{})},
 		"tencent":     {Index: qq, KLine: tencent.NewPriceKLineClient(qq), AdjustedKLine: tencent.NewStockKLineClient(qq), Industry: qq, BoardMembers: qq, USSector: qq},
 		"cls":         {News: cls.NewClient()},
 		"ths":         {HotRank: hotstock.NewTHSRankClient(), BillboardLabels: ths.NewBillboardLabelClient()},

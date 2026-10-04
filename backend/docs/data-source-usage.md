@@ -46,8 +46,8 @@
 | 行业/题材/个股资金榜 | `FundFlowProvider.MarketFundFlows` | 新浪 → 东方财富有效字段 | 市场总览/研究/复盘；板块总净额与主力净额不等价，记录字段及排序降级 |
 | 融资余额 | `MarginProvider.MarketMarginSeries` | 东方财富 | 市场总览；不是完整两融账户/融券能力 |
 | 龙虎榜榜单/明细 | `BillboardProvider.MarketBillboard/MarketBillboardDetail` | 东方财富；明细另补同花顺标签 | `BillboardLabels`独立路由在访问服务补充同花顺标签；禁用/失败保留东财买卖明细，标签只是平台分类口径，非监管确认的资金身份 |
-| 公告 | `AnnouncementProvider.MarketAnnouncements` | 东方财富 | 公告工作台与研究证据；索引/链接之外最多4并发补正文（共用10秒预算、最多8000字）；content_status/scope/issue明确正文失败/截断，不等于附件全文采集 |
-| 个股/行业研报 | `ReportProvider.MarketReports` | 东方财富 | 机构研报、行业研究、研究证据；支持现有查询过滤，不能据此声称全网研报/PDF正文能力 |
+| 公告 | `AnnouncementProvider.MarketAnnouncements` | 新浪个股 → 东方财富整份查询备用 | 身份核验、4页/100项、正文3并发/8000字；全市场身份与未充分过滤覆盖明确回退，正文失败不否定列表，不抓PDF/OCR |
+| 个股/行业研报 | `ReportProvider.MarketReports` | 新浪 → 东方财富整份查询备用 | 45日最多5页，公司按官方股票search，行业分类未等价则回退；8正文/3并发，platform-readable非PDF全文，结构化评级/预测未取得不从自由文推数值 |
 | 股票目录及概念归属 | `StockDirectoryProvider.StockCatalog` | 东方财富 | 名称搜索、证券身份、概念映射、成员候选；新浪目录虽已注册但不自动回退 |
 | 主营业务 | `BusinessProvider.StockBusinessProfile` | `Company`：新浪 → 东方财富 | 主营/简介须明确，Industry/Scope不冒充；失败/覆盖不足整份回退，保留实际来源 |
 | 财务基本面 | `FundamentalsProvider.StockFundamentals` | `Company`：新浪 → 东方财富 | 最新已披露合并累计/CNY，报告期/披露日分开；覆盖不足整份选择、旧报告不覆盖有效新报告，缺失/银行不适用不按0评分 |

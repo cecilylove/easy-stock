@@ -919,7 +919,7 @@ function ResearchPanel({ analysis }: { analysis: StockAIAnalysis }) {
 		<header><div><span>第三方预期</span><h3>机构研报 · 近45日</h3></div><FileSearch size={19} /></header>
 		{item?.available ? <>
 			<div className="stock-ai-research-summary"><div><strong>{item.report_count} 篇</strong><span>{item.organization_count} 家机构 · 覆盖{item.coverage}{item.latest_rating ? ` · 最新评级${item.latest_rating}` : ''}</span></div><small>机构评级仅代表第三方观点，不作为系统买卖结论。</small></div>
-			<div className="stock-ai-research-list">{item.reports.map((report) => <article key={report.id}><div><header><span>{report.organization || '研究机构'}</span><time>{formatShortDate(report.published_at)}</time></header><strong>{report.title}</strong><small>{[report.rating ? `评级 ${report.rating}` : '', report.target_low || report.target_high ? `目标价 ${formatTargetPrice(report.target_low, report.target_high)}` : '', report.eps ? `EPS ${report.eps.toFixed(2)}` : ''].filter(Boolean).join(' · ')}</small></div>{report.url && <a href={report.url} target="_blank" rel="noreferrer" title="查看研报原文"><ExternalLink size={14} /></a>}</article>)}</div>
+			<div className="stock-ai-research-list">{item.reports.map((report) => <article key={report.id}><div><header><span>{report.organization || '研究机构'}</span><time>{formatShortDate(report.published_at)}</time></header><strong>{report.title}</strong><small>来源：{sourceName(report.meta?.source || '未知')}{report.meta?.fallback_reason ? ` · ${report.meta.fallback_reason}` : ''}{report.content_status === 'unavailable' ? ' · 正文未取得，仅列表' : report.content_status === 'truncated' ? ' · 正文截断' : report.content_scope === 'platform-readable' ? ' · 平台可读摘要，非PDF全文' : ''}</small><small>{[report.rating ? `评级 ${report.rating}` : '', report.target_low || report.target_high ? `目标价 ${formatTargetPrice(report.target_low, report.target_high)}` : '', report.eps ? `EPS ${report.eps.toFixed(2)}` : ''].filter(Boolean).join(' · ')}</small></div>{report.url && <a href={report.url} target="_blank" rel="noreferrer" title="查看研报原文"><ExternalLink size={14} /></a>}</article>)}</div>
 		</> : <div className="stock-ai-panel-empty">近45日暂无可用机构研报</div>}
 	</section>;
 }
@@ -1570,8 +1570,9 @@ function formatMoney(value: number) {
 }
 
 function formatShortDate(value: string) {
-	const date = new Date(value);
-	return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+	if (!value || value.startsWith('0001-') || !Number.isFinite(Date.parse(value))) return '未知';
+	const date = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+	return date ? `${date[2]}/${date[3]}` : '未知';
 }
 
 function formatTargetPrice(low?: number, high?: number) {

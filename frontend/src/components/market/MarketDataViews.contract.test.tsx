@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KLine, MarketFundFlow, MarketIndustryMomentum, MarketIndexSnapshot, SourceMeta } from '../../lib/backend';
-import { CoreIndexView, FundFlowView, IndustryMomentumView } from './MarketDataViews';
+import { CoreIndexView, FundFlowView, IndustryMomentumView, ResearchView } from './MarketDataViews';
 
 beforeEach(() => vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true));
 afterEach(() => vi.unstubAllGlobals());
@@ -15,6 +15,11 @@ const flow = (name: string, fields: string[], net = 0, main = 0): MarketFundFlow
 function root(html: string) { const element = document.createElement('div'); element.innerHTML = html; return element; }
 
 describe('market row field contracts', () => {
+ it('shows actual disclosure fallback and distinguishes platform text from full report', () => {
+  const item={kind:'stock',id:'sina-1',title:'第三方研报',published_at:'2026-09-22T00:00:00+08:00',url:'https://stock.finance.sina.com.cn/report',content_status:'unavailable' as const,content_scope:'platform-readable',content_issue:'正文未取得，非PDF全文',meta:{...meta(['title']),source:'sina:reports',query_coverage:'bounded' as const,fallback_reason:'备用失败保留有界列表'}};
+  const html=renderToStaticMarkup(<ResearchView items={[item]} kind="stock" queryDraft="" onQueryDraft={()=>{}} onSearch={()=>{}} category="all" onCategory={()=>{}} meta={item.meta} />);
+  expect(html).toContain('新浪财经');expect(html).toContain('有界列表');expect(html).toContain('正文未取得');expect(html).toContain('非PDF全文');
+ });
 	it('keeps foreign unknown-offset snapshot time unknown rather than replacing it with history time', () => {
 		const item: MarketIndexSnapshot = { id: 'foreign', secid: '', code: '', name: '海外指数', region: 'US', market: 'US', currency: 'USD', price: 123, change: 0, change_percent: 0, status: 'unknown', trade_time: '0001-01-01T00:00:00Z', meta: { ...meta(['price']), time_zone: 'unknown', native_timestamp: '20261001093000' } };
 		const line: KLine = { symbol: 'foreign', time: '2026-10-01T00:00:00Z', open: 120, high: 125, low: 119, close: 123, volume: 0, amount: 0, meta: { ...meta(['open', 'high', 'low', 'close']), time_zone: 'UTC' } };

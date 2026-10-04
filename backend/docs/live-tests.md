@@ -66,6 +66,28 @@ public sample output; do not point it at installed-version user data. This check
 validates company-source wiring, not the unrelated synthetic price data, AI
 synthesis quality, every security's coverage or long-term availability.
 
+## Disclosure-source migration check
+
+`TestLiveDisclosureMigrationOfficialHTTPAndResearchEvidence` uses registered Sina
+announcement/company-report/industry-report slots, actual market HTTP handlers
+and research-source projection with in-memory stores. It does not call AI or
+read personal settings. Only official Sina hosts are allowed; fallback is disabled
+for source certification, requests are capped at 16 and spaced by one second.
+Ordinary tests skip it unless `A_STOCK_LIVE_DISCLOSURE_TEST=1`:
+
+```powershell
+$env:A_STOCK_LIVE_DISCLOSURE_TEST = '1'
+try {
+  & ./.runtime/tools/go/bin/go.exe -C backend test ./internal/httpapi -run '^TestLiveDisclosureMigrationOfficialHTTPAndResearchEvidence$' -count=1 -v
+} finally { Remove-Item Env:A_STOCK_LIVE_DISCLOSURE_TEST }
+```
+
+Optional `A_STOCK_DISCLOSURE_EVIDENCE_DIR` is an existing ignored output directory.
+The public sample checks exact source/title/date/URL, readable text scope and
+query coverage; not full PDF/OCR, all-stock/all-industry coverage or SLA. Default
+all-market announcement and unverified industry-classification queries retain
+explicit EastMoney fallback, tested separately offline.
+
 ## Notes
 
 External financial endpoints can fail because of network restrictions, rate limits, anti-bot changes, or upstream schema changes. A live test failure should be treated as a data-source health signal, not necessarily as a deterministic code regression.

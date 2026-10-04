@@ -258,6 +258,12 @@ func ResearchItemSource(item foundation.MarketResearchItem, kind string, capture
 	}
 	if kind == "opinion" {
 		content += fmt.Sprintf("\n机构：%s；评级：%s；前次评级：%s", item.Organization, item.Rating, item.PreviousRating)
+		if item.Meta.FieldsKnown {
+			content += "\n仅available_fields所列结构化指标已取得；正文中的预测/评级为第三方观点，不等于结构化字段或系统结论。"
+		}
+	}
+	if item.Meta.FallbackReason != "" {
+		content += "\n来源/覆盖限制：" + item.Meta.FallbackReason
 	}
 	return NewResearchSource(kind, item.Title, content, item.Meta.Source, item.URL, item.PublishedAt, captured)
 }

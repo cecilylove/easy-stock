@@ -236,6 +236,8 @@ func NewServer(config any) *Server {
 	marketIndexSourceID, marketIndustrySourceID, marketFlowSourceID := "", "", ""
 	if cfg.MarketOverview == nil {
 		marketConfig := service.MarketConfig{Index: capability(routes.Index).Index, Industry: capability(routes.Industry).Industry, IndustryFallback: capability(routes.IndustryFallback).Industry, FundFlow: capability(routes.FundFlow).FundFlow, FundFlowFallback: capability(routes.FundFlowFallback).FundFlow, Margin: capability(routes.Margin).Margin, Billboard: capability(routes.Billboard).Billboard, Announcements: capability(routes.Announcements).Announcements, Reports: capability(routes.Reports).Reports, USSector: capability(routes.USSector).USSector, USSectorFallback: capability(routes.USSectorFallback).USSector, MarginSourceID: routes.Margin, BillboardSourceID: routes.Billboard, AnnouncementsSourceID: routes.Announcements, ReportsSourceID: routes.Reports, USSectorSourceID: routes.USSector, USSectorFallbackSourceID: routes.USSectorFallback, IndexSourceID: routes.Index, IndustrySourceID: routes.Industry, IndustryFallbackSourceID: routes.IndustryFallback, FundFlowSourceID: routes.FundFlow, FundFlowFallbackSourceID: routes.FundFlowFallback}
+		marketConfig.AnnouncementsFallback, marketConfig.ReportsFallback = capability(routes.AnnouncementsFallback).Announcements, capability(routes.ReportsFallback).Reports
+		marketConfig.AnnouncementsFallbackSourceID, marketConfig.ReportsFallbackSourceID = routes.AnnouncementsFallback, routes.ReportsFallback
 		if cfg.MarketCapabilities != nil {
 			marketConfig = *cfg.MarketCapabilities
 		}

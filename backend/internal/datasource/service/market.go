@@ -50,11 +50,14 @@ type MarketConfig struct {
 	Margin                                                                                                                contracts.MarginProvider
 	Billboard                                                                                                             contracts.BillboardProvider
 	Announcements                                                                                                         contracts.AnnouncementProvider
+	AnnouncementsFallback                                                                                                 contracts.AnnouncementProvider
 	Reports                                                                                                               contracts.ReportProvider
+	ReportsFallback                                                                                                       contracts.ReportProvider
 	USSector                                                                                                              contracts.USSectorProvider
 	USSectorFallback                                                                                                      contracts.USSectorProvider
 	IndexSourceID, IndustrySourceID, IndustryFallbackSourceID, FundFlowSourceID, FundFlowFallbackSourceID                 string
 	MarginSourceID, BillboardSourceID, AnnouncementsSourceID, ReportsSourceID, USSectorSourceID, USSectorFallbackSourceID string
+	AnnouncementsFallbackSourceID, ReportsFallbackSourceID                                                                string
 }
 type Market struct {
 	config           MarketConfig
@@ -295,21 +298,11 @@ func (p *Market) MarketBillboardDetail(ctx context.Context, symbol string, trade
 }
 
 func (p *Market) MarketAnnouncements(ctx context.Context, query string, symbol string, category string, limit int) ([]foundation.MarketResearchItem, foundation.SourceMeta, error) {
-	if p.config.Announcements == nil {
-		return nil, foundation.SourceMeta{}, unsupportedMarket("announcement")
-	}
-	return runMarketCapability(ctx, p.config.AnnouncementsSourceID, "announcement", func(ctx context.Context) ([]foundation.MarketResearchItem, foundation.SourceMeta, error) {
-		return p.config.Announcements.MarketAnnouncements(ctx, query, symbol, category, limit)
-	})
+	return p.loadAnnouncements(ctx, query, symbol, category, limit)
 }
 
 func (p *Market) MarketReports(ctx context.Context, kind string, query string, symbol string, industry string, limit int) ([]foundation.MarketResearchItem, foundation.SourceMeta, error) {
-	if p.config.Reports == nil {
-		return nil, foundation.SourceMeta{}, unsupportedMarket("report")
-	}
-	return runMarketCapability(ctx, p.config.ReportsSourceID, "report", func(ctx context.Context) ([]foundation.MarketResearchItem, foundation.SourceMeta, error) {
-		return p.config.Reports.MarketReports(ctx, kind, query, symbol, industry, limit)
-	})
+	return p.loadReports(ctx, kind, query, symbol, industry, limit)
 }
 
 func unsupportedMarket(capability string) error {

@@ -18,6 +18,19 @@
 - 失败/缺字段/旧季度/未知披露日/银行不适用/取消/预算/禁用fallback/历史报告与截止证据均有离线回归；完整主源不请求东财，部分数据按整份选择，绝不跨源拼字段。
 - 官网公开成功不是授权SLA或稳定性保证；当前官方日期为日粒度，不冒精确盘中披露时间，非历史PIT/修订仓库。公告研报及其它东财功能本批不替换。回滚仅调整Business/Fundamentals及其fallback路由，不改用户库或历史报告。
 
+## 第二批公告/研报迁移（2026-10-04）
+
+新浪独立 `AnnouncementClient` / `ReportClient` 注册为主源，`AnnouncementsFallback` / `ReportsFallback` 显式东财整份查询备用；取消不回退，不混平台正文和列表。仍非完整去东财：全市场公告Gather使用CompanyCode且包含非A股，无法可靠核股票身份；行业分类搜索实际返回公司报告，二者typed Unsupported零取数直接备用。关键词本地筛选未充分遍历标bounded，不把无匹配当权威无披露。
+
+官方端点核验：个股公告首列表`vCB_AllBulletin/stockid/{code}.phtml`、下一页`vCB_AllBulletin.php?stockid=&Page=`、详情`vCB_AllBulletinDetail.php?stockid=&id=`；研报`vReport_List/kind/company|industry|search/index.phtml`，股票搜索`symbol=600519&t1=all`，分页`p`保留参数，正文`vReport_Show/kind/company|industry/rptid/{id}/index.phtml`。公司/行业分类不移植东财原生ID。
+
+- 公告最多4页×30、返回100；正文3并发/8000字，日期/公司/交易所/标题身份、未来日期、重复/乱序/无进展、可信路径和挑战页均校验。
+- 研报45日最多5页/100项、正文最多8条/3并发；机构/作者可未知不丢有效行，不从自由文字推评级/预测EPS/PE/目标价，保留严格field mask。正文核title/date/category/已知org/author，多容器拒歧义；platform-readable不等于PDF全文。
+- 两能力使用有界DOM、2MiBwire/4MiBdecoded/token100k/depth128，GBK/UTF8、无Cookie/redirect/JS执行/retry。适配器10秒，总主备18秒，主源最多12秒并预留最多6秒。
+- QueryCoverage与正文partial独立；latest-N取得N条有效降序结果即满足请求，不宣称全部历史。缺正文不默认整份回退；列表/过滤覆盖不足才回退。旧记录/库不重写。
+- 官方低频HTTP+研究投影检查6次新浪请求，600519.SH公告/公司研报以及无分类行业研报均取得可读文本，最终query complete/来源新浪；内存库、无模型、禁用备用保证真实验源。原始证据忽略保存 `.runtime/disclosure-batch2-20261004/`，测试命令见[live tests](../backend/docs/live-tests.md)。实际长期可用性、全市场及PDF/OCR未承诺。
+- 研究采集和页面透传实际来源/回退/范围，未知披露时间与Go零时间显示未知，日粒度日期按源标签不随浏览器时区移日。详细职责见[数据源说明](../backend/docs/data-sources.md)。
+
 ## 阶段1：默认路由和失败边界
 
 - 默认个股 K 为新浪 → 腾讯 none（仅支持的股票日/周/月），每次返回单一供应商快照，不拼历史。

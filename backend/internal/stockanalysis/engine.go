@@ -3,6 +3,7 @@ package stockanalysis
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -318,23 +319,31 @@ func analyzeResearch(items []foundation.MarketResearchItem) ResearchAnalysis {
 	ratingChanges := []string{}
 	positiveRatings := 0
 	latestRating := ""
+	knownRatings := 0
+	bounded := false
 	for index, item := range items {
+		if item.Meta.QueryCoverage == "bounded" {
+			bounded = true
+		}
+		if item.Rating != "" && (!item.Meta.FieldsKnown || slices.Contains(item.Meta.AvailableFields, "rating")) {
+			knownRatings++
+		}
 		if value := strings.TrimSpace(item.Organization); value != "" {
 			organizations[value] = true
 		}
-		if index == 0 {
+		if index == 0 && (!item.Meta.FieldsKnown || slices.Contains(item.Meta.AvailableFields, "rating")) {
 			latestRating = strings.TrimSpace(item.Rating)
 		}
-		if ratingIsPositive(item.Rating) {
+		if (!item.Meta.FieldsKnown || slices.Contains(item.Meta.AvailableFields, "rating")) && ratingIsPositive(item.Rating) {
 			positiveRatings++
 		}
-		if value := strings.TrimSpace(item.RatingChange); value != "" {
+		if value := strings.TrimSpace(item.RatingChange); value != "" && (!item.Meta.FieldsKnown || slices.Contains(item.Meta.AvailableFields, "rating_change")) {
 			ratingChanges = append(ratingChanges, value)
 		}
 	}
 	score := 45 + min(len(items), 8)*3 + min(len(organizations), 5)*2
-	if len(items) > 0 {
-		score += int(math.Round(float64(positiveRatings) / float64(len(items)) * 20))
+	if knownRatings > 0 {
+		score += int(math.Round(float64(positiveRatings) / float64(knownRatings) * 20))
 	}
 	score = int(clamp(float64(score), 0, 100))
 	coverage := "有限"
@@ -343,7 +352,16 @@ func analyzeResearch(items []foundation.MarketResearchItem) ResearchAnalysis {
 	} else if len(items) >= 2 {
 		coverage = "一般"
 	}
-	summary := fmt.Sprintf("近45日收录%d篇个股研报，覆盖%d家机构", len(items), len(organizations))
+	if bounded {
+		coverage = "有界样本"
+	}
+	summary := fmt.Sprintf("近45日取得%d篇个股研报样本，涉及%d家机构", len(items), len(organizations))
+	if bounded {
+		summary += "，有界列表不代表全量覆盖"
+	}
+	if knownRatings == 0 {
+		summary += "，结构化评级未取得，不能推断为中性或负面"
+	}
 	if latestRating != "" {
 		summary += "，最新评级" + latestRating
 	}

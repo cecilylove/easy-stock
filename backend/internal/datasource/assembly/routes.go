@@ -21,12 +21,13 @@ type Routes struct {
 	Theme                                                                                                                                string
 	BillboardLabels                                                                                                                      string // Optional enrichment; empty disables labels without disabling raw details.
 	BusinessFallback, FundamentalsFallback                                                                                               string // Explicit whole-snapshot fallback; empty disables it.
+	AnnouncementsFallback, ReportsFallback                                                                                               string // Explicit whole-query fallback; empty disables it.
 }
 
 func DefaultRoutes() Routes {
 	return Routes{
 		Realtime: "sina", Auction: "eastmoney", Intraday: "sina", HistoryIntraday: "sina", News: "cls", Directory: "eastmoney", Business: "sina", Fundamentals: "sina", BusinessFallback: "eastmoney", FundamentalsFallback: "eastmoney", LimitUp: "eastmoney", Pools: "eastmoney", Boards: "eastmoney", Theme: "duanxianxia",
-		KLine: []string{"sina", "tencent"}, Strict: []string{"tencent"}, DefaultStrict: "tencent", Index: "tencent", Industry: "tencent", IndustryFallback: "eastmoney", FundFlow: "sina", FundFlowFallback: "eastmoney", Margin: "eastmoney", Billboard: "eastmoney", BillboardLabels: "ths", Announcements: "eastmoney", Reports: "eastmoney", USSectorFallback: "tencent", HotRanks: []string{"ths", "eastmoney"}, FuturesHistory: "eastmoney", FuturesExchange: "cffex", BoardMembers: []string{"tencent"},
+		KLine: []string{"sina", "tencent"}, Strict: []string{"tencent"}, DefaultStrict: "tencent", Index: "tencent", Industry: "tencent", IndustryFallback: "eastmoney", FundFlow: "sina", FundFlowFallback: "eastmoney", Margin: "eastmoney", Billboard: "eastmoney", BillboardLabels: "ths", Announcements: "sina", AnnouncementsFallback: "eastmoney", Reports: "sina", ReportsFallback: "eastmoney", USSectorFallback: "tencent", HotRanks: []string{"ths", "eastmoney"}, FuturesHistory: "eastmoney", FuturesExchange: "cffex", BoardMembers: []string{"tencent"},
 	}
 }
 
@@ -83,6 +84,8 @@ func (r Routes) Validate(sources *registry.Registry) error {
 		{r.BillboardLabels, "billboard-labels", func(c registry.Capabilities) bool { return c.BillboardLabels != nil }},
 		{r.Announcements, "announcements", func(c registry.Capabilities) bool { return c.Announcements != nil }},
 		{r.Reports, "reports", func(c registry.Capabilities) bool { return c.Reports != nil }},
+		{r.AnnouncementsFallback, "announcements-fallback", func(c registry.Capabilities) bool { return c.Announcements != nil }},
+		{r.ReportsFallback, "reports-fallback", func(c registry.Capabilities) bool { return c.Reports != nil }},
 		{r.LimitUp, "limit-up", func(c registry.Capabilities) bool { return c.LimitUp != nil }},
 		{r.Pools, "market-pools", func(c registry.Capabilities) bool { return c.Pools != nil }},
 		{r.Boards, "boards", func(c registry.Capabilities) bool { return c.Boards != nil }},

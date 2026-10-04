@@ -165,31 +165,33 @@ func (s *Server) collectStockResearch(ctx context.Context, canonicalSymbol strin
 	s.logStockAnalysisStage(normalized.Canonical, "data_collection", "started", time.Time{}, 0, nil)
 
 	var (
-		quote           foundation.Quote
-		lines           []foundation.KLine
-		benchmarkLines  []foundation.KLine
-		limitUps        []foundation.LimitUpEvent
-		cachedThemes    []foundation.StockThemeAttribution
-		catalog         []foundation.StockCatalogEntry
-		themes          []foundation.ThemeOverview
-		news            []foundation.NewsItem
-		business        foundation.StockBusinessProfile
-		fundamentals    foundation.StockFundamentals
-		reports         []foundation.MarketResearchItem
-		announcements   []foundation.MarketResearchItem
-		quoteErr        error
-		lineErr         error
-		benchmarkErr    error
-		limitUpErr      error
-		cachedThemeErr  error
-		catalogErr      error
-		themeErr        error
-		newsErr         error
-		businessErr     error
-		fundamentalErr  error
-		reportErr       error
-		announcementErr error
-		collectionWG    sync.WaitGroup
+		quote            foundation.Quote
+		lines            []foundation.KLine
+		benchmarkLines   []foundation.KLine
+		limitUps         []foundation.LimitUpEvent
+		cachedThemes     []foundation.StockThemeAttribution
+		catalog          []foundation.StockCatalogEntry
+		themes           []foundation.ThemeOverview
+		news             []foundation.NewsItem
+		business         foundation.StockBusinessProfile
+		fundamentals     foundation.StockFundamentals
+		reports          []foundation.MarketResearchItem
+		announcements    []foundation.MarketResearchItem
+		quoteErr         error
+		lineErr          error
+		benchmarkErr     error
+		limitUpErr       error
+		cachedThemeErr   error
+		catalogErr       error
+		themeErr         error
+		newsErr          error
+		businessErr      error
+		fundamentalErr   error
+		reportErr        error
+		announcementErr  error
+		reportMeta       foundation.SourceMeta
+		announcementMeta foundation.SourceMeta
+		collectionWG     sync.WaitGroup
 	)
 
 	collectionWG.Add(3)
@@ -251,11 +253,11 @@ func (s *Server) collectStockResearch(ctx context.Context, canonicalSymbol strin
 		collectionWG.Add(2)
 		go func() {
 			defer collectionWG.Done()
-			reports, _, reportErr = s.marketOverview.MarketReports(dataCtx, "stock", "", normalized.Canonical, "", 8)
+			reports, reportMeta, reportErr = s.marketOverview.MarketReports(dataCtx, "stock", "", normalized.Canonical, "", 8)
 		}()
 		go func() {
 			defer collectionWG.Done()
-			announcements, _, announcementErr = s.marketOverview.MarketAnnouncements(dataCtx, "", normalized.Canonical, "all", 24)
+			announcements, announcementMeta, announcementErr = s.marketOverview.MarketAnnouncements(dataCtx, "", normalized.Canonical, "all", 24)
 		}()
 	}
 	if s.themeOverview != nil {
@@ -327,6 +329,21 @@ func (s *Server) collectStockResearch(ctx context.Context, canonicalSymbol strin
 	}
 	if fundamentalErr != nil {
 		gaps = append(gaps, "基本面资料不可用: "+fundamentalErr.Error())
+	}
+	for _, event := range append(reportMeta.Observations, announcementMeta.Observations...) {
+		s.sourceHealth.observe(event)
+	}
+	if reportMeta.FallbackReason != "" {
+		gaps = append(gaps, "研报来源/范围限制："+reportMeta.FallbackReason)
+	}
+	if announcementMeta.FallbackReason != "" {
+		gaps = append(gaps, "公告来源/范围限制："+announcementMeta.FallbackReason)
+	}
+	if reportMeta.QueryCoverage == "bounded" {
+		gaps = append(gaps, "研报仅覆盖有界查询结果，数量不代表全量机构覆盖")
+	}
+	if announcementMeta.QueryCoverage == "bounded" {
+		gaps = append(gaps, "公告仅覆盖有界查询结果，不能据此排除遗漏事项")
 	}
 	if reportErr != nil {
 		gaps = append(gaps, "机构研报不可用: "+reportErr.Error())

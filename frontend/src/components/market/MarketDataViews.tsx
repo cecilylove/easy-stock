@@ -481,7 +481,7 @@ export function ResearchView({ items, kind, queryDraft, onQueryDraft, onSearch, 
 		<form className="market-filter-bar" onSubmit={(event) => { event.preventDefault(); onSearch(); }}><label><Search size={14} /><input aria-label="搜索研究信号" value={queryDraft} onChange={(event) => onQueryDraft(event.target.value)} placeholder={kind === 'announcement' ? '搜索公告标题或输入股票关键词' : '搜索公司、行业、机构或观点'} /></label>{kind === 'announcement' && <select aria-label="公告分类" value={category} onChange={(event) => onCategory(event.target.value)}><option value="all">全部公告</option><option value="重大">重大事项</option><option value="业绩">业绩公告</option><option value="融资">融资公告</option><option value="风险">风险提示</option></select>}<button type="submit"><Search size={14} />检索</button></form>
 		{items.length ? <div className="market-research-list">{items.map((item) => <article key={`${item.kind}-${item.id}`}>
 			<div className="market-research-icon">{kind === 'announcement' ? <FileText size={18} /> : kind === 'stock' ? <Building2 size={18} /> : <TrendingUp size={18} />}</div>
-			<div><header><span>{item.category || (kind === 'stock' ? '个股研报' : kind === 'industry' ? '行业研报' : '公告')}</span><time>{formatDateTime(item.published_at)}</time></header><h3>{item.title}</h3><p>{[item.stock_name || item.symbol, item.industry_name, item.organization, item.researchers].filter(Boolean).join(' · ') || '市场研究信号'}</p>{item.content_status && <small>{item.content_status === 'unavailable' ? '仅列表，正文未取得' : item.content_status === 'truncated' ? '正文已截断，非全文' : '已取得可读正文'}{item.content_issue ? ` · ${item.content_issue}` : ''}</small>}<footer>{item.rating && <span>评级 <strong>{item.rating}</strong>{item.previous_rating && ` / 前值 ${item.previous_rating}`}</span>}{(item.target_low || item.target_high) && <span>目标价 <strong>{formatTarget(item.target_low, item.target_high)}</strong></span>}{item.eps ? <span>预测 EPS <strong>{item.eps.toFixed(2)}</strong></span> : null}{item.pe ? <span>预测 PE <strong>{item.pe.toFixed(1)}</strong></span> : null}</footer></div>
+			<div><header><span>{item.category || (kind === 'stock' ? '个股研报' : kind === 'industry' ? '行业研报' : '公告')}</span><time>{formatDisclosureDate(item.published_at)}</time></header><h3>{item.title}</h3><p>{[item.stock_name || item.symbol, item.industry_name, item.organization, item.researchers].filter(Boolean).join(' · ') || '市场研究信号'}</p><small>来源：{sourceName(item.meta?.source || '未知')}{item.meta?.fallback_reason ? ` · ${item.meta.fallback_reason}` : ''}{item.meta?.query_coverage === 'bounded' ? ' · 有界列表，非全部覆盖' : ''}</small>{item.content_status && <small>{item.content_status === 'unavailable' ? '仅列表，正文未取得' : item.content_status === 'truncated' ? '正文已截断，非全文' : '已取得可读正文'}{item.content_issue ? ` · ${item.content_issue}` : ''}</small>}<footer>{item.rating && <span>评级 <strong>{item.rating}</strong>{item.previous_rating && ` / 前值 ${item.previous_rating}`}</span>}{(item.target_low || item.target_high) && <span>目标价 <strong>{formatTarget(item.target_low, item.target_high)}</strong></span>}{item.eps ? <span>预测 EPS <strong>{item.eps.toFixed(2)}</strong></span> : null}{item.pe ? <span>预测 PE <strong>{item.pe.toFixed(1)}</strong></span> : null}</footer></div>
 			{item.url && <a href={item.url} target="_blank" rel="noreferrer" title="查看原文"><ExternalLink size={16} /></a>}
 		</article>)}</div> : <EmptyData title="暂无匹配研究信号" detail="调整关键词或公告分类后重新检索。" />}
 	</div>;
@@ -646,8 +646,13 @@ function fundFlowSourceLabel(meta: SourceMeta | null) {
 	return sourceName(meta.source);
 }
 
+function formatDisclosureDate(value?: string) {
+	if (!value || value.startsWith('0001-') || !Number.isFinite(Date.parse(value))) return '未知';
+	return /^(\d{4}-\d{2}-\d{2})(?:T|$)/.exec(value)?.[1] || '未知';
+}
+
 function formatDateTime(value?: string) {
-	if (!value) return '--';
+	if (!value || value.startsWith('0001-')) return '--';
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) return value;
 	return date.toLocaleString('zh-CN', { hour12: false });

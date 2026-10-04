@@ -1,0 +1,24 @@
+Official HTML observations, retrieved 2026-10-04, seven successful requests total.
+Raw full pages retained only in ignored .runtime/research-batch2. Committed fixtures are minimal public DOM excerpts, not complete archive/full reports.
+1. https://stock.finance.sina.com.cn/stock/go.php/vReport_List/kind/company/index.phtml
+   40 rows, tb_01 schema 序号/标题/报告类型/发布日期/机构/研究员. Full title in anchor title attribute; visible anchor may end in ... .
+2. https://stock.finance.sina.com.cn/stock/go.php/vReport_List/kind/search/index.phtml?symbol=600519&t1=all
+   Only 贵州茅台(600519) company reports observed. Show links use kind/search; explicit company category allows canonical Show/kind/company.
+3. https://stock.finance.sina.com.cn/stock/go.php/vReport_List/kind/search/index.phtml?symbol=600519&t1=all&p=2
+   Different IDs and older 贵州茅台(600519) reports. p is the numeric page, not pn/page/pageNo.
+   Pagination onclick set_page_num('2'), exact inline definition:
+     function set_page_num(number){ url_set_search('p',number,false); }
+   url_set_search reads window.location.search, retains existing key/value pairs when !clear, then opens pathname+search. false preserves symbol and t1.
+4. https://stock.finance.sina.com.cn/stock/go.php/vReport_List/kind/industry/index.phtml
+   Industry research rows have explicit 行业 category and Show/kind/industry; no stock or classification column.
+5. https://stock.finance.sina.com.cn/stock/go.php/vReport_Show/kind/company/rptid/843401040115/index.phtml
+   div.content h1 title, div.creab 类别/机构/研究员/日期, div.blk_container readable prose. No structured EPS/PE/rating/target cells. Prose must not create numeric fields.
+6. https://finance.sina.com.cn/stock/reaserchyjbg/report/report_industry_sw2.js
+   Declarative reportIndustry entries include {svalue:"半导体",id:"sw2_270100"}. Inspected as data, not evaluated/executed.
+7. https://stock.finance.sina.com.cn/stock/go.php/vReport_List/kind/search/index.phtml?t1=3&industry=sw2_270100
+   Company and 创业板 rows, e.g. 兆易创新(603986), 圣邦股份(300661); therefore NOT an industry-research selector. Typed Unsupported for industry classification until reliable equivalent scope is confirmed.
+Form/JS evidence on list pages:
+ GET action /stock/go.php/vReport_List/kind/search/index.phtml
+ t1=1 orgname, 2 stock(symbol), 3 industry(classification id), 4 analysts, 5 title, 6 pubdate.
+ Combined field semantics and kind-only query search were not sufficiently tested; adapter applies query ONLY to title, explicit organization/researchers and title-based stock identity within bounded list pages, with QueryCoverage bounded + Partial/Reason. No additional public requests to guess combination semantics.
+Runtime bounds: shared <=10s; list <=5 pages; details <=8 requests with <=3 workers; body response <=2MiB; output limit <=100; 45-calendar-day window, IDs dedup, no-progress stop. platform-readable is not a claim of PDF/full-report completeness.

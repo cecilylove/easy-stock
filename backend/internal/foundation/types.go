@@ -29,6 +29,7 @@ type SourceMeta struct {
 	VolumeUnit           string               `json:"volume_unit,omitempty"`
 	AmountCurrency       string               `json:"amount_currency,omitempty"`
 	Partial              bool                 `json:"partial,omitempty"`
+	QueryCoverage        string               `json:"query_coverage,omitempty"` // complete, bounded, unsupported; separate from body status
 	MissingIDs           []string             `json:"missing_ids,omitempty"`
 	CoveredDates         []string             `json:"covered_dates,omitempty"`
 	RequestedSort        string               `json:"requested_sort,omitempty"`

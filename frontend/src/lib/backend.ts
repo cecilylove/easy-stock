@@ -286,6 +286,7 @@ export type SourceMeta = {
   volume_unit?: string;
   amount_currency?: string;
   partial?: boolean;
+  query_coverage?: 'complete' | 'bounded' | 'unsupported';
   missing_ids?: string[];
   covered_dates?: string[];
   requested_sort?: string;

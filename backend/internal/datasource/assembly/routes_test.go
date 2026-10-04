@@ -27,6 +27,14 @@ func TestRemovedSourceAndMissingCapabilityFailBeforeActivation(t *testing.T) {
 		t.Fatal("interface implementation silently claimed another ability")
 	}
 	route.Announcements = ""
+	route.ReportsFallback = "missing"
+	if err := route.Validate(r); err == nil {
+		t.Fatal("removed fallback stayed enabled")
+	}
+	route.ReportsFallback = ""
+	if err := route.Validate(r); err != nil {
+		t.Fatal("empty fallback should disable it", err)
+	}
 	removed, _ := registry.New()
 	if err := route.Validate(removed); err == nil {
 		t.Fatal("removed supplier still enabled in route")
